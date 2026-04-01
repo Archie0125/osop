@@ -125,3 +125,61 @@ def test_cmd(path):
     for t in tests:
         console.print(f"  [green]PASS[/green]  {t.get('id')} [{t.get('type')}]  [dim](mock)[/dim]")
     console.print(f"\n[green]{len(tests)} passed[/green]")
+
+
+@cli.command("report")
+@click.argument("osop_file", type=click.Path(exists=True))
+@click.argument("log_file", type=click.Path(exists=True), required=False, default=None)
+@click.option("--format", "fmt", type=click.Choice(["html", "text", "ansi"]), default=None,
+              help="Output format (auto-detected if omitted)")
+@click.option("-o", "--output", type=click.Path(), default=None,
+              help="Write report to file instead of stdout")
+def report_cmd(osop_file, log_file, fmt, output):
+    """Generate an HTML or text report from an .osop file and optional .osoplog."""
+    import sys
+    from pathlib import Path
+    from osop.reporters.html import generate_html_report
+    from osop.reporters.text import generate_text_report
+
+    # Auto-detect format
+    if fmt is None:
+        if output and output.endswith(".html"):
+            fmt = "html"
+        elif sys.stdout.isatty():
+            fmt = "ansi"
+        else:
+            fmt = "text"
+
+    # Read input files
+    try:
+        osop_yaml = Path(osop_file).read_text(encoding="utf-8")
+    except Exception as e:
+        console.print(f"[red]Error reading {osop_file}:[/red] {e}")
+        raise SystemExit(1)
+
+    log_yaml: str | None = None
+    if log_file:
+        try:
+            log_yaml = Path(log_file).read_text(encoding="utf-8")
+        except Exception as e:
+            console.print(f"[red]Error reading {log_file}:[/red] {e}")
+            raise SystemExit(1)
+
+    # Generate report
+    if fmt == "html":
+        result = generate_html_report(osop_yaml, log_yaml)
+    elif fmt == "ansi":
+        result = generate_text_report(osop_yaml, log_yaml, ansi=True)
+    else:
+        result = generate_text_report(osop_yaml, log_yaml, ansi=False)
+
+    # Output
+    if output:
+        try:
+            Path(output).write_text(result, encoding="utf-8")
+            console.print(f"[green]Report written to {output}[/green] ({len(result):,} bytes)")
+        except Exception as e:
+            console.print(f"[red]Error writing {output}:[/red] {e}")
+            raise SystemExit(1)
+    else:
+        click.echo(result)
