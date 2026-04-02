@@ -1,0 +1,14 @@
+osop_version: "1.0"
+id: "test-minimal"
+name: "Minimal Test Workflow"
+description: "A minimal valid workflow for testing."
+nodes:
+  - id: "step_a"
+    type: "agent"
+    purpose: "Do the first thing"
+  - id: "step_b"
+    type: "human"
+    purpose: "Review the result"
+edges:
+  - from: "step_a"
+    to: "step_b"

@@ -1,0 +1,12 @@
+{
+  "osop_version": "1.0",
+  "id": "test-minimal-json",
+  "name": "Minimal JSON Workflow",
+  "nodes": [
+    {"id": "step_a", "type": "agent", "purpose": "Do something"},
+    {"id": "step_b", "type": "human", "purpose": "Review it"}
+  ],
+  "edges": [
+    {"from": "step_a", "to": "step_b"}
+  ]
+}

@@ -1,0 +1,5 @@
+osop_version: "1.0"
+id: "bad
+  name: [this is broken yaml
+  nodes:
+    - missing: closing bracket
