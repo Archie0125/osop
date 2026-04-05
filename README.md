@@ -1,128 +1,102 @@
-# OSOP — Open Standard Operating Procedures
+# OSOP CLI
 
-[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
-[![Python](https://img.shields.io/badge/python-3.11%2B-blue)](https://www.python.org)
-[![PyPI](https://img.shields.io/pypi/v/osop)](https://pypi.org/project/osop/)
-
-**OSOP** is a universal protocol for defining, validating, and executing process definitions. It provides a structured YAML-based schema for workflows that can be parsed, rendered, tested, and run across any toolchain.
-
-Website: [osop.ai](https://osop.ai) | GitHub: [github.com/osop](https://github.com/osop)
-
-## Features
-
-- **CLI tools** — `osop validate`, `osop render`, `osop run`, `osop test` for the full workflow lifecycle
-- **12 node types** — start, end, step, decision, fork, join, loop, retry, approval, webhook, timer, subprocess
-- **Parser** — reads `.osop.yaml` files and produces a validated AST
-- **Executor** — runs workflows with pluggable adapters for each node type
-- **Adapters** — extensible adapter system for custom node behavior
-- **Schema validation** — JSON Schema-based validation with clear error reporting
-
-## Installation
+**Validate, render, and run AI agent workflows.**
 
 ```bash
 pip install osop
 ```
 
-Requires Python 3.11 or later.
-
 ## Quick Start
 
 ```bash
-# Validate a workflow definition
-osop validate workflow.osop.yaml
+# Validate against OSOP Core schema (4 node types)
+osop validate --schema core my-workflow.osop.yaml
 
-# Render a workflow as a diagram
-osop render workflow.osop.yaml --format mermaid
+# Validate against full schema (12 node types)
+osop validate my-workflow.osop.yaml
 
-# Dry-run a workflow
-osop run workflow.osop.yaml --dry-run
+# Render as Mermaid diagram
+osop render my-workflow.osop.yaml
 
-# Run tests defined in a workflow
-osop test workflow.osop.yaml
+# Execute (agent nodes call LLMs, cli nodes run commands)
+osop run my-workflow.osop.yaml --dry-run
+
+# Compare two workflows or execution logs
+osop diff v1.osop.yaml v2.osop.yaml
 ```
 
-## Workflow Example
+## Commands
+
+| Command | Description |
+|---------|-------------|
+| `osop validate <file>` | Validate against JSON Schema + contract checks |
+| `osop validate --schema core <file>` | Validate against Core schema only |
+| `osop render <file>` | Render as Mermaid diagram |
+| `osop run <file>` | Execute the workflow |
+| `osop diff <a> <b>` | Compare two .osop or .osoplog files |
+| `osop init` | Scaffold a new workflow |
+| `osop report <file> [log]` | Generate HTML/text report |
+
+## OSOP Core Types
+
+The `--schema core` option validates against the minimal schema:
+
+**4 Node Types:** `agent`, `api`, `cli`, `human`
+**4 Edge Modes:** `sequential`, `conditional`, `parallel`, `fallback`
+
+## Example
 
 ```yaml
-osop: "0.1"
-name: deploy-service
-description: Deploy a containerized service to production
+osop_version: "1.0"
+id: "debug-session"
+name: "AI Debugging Session"
 
 nodes:
-  - id: start
-    type: start
-
-  - id: build
-    type: step
-    action: docker build -t $IMAGE .
-
+  - id: explore
+    type: agent
+    name: "Explore Codebase"
+  - id: fix
+    type: agent
+    name: "Write Fix"
   - id: test
-    type: step
-    action: pytest tests/
-
-  - id: approve
-    type: approval
-    approvers: [platform-team]
-
-  - id: deploy
-    type: step
-    action: kubectl apply -f k8s/
-
-  - id: end
-    type: end
+    type: cli
+    name: "Run Tests"
+    runtime:
+      command: "npm test"
+  - id: review
+    type: human
+    name: "User Reviews"
 
 edges:
-  - from: start
-    to: build
-  - from: build
+  - from: explore
+    to: fix
+  - from: fix
     to: test
   - from: test
-    to: approve
-  - from: approve
-    to: deploy
-  - from: deploy
-    to: end
+    to: review
+  - from: test
+    to: fix
+    mode: fallback
+    label: "Tests failed"
 ```
 
-## Node Types
+## `osop run` Options
 
-| Type | Description |
-|------|-------------|
-| `start` | Entry point of the workflow |
-| `end` | Terminal node |
-| `step` | Single action or command |
-| `decision` | Conditional branch based on expression |
-| `fork` | Parallel split into multiple branches |
-| `join` | Synchronization barrier for parallel branches |
-| `loop` | Iterate over a collection or until a condition |
-| `retry` | Retry a step with backoff strategy |
-| `approval` | Human or automated approval gate |
-| `webhook` | Wait for or send an HTTP callback |
-| `timer` | Delay or cron-scheduled trigger |
-| `subprocess` | Invoke another OSOP workflow |
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--dry-run` | off | Preview without executing |
+| `--allow-exec` | off | Allow CLI nodes to run commands |
+| `--max-cost` | $1.00 | Maximum LLM spending |
+| `--timeout` | 300s | Maximum execution time |
+| `--log <path>` | none | Write .osoplog.yaml execution record |
 
-## Architecture
+## Links
 
-```
-osop/
-  cli.py          # Click CLI entry points
-  parser.py       # YAML parser and AST builder
-  schema.py       # JSON Schema definitions and validation
-  executor.py     # Workflow execution engine
-  adapters/       # Node type adapters (one per type)
-  models.py       # Data models for workflows, nodes, edges
-  errors.py       # Custom exception hierarchy
-```
-
-## Development
-
-```bash
-git clone https://github.com/osop/osop.git
-cd osop
-pip install -e ".[dev]"
-pytest
-```
+- [Spec](https://github.com/Archie0125/osop-spec)
+- [Visual Editor](https://osop-editor.vercel.app)
+- [MCP Server](https://github.com/Archie0125/osop-mcp) (5 tools for Claude/Cursor)
+- [Examples](https://github.com/Archie0125/osop-examples)
 
 ## License
 
-Apache License 2.0 — see [LICENSE](LICENSE) for details.
+Apache License 2.0

@@ -3,19 +3,32 @@ import json
 from pathlib import Path
 import jsonschema
 
-# Bundled schema path (relative to this file)
-_BUNDLED_SCHEMA = Path(__file__).parent.parent.parent / "schema" / "osop.schema.json"
+# Schema file names by variant
+_SCHEMA_FILES = {
+    "full": "osop.schema.json",
+    "core": "osop-core.schema.json",
+}
 
-# Search paths for the schema
-_SCHEMA_SEARCH_PATHS = [
-    _BUNDLED_SCHEMA,
-    Path.home() / "projects" / "osop-spec" / "schema" / "osop.schema.json",
-    Path.cwd() / "osop-spec" / "schema" / "osop.schema.json",
+# Base search directories for schema files
+_SCHEMA_DIRS = [
+    Path(__file__).parent.parent.parent / "schema",
+    Path(__file__).parent.parent.parent.parent / "osop-spec" / "schema",
+    Path.home() / "Desktop" / "osop" / "osop-spec" / "schema",
+    Path.home() / "projects" / "osop-spec" / "schema",
+    Path.cwd() / "osop-spec" / "schema",
+    Path.cwd().parent / "osop-spec" / "schema",
 ]
 
 
-def load_schema() -> dict:
-    for p in _SCHEMA_SEARCH_PATHS:
+def load_schema(variant: str = "full") -> dict:
+    """Load JSON Schema for validation.
+
+    Args:
+        variant: "full" for the complete schema, "core" for the minimal subset.
+    """
+    filename = _SCHEMA_FILES.get(variant, _SCHEMA_FILES["full"])
+    for d in _SCHEMA_DIRS:
+        p = d / filename
         if p.exists():
             with open(p, encoding="utf-8") as f:
                 return json.load(f)
@@ -34,9 +47,14 @@ def load_schema() -> dict:
     }
 
 
-def validate(workflow: dict) -> list[str]:
-    """Validate a workflow dict. Returns list of error strings (empty = valid)."""
-    schema = load_schema()
+def validate(workflow: dict, schema_variant: str = "full") -> list[str]:
+    """Validate a workflow dict. Returns list of error strings (empty = valid).
+
+    Args:
+        workflow: Parsed workflow dict.
+        schema_variant: "full" or "core".
+    """
+    schema = load_schema(schema_variant)
     validator_cls = jsonschema.Draft202012Validator if "$schema" in schema and "2020-12" in schema["$schema"] else jsonschema.Draft7Validator
     validator = validator_cls(schema)
     errors = []
