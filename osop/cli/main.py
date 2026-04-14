@@ -1,5 +1,6 @@
 import os
 import sys
+from pathlib import Path
 
 import click
 from rich.console import Console
@@ -32,7 +33,8 @@ def _find_mcp_tools():
 def cli():
     """OSOP — Validate, Record, Diff, Optimize, View AI agent workflows.
 
-    Five commands:
+    Six commands:
+      osop init      One-step setup for a project (CLAUDE.md + sessions/)
       osop validate  Check .osop or .osoplog against schema
       osop record    Execute workflow, produce .osoplog
       osop diff      Compare two .osop or .osoplog files
@@ -40,6 +42,90 @@ def cli():
       osop view      Render .sop into standalone HTML
     """
     pass
+
+
+# ---------------------------------------------------------------------------
+# osop init
+# ---------------------------------------------------------------------------
+
+_CLAUDE_MD_OSOP_SECTION = """\
+## OSOP — Session Logging
+
+This project uses OSOP (Open Standard Operating Process) to record AI agent workflows.
+
+### Five CLI commands
+
+- `osop validate <file>` — Check .osop or .osoplog against schema
+- `osop record <file.osop>` — Execute workflow, produce .osoplog
+- `osop diff <a> <b>` — Compare two .osop or .osoplog files
+- `osop optimize <logs...>` — Synthesize better .osop from execution logs
+- `osop view <file.sop>` — Render .sop into standalone HTML
+
+### When to produce session logs
+
+After completing a multi-step task (3+ distinct steps), produce OR invoke `/osop-log`:
+
+1. `sessions/YYYY-MM-DD-<short-desc>.osop.yaml` — workflow definition
+2. `sessions/YYYY-MM-DD-<short-desc>.osoplog.yaml` — execution record
+
+### OSOP Core schema
+
+- **4 node types only:** `agent`, `api`, `cli`, `human`
+- **4 edge modes only:** `sequential`, `parallel`, `conditional`, `fallback`
+
+### Node type mapping
+
+| Claude Code action | type |
+|---|---|
+| Read/explore/edit/write files, analyze, plan, spawn sub-agent | `agent` |
+| Shell commands, tests, git, builds | `cli` |
+| Web fetch, HTTP requests | `api` |
+| Ask user, user reviews | `human` |
+
+### Viewing
+
+Drop .sop + .osop + .osoplog files at https://osop-editor.vercel.app — or run `osop view`.
+"""
+
+
+@cli.command("init")
+def init_cmd():
+    """Initialize OSOP in the current project.
+
+    Creates sessions/ directory and adds OSOP section to CLAUDE.md.
+    Run once per project.
+    """
+    cwd = Path.cwd()
+    sessions_dir = cwd / "sessions"
+    claude_md = cwd / "CLAUDE.md"
+
+    # 1. Create sessions/
+    if sessions_dir.exists():
+        sessions_status = "already exists"
+    else:
+        sessions_dir.mkdir(exist_ok=True)
+        sessions_status = "created"
+
+    # 2. Update or create CLAUDE.md
+    if claude_md.exists():
+        content = claude_md.read_text(encoding="utf-8")
+        if "## OSOP" in content or "OSOP — Session Logging" in content:
+            claude_md_status = "already has OSOP section (skipped)"
+        else:
+            claude_md.write_text(content.rstrip() + "\n\n" + _CLAUDE_MD_OSOP_SECTION, encoding="utf-8")
+            claude_md_status = "OSOP section appended"
+    else:
+        claude_md.write_text(_CLAUDE_MD_OSOP_SECTION, encoding="utf-8")
+        claude_md_status = "created with OSOP section"
+
+    console.print(Panel(
+        f"[green]OSOP initialized[/green] in {cwd}\n"
+        f"  sessions/  {sessions_status}\n"
+        f"  CLAUDE.md  {claude_md_status}\n\n"
+        f"Next: run a task, then use [cyan]/osop-log[/cyan] in Claude Code to record it.",
+        title="osop init",
+        border_style="green",
+    ))
 
 
 # ---------------------------------------------------------------------------
