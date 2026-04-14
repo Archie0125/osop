@@ -1,6 +1,6 @@
 # OSOP CLI
 
-**Validate, render, and run AI agent workflows.**
+**Validate, record, diff, optimize, and view AI agent workflows.**
 
 ```bash
 pip install osop
@@ -10,91 +10,49 @@ pip install osop
 
 ```bash
 # Validate against OSOP Core schema (4 node types)
-osop validate --schema core my-workflow.osop.yaml
-
-# Validate against full schema (12 node types)
 osop validate my-workflow.osop.yaml
 
-# Render as Mermaid diagram
-osop render my-workflow.osop.yaml
+# Execute workflow, produce .osoplog
+osop record my-workflow.osop.yaml
 
-# Execute (agent nodes call LLMs, cli nodes run commands)
-osop run my-workflow.osop.yaml --dry-run
+# Compare two execution logs
+osop diff run-a.osoplog.yaml run-b.osoplog.yaml
 
-# Compare two workflows or execution logs
-osop diff v1.osop.yaml v2.osop.yaml
+# Synthesize better workflow from logs
+osop optimize sessions/*.osoplog.yaml -o optimized.osop.yaml
 ```
 
 ## Commands
 
 | Command | Description |
 |---------|-------------|
-| `osop validate <file>` | Validate against JSON Schema + contract checks |
-| `osop validate --schema core <file>` | Validate against Core schema only |
-| `osop render <file>` | Render as Mermaid diagram |
-| `osop run <file>` | Execute the workflow |
+| `osop validate <file>` | Validate .osop or .osoplog against schema |
+| `osop record <file>` | Execute workflow, produce .osoplog |
 | `osop diff <a> <b>` | Compare two .osop or .osoplog files |
-| `osop init` | Scaffold a new workflow |
-| `osop report <file> [log]` | Generate HTML/text report |
+| `osop optimize <logs...>` | Synthesize better .osop from execution logs |
+| `osop view <file.sop>` | Render .sop into standalone HTML |
 
-## OSOP Core Types
-
-The `--schema core` option validates against the minimal schema:
-
-**4 Node Types:** `agent`, `api`, `cli`, `human`
-**4 Edge Modes:** `sequential`, `conditional`, `parallel`, `fallback`
-
-## Example
-
-```yaml
-osop_version: "1.0"
-id: "debug-session"
-name: "AI Debugging Session"
-
-nodes:
-  - id: explore
-    type: agent
-    name: "Explore Codebase"
-  - id: fix
-    type: agent
-    name: "Write Fix"
-  - id: test
-    type: cli
-    name: "Run Tests"
-    runtime:
-      command: "npm test"
-  - id: review
-    type: human
-    name: "User Reviews"
-
-edges:
-  - from: explore
-    to: fix
-  - from: fix
-    to: test
-  - from: test
-    to: review
-  - from: test
-    to: fix
-    mode: fallback
-    label: "Tests failed"
-```
-
-## `osop run` Options
+## `osop record` Options
 
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--dry-run` | off | Preview without executing |
 | `--allow-exec` | off | Allow CLI nodes to run commands |
+| `--mock` | off | Simulate execution (no real executor needed) |
 | `--max-cost` | $1.00 | Maximum LLM spending |
 | `--timeout` | 300s | Maximum execution time |
-| `--log <path>` | none | Write .osoplog.yaml execution record |
+| `-o <path>` | auto | Write .osoplog.yaml to path |
+
+## OSOP Core
+
+**4 Node Types:** `agent`, `api`, `cli`, `human`
+**4 Edge Modes:** `sequential`, `conditional`, `parallel`, `fallback`
 
 ## Links
 
 - [Spec](https://github.com/Archie0125/osop-spec)
 - [Visual Editor](https://osop-editor.vercel.app)
-- [MCP Server](https://github.com/Archie0125/osop-mcp) (5 tools for Claude/Cursor)
+- [MCP Server](https://github.com/Archie0125/osop-mcp) (4 tools for Claude/Cursor)
 - [Examples](https://github.com/Archie0125/osop-examples)
 
 ## License

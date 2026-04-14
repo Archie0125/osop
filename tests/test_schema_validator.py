@@ -59,9 +59,10 @@ class TestValidWorkflows:
         errors = validate(wf)
         assert errors == []
 
-    def test_valid_workflow_with_extra_fields(self):
-        """Extra fields beyond the spec should not cause validation errors."""
-        wf = _minimal_workflow(custom_field="hello", tags=["test"])
+    def test_valid_workflow_with_extension_fields(self):
+        """Extension fields (x-*) beyond the spec should not cause validation errors."""
+        wf = _minimal_workflow(tags=["test"])
+        wf["x-custom"] = "hello"
         errors = validate(wf)
         assert errors == []
 

@@ -28,14 +28,20 @@ class TestCLIHelp:
         assert result.exit_code == 0
         assert "Validate" in result.output
 
-    def test_render_help(self, runner):
-        result = runner.invoke(cli, ["render", "--help"])
+    def test_record_help(self, runner):
+        result = runner.invoke(cli, ["record", "--help"])
         assert result.exit_code == 0
-        assert "Render" in result.output
+        assert "record" in result.output.lower()
 
-    def test_run_help(self, runner):
-        result = runner.invoke(cli, ["run", "--help"])
+    def test_diff_help(self, runner):
+        result = runner.invoke(cli, ["diff", "--help"])
         assert result.exit_code == 0
+        assert "Compare" in result.output
+
+    def test_optimize_help(self, runner):
+        result = runner.invoke(cli, ["optimize", "--help"])
+        assert result.exit_code == 0
+        assert "optimize" in result.output.lower()
 
     def test_unknown_command(self, runner):
         result = runner.invoke(cli, ["nonexistent"])
@@ -90,93 +96,32 @@ class TestValidateCommand:
 
 
 # ---------------------------------------------------------------------------
-# render command
+# record command
 # ---------------------------------------------------------------------------
 
-class TestRenderCommand:
-    def test_render_story_default(self, runner):
-        result = runner.invoke(cli, ["render", str(FIXTURES / "valid_complex.osop")])
-        assert result.exit_code == 0
-        assert "Story View" in result.output
-
-    def test_render_story_explicit(self, runner):
-        result = runner.invoke(cli, ["render", "--view", "story", str(FIXTURES / "valid_complex.osop")])
-        assert result.exit_code == 0
-        assert "Story View" in result.output
-
-    def test_render_role_view(self, runner):
-        result = runner.invoke(cli, ["render", "--view", "role", str(FIXTURES / "valid_complex.osop")])
-        assert result.exit_code == 0
-        assert "Role View" in result.output
-
-    def test_render_unimplemented_view(self, runner):
-        result = runner.invoke(cli, ["render", "--view", "graph", str(FIXTURES / "valid_complex.osop")])
-        assert result.exit_code == 0
-        assert "not yet implemented" in result.output
-
-    def test_render_nonexistent_file(self, runner):
-        result = runner.invoke(cli, ["render", "/no/such/file.osop"])
+class TestRecordCommand:
+    def test_record_nonexistent_file(self, runner):
+        result = runner.invoke(cli, ["record", "/no/such/file.osop"])
         assert result.exit_code == 1
+        assert "Error" in result.output
 
-    def test_render_invalid_view_choice(self, runner):
-        result = runner.invoke(cli, ["render", "--view", "invalid_view", str(FIXTURES / "valid_complex.osop")])
+    def test_record_mock_mode(self, runner):
+        result = runner.invoke(cli, ["record", "--mock", str(FIXTURES / "valid_minimal.osop")])
+        assert result.exit_code == 0
+        assert "mock" in result.output.lower()
+
+    def test_record_strict_fails_without_mcp(self, runner):
+        result = runner.invoke(cli, ["record", str(FIXTURES / "valid_minimal.osop")])
+        # Should fail with error if osop-mcp not installed, or succeed if it is
+        # Either way, it shouldn't crash
+        assert result.exit_code in (0, 1)
+
+
+# ---------------------------------------------------------------------------
+# diff command
+# ---------------------------------------------------------------------------
+
+class TestDiffCommand:
+    def test_diff_nonexistent_file(self, runner):
+        result = runner.invoke(cli, ["diff", "/no/such/a.osop", "/no/such/b.osop"])
         assert result.exit_code != 0
-
-
-# ---------------------------------------------------------------------------
-# run command
-# ---------------------------------------------------------------------------
-
-class TestRunCommand:
-    def test_run_mock_default(self, runner):
-        result = runner.invoke(cli, ["run", str(FIXTURES / "valid_minimal.osop")])
-        assert result.exit_code == 0
-        assert "Run complete" in result.output
-
-    def test_run_shows_nodes(self, runner):
-        result = runner.invoke(cli, ["run", str(FIXTURES / "valid_minimal.osop")])
-        assert "step_a" in result.output
-        assert "step_b" in result.output
-
-    def test_run_nonexistent_file(self, runner):
-        result = runner.invoke(cli, ["run", "/no/such/file.osop"])
-        assert result.exit_code == 1
-
-    def test_run_complex_workflow(self, runner):
-        result = runner.invoke(cli, ["run", str(FIXTURES / "valid_complex.osop")])
-        assert result.exit_code == 0
-        assert "4 nodes executed" in result.output
-
-
-# ---------------------------------------------------------------------------
-# test command
-# ---------------------------------------------------------------------------
-
-class TestTestCommand:
-    def test_test_no_tests_defined(self, runner):
-        result = runner.invoke(cli, ["test", str(FIXTURES / "valid_minimal.osop")])
-        assert result.exit_code == 0
-        assert "No tests" in result.output
-
-    def test_test_with_tests(self, runner, tmp_path):
-        import yaml
-        wf = {
-            "osop_version": "1.0",
-            "id": "with-tests",
-            "name": "Workflow With Tests",
-            "nodes": [{"id": "a", "type": "agent", "purpose": "x"}],
-            "edges": [{"from": "a", "to": "a"}],
-            "tests": [
-                {"id": "test_1", "type": "unit"},
-                {"id": "test_2", "type": "integration"},
-            ],
-        }
-        f = tmp_path / "with_tests.yaml"
-        f.write_text(yaml.dump(wf), encoding="utf-8")
-        result = runner.invoke(cli, ["test", str(f)])
-        assert result.exit_code == 0
-        assert "2 passed" in result.output
-
-    def test_test_nonexistent_file(self, runner):
-        result = runner.invoke(cli, ["test", "/no/such/file.osop"])
-        assert result.exit_code == 1

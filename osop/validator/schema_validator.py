@@ -62,16 +62,25 @@ def validate(workflow: dict, schema_variant: str = "full") -> list[str]:
         path = " > ".join(str(p) for p in err.absolute_path) or "(root)"
         errors.append(f"{path}: {err.message}")
     
-    # Additional contract checks
+    # Additional contract checks (only when types are correct)
     nodes = workflow.get("nodes", [])
+    if not isinstance(nodes, list):
+        return errors
     node_ids = set()
     for node in nodes:
+        if not isinstance(node, dict):
+            continue
         nid = node.get("id", "")
         if nid in node_ids:
             errors.append(f"nodes: duplicate node id '{nid}'")
         node_ids.add(nid)
 
-    for edge in workflow.get("edges", []):
+    edges = workflow.get("edges", [])
+    if not isinstance(edges, list):
+        return errors
+    for edge in edges:
+        if not isinstance(edge, dict):
+            continue
         frm = edge.get("from", "")
         to = edge.get("to", "")
         if frm and frm not in node_ids:

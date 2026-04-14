@@ -32,7 +32,7 @@ dependencies = [
 ]
 
 [project.scripts]
-osop = "osop.cli:main"
+osop = "osop.cli.main:cli"
 
 [project.urls]
 Homepage = "https://osop.ai"
