@@ -143,3 +143,52 @@ def test_sequential_constraint(workflow_file, tmp_path):
         with log.node("step-two"):
             pass
     cm1.__exit__(None, None, None)
+
+
+def test_timestamps_are_utc_z_suffixed(workflow_file, tmp_path):
+    """Cross-runtime convention: all .osoplog timestamps are UTC with 'Z'.
+
+    LiveLog must match `osop log` and `osop record` so logs from different
+    sources can be diffed, optimized, and viewed without timezone drift.
+    """
+    log = LiveLog.start(workflow_file, output_dir=tmp_path / "logs")
+    with log.node("step-one"):
+        pass
+    log.finish()
+
+    doc = _read(log.path)
+    assert doc["started_at"].endswith("Z"), f"started_at not UTC-Z: {doc['started_at']}"
+    assert doc["ended_at"].endswith("Z"), f"ended_at not UTC-Z: {doc['ended_at']}"
+    rec = doc["node_records"][0]
+    assert rec["started_at"].endswith("Z"), f"node started_at not UTC-Z: {rec['started_at']}"
+    assert rec["ended_at"].endswith("Z"), f"node ended_at not UTC-Z: {rec['ended_at']}"
+    # millisecond precision retained
+    assert "." in rec["started_at"], "millisecond precision lost"
+
+
+def test_generated_osoplog_passes_schema_validation(workflow_file, tmp_path):
+    """The whole point: an osoplog written by LiveLog must conform to spec.
+
+    Uses the project's own validator so this test catches schema drift even
+    if the host writer and the validator both live in this repo.
+    """
+    from osop.validator.schema_validator import validate as _validate
+    import yaml as _yaml
+
+    log = LiveLog.start(workflow_file, output_dir=tmp_path / "logs")
+    with log.node("step-one") as n:
+        n.output(rows=1)
+    out_path = log.finish("COMPLETED")
+
+    with open(out_path, encoding="utf-8") as f:
+        log_doc = _yaml.safe_load(f)
+
+    # Required fields per the osoplog contract
+    for required in ("osoplog_version", "run_id", "workflow_id", "status",
+                     "started_at", "ended_at", "duration_ms", "node_records"):
+        assert required in log_doc, f"missing required field: {required}"
+
+    assert log_doc["status"] in {"COMPLETED", "FAILED", "TIMEOUT", "COST_LIMIT", "BLOCKED", "DRY_RUN"}
+    assert isinstance(log_doc["node_records"], list)
+    for rec in log_doc["node_records"]:
+        assert "node_id" in rec, f"node_record missing node_id: {rec}"

@@ -43,7 +43,13 @@ from .parser.loader import load_workflow
 
 
 def _iso_now() -> str:
-    return datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
+    """ISO 8601 UTC timestamp with millisecond precision and trailing 'Z'.
+
+    Standardized so that .osoplog files written by LiveLog interleave cleanly
+    with those written by `osop log` (transcript parser) and `osop record`,
+    none of which emit a local timezone offset.
+    """
+    return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
 class _NodeContext:
