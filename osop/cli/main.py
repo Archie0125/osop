@@ -33,10 +33,11 @@ def _find_mcp_tools():
 def cli():
     """OSOP — Validate, Record, Diff, Optimize, View AI agent workflows.
 
-    Six commands:
+    Seven commands:
       osop init      One-step setup for a project (CLAUDE.md + sessions/)
       osop validate  Check .osop or .osoplog against schema
       osop record    Execute workflow, produce .osoplog
+      osop log       Synthesize .osop + .osoplog from a Claude Code transcript
       osop diff      Compare two .osop or .osoplog files
       osop optimize  Synthesize better .osop from execution logs
       osop view      Render .sop into standalone HTML
@@ -53,20 +54,26 @@ _CLAUDE_MD_OSOP_SECTION = """\
 
 This project uses OSOP (Open Standard Operating Process) to record AI agent workflows.
 
-### Five CLI commands
+### Seven CLI commands
 
+- `osop init` — One-step setup: create sessions/ + add this OSOP section to CLAUDE.md
 - `osop validate <file>` — Check .osop or .osoplog against schema
 - `osop record <file.osop>` — Execute workflow, produce .osoplog
+- `osop log [session-id]` — Synthesize .osop + .osoplog from a Claude Code transcript (real evidence, no LLM self-report)
 - `osop diff <a> <b>` — Compare two .osop or .osoplog files
 - `osop optimize <logs...>` — Synthesize better .osop from execution logs
 - `osop view <file.sop>` — Render .sop into standalone HTML
 
 ### When to produce session logs
 
-After completing a multi-step task (3+ distinct steps), produce OR invoke `/osop-log`:
+After completing a multi-step task (3+ distinct steps), invoke `/osop-log` (which calls
+`osop log` under the hood). This produces, from the actual transcript:
 
 1. `sessions/YYYY-MM-DD-<short-desc>.osop.yaml` — workflow definition
 2. `sessions/YYYY-MM-DD-<short-desc>.osoplog.yaml` — execution record
+
+Optional: enable the SessionEnd hook at `~/.claude/hooks/osop-session-end.sh`
+to auto-log every session.
 
 ### OSOP Core schema
 
@@ -403,6 +410,114 @@ def record_cmd(path, allow_exec, dry_run, interactive, max_cost, timeout, mock, 
 
     if run_status != "completed":
         raise SystemExit(1)
+
+
+# ---------------------------------------------------------------------------
+# osop log — synthesize from Claude Code transcript (accurate, evidence-based)
+# ---------------------------------------------------------------------------
+
+
+@cli.command("log")
+@click.argument("source", required=False)
+@click.option("-d", "--desc", "short_desc", default=None,
+              help="Short description for filenames (default: derived from date+session)")
+@click.option("-o", "--out-dir", "out_dir", type=click.Path(), default=None,
+              help="Output directory (default: ./sessions)")
+@click.option("--tag", "extra_tags", multiple=True, help="Extra tag(s) to attach to .osop")
+@click.option("--stdout", is_flag=True, default=False,
+              help="Print YAML to stdout instead of writing files")
+def log_cmd(source, short_desc, out_dir, extra_tags, stdout):
+    """Synthesize .osop + .osoplog from a Claude Code session transcript.
+
+    Reads the canonical JSONL transcript and reconstructs the workflow from
+    real tool-call evidence — no LLM self-report. Each user prompt becomes
+    a `human` node; the agent work that follows becomes one node grouped
+    by tool mix (cli / api / agent / human), with full per-call detail
+    preserved in `tool_calls[]` on the .osoplog.
+
+    SOURCE may be:
+      - A path to a transcript .jsonl
+      - A session id (looked up under ~/.claude/projects/*/<id>.jsonl)
+      - omitted → most recent transcript for cwd
+
+    Examples:
+      osop log
+      osop log 130fbd5c-b7d8-47bb-88b3-3eb9f91fba27
+      osop log -d fix-auth-bug --tag bug-fix
+      osop log /path/to/session.jsonl --stdout
+    """
+    from datetime import datetime as _dt
+    from pathlib import Path as P
+
+    from osop.recorder.transcript import (
+        parse_transcript,
+        resolve_transcript_path,
+        synthesize,
+        to_yaml,
+    )
+
+    try:
+        path = resolve_transcript_path(source, cwd=P.cwd())
+    except FileNotFoundError as e:
+        console.print(f"[red]Error:[/red] {e}")
+        console.print("  Cause: No transcript matched the given source.")
+        console.print("  Fix: Pass a session id or full transcript path, "
+                      "or run from a project directory that has a transcript.")
+        raise SystemExit(1)
+
+    try:
+        parsed = parse_transcript(path)
+    except ValueError as e:
+        console.print(f"[red]Error:[/red] {e}")
+        raise SystemExit(1)
+
+    if not parsed["nodes"]:
+        console.print(f"[yellow]Skipped:[/yellow] transcript has no usable events: {path}")
+        return
+
+    # Derive short_desc if not given
+    date_str = (parsed["started_at"] or _dt.utcnow().isoformat())[:10]
+    if not short_desc:
+        sid = (parsed.get("session_id") or path.stem)[:8]
+        short_desc = f"{date_str}-session-{sid}"
+    elif not short_desc.startswith(date_str):
+        short_desc = f"{date_str}-{short_desc}"
+
+    osop_doc, osoplog_doc = synthesize(parsed, short_desc=short_desc, tags=list(extra_tags))
+
+    osop_yaml = to_yaml(osop_doc)
+    osoplog_yaml = to_yaml(osoplog_doc)
+
+    if stdout:
+        console.print("[dim]# --- .osop.yaml ---[/dim]")
+        click.echo(osop_yaml)
+        console.print("[dim]# --- .osoplog.yaml ---[/dim]")
+        click.echo(osoplog_yaml)
+        return
+
+    target_dir = P(out_dir) if out_dir else (P.cwd() / "sessions")
+    target_dir.mkdir(parents=True, exist_ok=True)
+
+    osop_path = target_dir / f"{short_desc}.osop.yaml"
+    log_path = target_dir / f"{short_desc}.osoplog.yaml"
+    osop_path.write_text(osop_yaml, encoding="utf-8")
+    log_path.write_text(osoplog_yaml, encoding="utf-8")
+
+    total_calls = sum(
+        len(rec.get("tool_calls", [])) for rec in osoplog_doc["node_records"]
+    )
+
+    console.print(Panel(
+        f"[bold]{osop_doc['name']}[/bold]\n"
+        f"[dim]source:[/dim] {path}\n"
+        f"[dim]nodes:[/dim] {len(osoplog_doc['node_records'])}  "
+        f"[dim]tool calls:[/dim] {total_calls}  "
+        f"[dim]duration:[/dim] {osoplog_doc['duration_ms']}ms\n"
+        f"[green]{osop_path}[/green]\n"
+        f"[green]{log_path}[/green]",
+        title="osop log",
+        border_style="green",
+    ))
 
 
 # ---------------------------------------------------------------------------
