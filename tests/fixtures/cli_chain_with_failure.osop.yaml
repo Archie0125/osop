@@ -1,0 +1,26 @@
+osop_version: "1.0"
+id: "cli-chain-fail-test"
+name: "CLI chain with mid-failure"
+description: "Three cli nodes; step-b exits non-zero. Used to test BLOCKED emission for unreached nodes."
+tags: [test]
+
+nodes:
+  - id: "step-a"
+    type: "cli"
+    name: "Echo A"
+    description: "Print and succeed"
+    command: "echo step-a-out"
+  - id: "step-b"
+    type: "cli"
+    name: "Fail B"
+    description: "Exit non-zero"
+    command: "exit 1"
+  - id: "step-c"
+    type: "cli"
+    name: "Echo C (should be BLOCKED)"
+    description: "Should never run"
+    command: "echo step-c-out"
+
+edges:
+  - {from: "step-a", to: "step-b", mode: "sequential"}
+  - {from: "step-b", to: "step-c", mode: "sequential"}

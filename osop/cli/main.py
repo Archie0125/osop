@@ -31,12 +31,13 @@ def _find_mcp_tools():
 @click.group()
 @click.version_option(package_name="osop")
 def cli():
-    """OSOP — Validate, Record, Diff, Optimize, View AI agent workflows.
+    """OSOP — Validate, Record, Replay, Log, Diff, Optimize, View AI agent workflows.
 
-    Seven commands:
+    Eight commands:
       osop init      One-step setup for a project (CLAUDE.md + sessions/)
       osop validate  Check .osop or .osoplog against schema
-      osop record    Execute workflow, produce .osoplog
+      osop record    Execute workflow via full executor (write .osoplog at end)
+      osop replay    Execute workflow with live .osoplog streaming (cli + human)
       osop log       Synthesize .osop + .osoplog from a Claude Code transcript
       osop diff      Compare two .osop or .osoplog files
       osop optimize  Synthesize better .osop from execution logs
@@ -54,11 +55,12 @@ _CLAUDE_MD_OSOP_SECTION = """\
 
 This project uses OSOP (Open Standard Operating Process) to record AI agent workflows.
 
-### Seven CLI commands
+### Eight CLI commands
 
 - `osop init` — One-step setup: create sessions/ + add this OSOP section to CLAUDE.md
 - `osop validate <file>` — Check .osop or .osoplog against schema
-- `osop record <file.osop>` — Execute workflow, produce .osoplog
+- `osop record <file.osop>` — Execute workflow via full executor (write .osoplog at end)
+- `osop replay <file.osop>` — Execute workflow with live .osoplog streaming (cli + human in v1)
 - `osop log [session-id]` — Synthesize .osop + .osoplog from a Claude Code transcript (real evidence, no LLM self-report)
 - `osop diff <a> <b>` — Compare two .osop or .osoplog files
 - `osop optimize <logs...>` — Synthesize better .osop from execution logs
@@ -409,6 +411,161 @@ def record_cmd(path, allow_exec, dry_run, interactive, max_cost, timeout, mock, 
             console.print(f"\n[yellow]Could not write osoplog: {e}[/yellow]")
 
     if run_status != "completed":
+        raise SystemExit(1)
+
+
+# ---------------------------------------------------------------------------
+# osop replay — execute a .osop with live .osoplog streaming
+# ---------------------------------------------------------------------------
+
+
+@cli.command("replay")
+@click.argument("osop_path", type=click.Path(exists=True))
+@click.option("--allow-exec", is_flag=True, default=False,
+              help="Allow CLI nodes to actually run shell commands")
+@click.option("--dry-run", is_flag=True, default=False,
+              help="Force dry-run (default behavior when --allow-exec absent)")
+@click.option("--interactive", is_flag=True, default=False,
+              help="Pause for input on human nodes")
+@click.option("-o", "--output-dir", "output_dir", type=click.Path(), default=None,
+              help="Where to write the .osoplog (default: ./)")
+@click.option("--continue-on-error", is_flag=True, default=False,
+              help="Don't halt on FAILED node; mark and continue")
+@click.option("--yes", is_flag=True, default=False,
+              help="Auto-confirm destructive commands (DANGEROUS)")
+@click.option("--timeout", type=int, default=300,
+              help="Default per-node timeout in seconds (overridable via node.timeout_sec)")
+@click.option("--max-cost", type=float, default=0.0,
+              help="Reserved for v2 agent/api support")
+def replay_cmd(osop_path, allow_exec, dry_run, interactive, output_dir,
+               continue_on_error, yes, timeout, max_cost):
+    """Execute a .osop and stream a fresh .osoplog as each node completes.
+
+    The .osoplog is flushed on every node boundary, so a crash mid-run
+    still leaves a durable readable log. v1 supports `cli` and `human`
+    node types; `agent` and `api` nodes are recorded as SKIPPED with
+    a TODO marker.
+
+    For full executor (agent/api/cost limits/risk_assess/sub-agents),
+    use `osop record`.
+
+    Examples:
+      osop replay workflow.osop.yaml
+      osop replay workflow.osop.yaml --allow-exec
+      osop replay workflow.osop.yaml --interactive --continue-on-error
+      osop replay workflow.osop.yaml -o runs/ --allow-exec
+    """
+    from pathlib import Path as _P
+
+    from osop.live_log import LiveLog
+    from osop.replayer import detect_non_sequential_edges, execute_workflow
+
+    _ = max_cost  # reserved; v1 has no agent/api execution
+
+    # 1. Load + validate
+    try:
+        workflow = load_workflow(osop_path)
+    except FileNotFoundError:
+        console.print(f"[red]Error:[/red] File not found: {osop_path}")
+        raise SystemExit(1)
+    except Exception as e:
+        console.print(f"[red]Error:[/red] Cannot parse YAML: {e}")
+        console.print(f"  Fix: Run 'osop validate {osop_path}' for details.")
+        raise SystemExit(1)
+
+    errors = validate(workflow, schema_variant="core")
+    if errors:
+        console.print(f"[red]Invalid workflow:[/red] {len(errors)} error(s)")
+        for err in errors:
+            console.print(f"  [red]*[/red] {err}")
+        console.print(f"\n  Fix: Run 'osop validate {osop_path}' for details.")
+        raise SystemExit(1)
+
+    if dry_run and allow_exec:
+        console.print("[yellow]Note:[/yellow] --dry-run overrides --allow-exec")
+        allow_exec = False
+
+    # 2. v1 limitation surface — warn loudly on non-sequential edges
+    edges = workflow.get("edges") or []
+    non_seq = detect_non_sequential_edges(edges)
+    if non_seq:
+        console.print(
+            f"[yellow]Warning:[/yellow] v1 collapses non-sequential edges to topological order: "
+            f"{', '.join(non_seq)}. Use `osop record` for correct conditional/fallback/parallel semantics."
+        )
+
+    # 3. Open the live log
+    out_dir = _P(output_dir) if output_dir else _P.cwd()
+    log = LiveLog.start(
+        osop_path,
+        output_dir=out_dir,
+        runtime_agent="osop-replay",
+        runtime_model="n/a",
+        trigger="replay",
+    )
+
+    # 4. Confirmation hook for destructive commands
+    def _confirm(cmd: str) -> bool:
+        if yes:
+            return True
+        console.print(f"\n[red]DESTRUCTIVE:[/red] {cmd}")
+        return click.confirm("  Run it?", default=False)
+
+    # 5. Pre-flight panel
+    console.print(Panel(
+        f"[bold]{workflow.get('name', osop_path)}[/bold]\n"
+        f"[dim]source:[/dim] {osop_path}\n"
+        f"[dim]allow_exec:[/dim] {allow_exec}  "
+        f"[dim]interactive:[/dim] {interactive}  "
+        f"[dim]continue_on_error:[/dim] {continue_on_error}\n"
+        f"[dim]live log:[/dim] {log.path}",
+        title="osop replay",
+        border_style="blue",
+    ))
+
+    # 6. Execute with per-node progress
+    def _on_start(node: dict) -> None:
+        console.print(f"  [blue]>[/blue] [{node.get('type','?')}] [bold]{node['id']}[/bold]")
+
+    def _on_done(node: dict, result: dict) -> None:
+        st = result.get("status", "?")
+        color = {"COMPLETED": "green", "FAILED": "red", "SKIPPED": "yellow",
+                 "BLOCKED": "magenta"}.get(st, "white")
+        console.print(f"    [{color}]{st}[/{color}]")
+
+    summary = execute_workflow(
+        workflow,
+        log,
+        allow_exec=allow_exec,
+        interactive=interactive,
+        continue_on_error=continue_on_error,
+        confirm_destructive=_confirm,
+        cli_timeout_seconds=timeout,
+        on_node_start=_on_start,
+        on_node_done=_on_done,
+    )
+
+    # 7. Finalize log + summary
+    final_status = "COMPLETED" if summary["status"] == "COMPLETED" else "FAILED"
+    log_path = log.finish(final_status)
+
+    counts = summary["counts"]
+    table = Table(title="Replay Summary", show_header=False)
+    table.add_column("Metric", style="bold")
+    table.add_column("Value")
+    table.add_row("Status", f"[{'green' if summary['status']=='COMPLETED' else 'red'}]"
+                            f"{summary['status']}[/]")
+    table.add_row("Completed", str(counts.get("COMPLETED", 0)))
+    table.add_row("Failed", str(counts.get("FAILED", 0)))
+    table.add_row("Skipped", str(counts.get("SKIPPED", 0)))
+    table.add_row("Blocked", str(counts.get("BLOCKED", 0)))
+    if summary["halted_on"]:
+        table.add_row("Halted on", summary["halted_on"])
+    console.print(table)
+    console.print(f"\n[green]osoplog written:[/green] {log_path}")
+    console.print(f"  Next: [cyan]osop view[/cyan] or drag into https://osop-editor.vercel.app")
+
+    if summary["status"] != "COMPLETED":
         raise SystemExit(1)
 
 

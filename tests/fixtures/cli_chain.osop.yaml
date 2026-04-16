@@ -1,0 +1,26 @@
+osop_version: "1.0"
+id: "cli-chain-test"
+name: "CLI chain test fixture"
+description: "Three echoing cli nodes in a sequential chain. Used by test_replayer."
+tags: [test]
+
+nodes:
+  - id: "step-a"
+    type: "cli"
+    name: "Echo A"
+    description: "Print step-a"
+    command: "echo step-a-out"
+  - id: "step-b"
+    type: "cli"
+    name: "Echo B"
+    description: "Print step-b"
+    command: "echo step-b-out"
+  - id: "step-c"
+    type: "cli"
+    name: "Echo C"
+    description: "Print step-c"
+    command: "echo step-c-out"
+
+edges:
+  - {from: "step-a", to: "step-b", mode: "sequential"}
+  - {from: "step-b", to: "step-c", mode: "sequential"}
