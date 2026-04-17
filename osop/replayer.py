@@ -13,7 +13,21 @@ from __future__ import annotations
 
 import re
 import subprocess
+from pathlib import Path
 from typing import Callable
+
+from osop.agent_invoker import (
+    STATUS_COMPLETED as _AGENT_COMPLETED,
+    invoke_claude_p,
+)
+from osop.imitation import (
+    build_imitation_prompt,
+    find_preceding_user_prompt,
+    find_reference_log,
+    index_outputs_by_node,
+    index_tool_calls_by_node,
+    load_reference_log,
+)
 
 
 # Patterns that match destructive shell intents. We don't try to be
@@ -169,6 +183,63 @@ def execute_cli_node(
     }
 
 
+def execute_agent_node(
+    node: dict,
+    *,
+    user_prompt: str | None,
+    original_tool_calls: list[dict],
+    cwd: str | None,
+    max_budget_usd: float,
+    max_turns: int,
+    allowed_tools: list[str] | None,
+    timeout_seconds: int = 600,
+) -> dict:
+    """Execute an agent node by spawning `claude -p` in imitation mode.
+
+    Returns a dict for LiveLog ctx.output(). When no reference behavior
+    exists (no user_prompt + no tool_calls) we SKIP — imitation needs a
+    source of truth.
+    """
+    if not (user_prompt and user_prompt.strip()) and not original_tool_calls:
+        return {
+            "status": "SKIPPED",
+            "reason": "no reference behavior (user_prompt + tool_calls both empty); cannot imitate",
+        }
+
+    prompt = build_imitation_prompt(
+        node=node,
+        user_prompt=user_prompt,
+        original_tool_calls=original_tool_calls,
+    )
+    res = invoke_claude_p(
+        prompt=prompt,
+        cwd=cwd,
+        max_budget_usd=max_budget_usd,
+        max_turns=max_turns,
+        allowed_tools=allowed_tools,
+        timeout_seconds=timeout_seconds,
+    )
+
+    out: dict = {
+        "cost_usd": round(res.cost_usd, 6),
+        "tokens_input": res.tokens_input,
+        "tokens_output": res.tokens_output,
+        "model": res.model,
+        "num_turns": res.num_turns,
+        "result_text": _trim(res.result_text, 2000),
+    }
+    if res.permission_denials:
+        out["permission_denials"] = res.permission_denials
+
+    if res.status == _AGENT_COMPLETED:
+        out["status"] = "COMPLETED"
+    else:
+        out["status"] = "FAILED"
+        out["error"] = res.error or f"claude -p returned {res.status}"
+        out["claude_status"] = res.status  # surface the original taxonomy
+    return out
+
+
 def execute_human_node(node: dict, *, interactive: bool, prompt_fn: Callable[[str], str] | None = None) -> dict:
     """Pause for human input when --interactive; otherwise SKIP."""
     if not interactive:
@@ -222,6 +293,17 @@ def execute_workflow(
     env: dict | None = None,
     on_node_start: Callable[[dict], None] | None = None,
     on_node_done: Callable[[dict, dict], None] | None = None,
+    # Agent imitation execution (v2). When no reference log is given,
+    # agent nodes are SKIPPED unless skip_agents is False AND a paired
+    # log can be auto-discovered.
+    osop_path: str | Path | None = None,
+    reference_log_path: str | Path | None = None,
+    skip_agents: bool = False,
+    agent_max_budget_usd: float = 5.0,
+    agent_max_turns: int = 10,
+    agent_allowed_tools: list[str] | None = None,
+    agent_cwd: str | None = None,
+    agent_timeout_seconds: int = 600,
 ) -> dict:
     """Execute every node in topological order, streaming via LiveLog.
 
@@ -242,6 +324,27 @@ def execute_workflow(
     edges = workflow.get("edges") or []
     ordered = topo_sort(nodes, edges)
     non_seq = detect_non_sequential_edges(edges)
+
+    # Resolve reference .osoplog for agent imitation. Auto-discover from
+    # osop_path if not explicit. Missing reference → agent nodes will SKIP.
+    ref_log: dict | None = None
+    if not skip_agents:
+        ref_path: Path | None
+        if reference_log_path:
+            ref_path = Path(reference_log_path)
+        elif osop_path:
+            ref_path = find_reference_log(osop_path)
+        else:
+            ref_path = None
+        if ref_path:
+            ref_log = load_reference_log(ref_path)
+
+    tool_calls_by_node: dict[str, list[dict]] = (
+        index_tool_calls_by_node(ref_log) if ref_log else {}
+    )
+    outputs_by_node: dict[str, dict] = (
+        index_outputs_by_node(ref_log) if ref_log else {}
+    )
 
     counts = {"COMPLETED": 0, "FAILED": 0, "SKIPPED": 0, "BLOCKED": 0}
     halted_on: str | None = None
@@ -292,10 +395,34 @@ def execute_workflow(
             )
         elif ntype == "human":
             result = execute_human_node(node, interactive=interactive)
-        elif ntype in ("agent", "api"):
+        elif ntype == "agent":
+            if skip_agents:
+                result = {
+                    "status": "SKIPPED",
+                    "reason": "agent execution disabled (--no-agent)",
+                }
+            elif ref_log is None:
+                result = {
+                    "status": "SKIPPED",
+                    "reason": "no reference .osoplog found; cannot imitate agent step",
+                }
+            else:
+                result = execute_agent_node(
+                    node,
+                    user_prompt=find_preceding_user_prompt(
+                        nodes, edges, node["id"], outputs_by_node
+                    ),
+                    original_tool_calls=tool_calls_by_node.get(node["id"], []),
+                    cwd=agent_cwd,
+                    max_budget_usd=agent_max_budget_usd,
+                    max_turns=agent_max_turns,
+                    allowed_tools=agent_allowed_tools,
+                    timeout_seconds=agent_timeout_seconds,
+                )
+        elif ntype == "api":
             result = {
                 "status": "SKIPPED",
-                "reason": f"{ntype} node not yet executable in v1 (cli + human only); see osop replay docs",
+                "reason": "api node not yet executable; tracked for v3",
             }
         else:
             result = {"status": "SKIPPED", "reason": f"unknown node type: {ntype}"}

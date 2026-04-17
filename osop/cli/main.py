@@ -435,32 +435,48 @@ def record_cmd(path, allow_exec, dry_run, interactive, max_cost, timeout, mock, 
               help="Auto-confirm destructive commands (DANGEROUS)")
 @click.option("--timeout", type=int, default=300,
               help="Default per-node timeout in seconds (overridable via node.timeout_sec)")
-@click.option("--max-cost", type=float, default=0.0,
-              help="Reserved for v2 agent/api support")
+# Agent imitation execution (v2)
+@click.option("--reference-log", "reference_log", type=click.Path(exists=True), default=None,
+              help="Explicit .osoplog to imitate; auto-discovered from <osop>.osoplog.yaml if omitted")
+@click.option("--no-agent", "no_agent", is_flag=True, default=False,
+              help="Skip agent nodes entirely (v1 behavior)")
+@click.option("--max-budget-per-node", "max_budget_per_node", type=float, default=5.0,
+              help="USD ceiling for each agent node (claude -p --max-budget-usd)")
+@click.option("--agent-max-turns", "agent_max_turns", type=int, default=10,
+              help="Max tool-call turns per agent node")
+@click.option("--allowed-tools", "allowed_tools", type=str,
+              default="Read,Edit,Write,Bash,Grep,Glob,WebFetch",
+              help="Comma-separated allowlist of Claude Code tools for agent nodes")
+@click.option("--agent-timeout", "agent_timeout", type=int, default=600,
+              help="Wall-clock seconds before killing claude -p for an agent node")
 def replay_cmd(osop_path, allow_exec, dry_run, interactive, output_dir,
-               continue_on_error, yes, timeout, max_cost):
+               continue_on_error, yes, timeout, reference_log, no_agent,
+               max_budget_per_node, agent_max_turns, allowed_tools,
+               agent_timeout):
     """Execute a .osop and stream a fresh .osoplog as each node completes.
 
     The .osoplog is flushed on every node boundary, so a crash mid-run
-    still leaves a durable readable log. v1 supports `cli` and `human`
-    node types; `agent` and `api` nodes are recorded as SKIPPED with
-    a TODO marker.
+    still leaves a durable readable log.
 
-    For full executor (agent/api/cost limits/risk_assess/sub-agents),
+    v2 supports cli + human + **agent** node types. Agent nodes are
+    imitated via `claude -p` using the paired .osoplog as the source
+    of truth (auto-discovered as <osop-stem>.osoplog.yaml). api nodes
+    are still SKIPPED.
+
+    For full executor (api/cost limits/risk_assess/sub-agents),
     use `osop record`.
 
     Examples:
-      osop replay workflow.osop.yaml
       osop replay workflow.osop.yaml --allow-exec
-      osop replay workflow.osop.yaml --interactive --continue-on-error
-      osop replay workflow.osop.yaml -o runs/ --allow-exec
+      osop replay captured.osop.yaml --max-budget-per-node 0.50
+      osop replay captured.osop.yaml --no-agent              # v1 behavior
+      osop replay captured.osop.yaml --reference-log past.osoplog.yaml
     """
     from pathlib import Path as _P
 
     from osop.live_log import LiveLog
     from osop.replayer import detect_non_sequential_edges, execute_workflow
-
-    _ = max_cost  # reserved; v1 has no agent/api execution
+    from osop.imitation import find_reference_log
 
     # 1. Load + validate
     try:
@@ -490,9 +506,27 @@ def replay_cmd(osop_path, allow_exec, dry_run, interactive, output_dir,
     non_seq = detect_non_sequential_edges(edges)
     if non_seq:
         console.print(
-            f"[yellow]Warning:[/yellow] v1 collapses non-sequential edges to topological order: "
+            f"[yellow]Warning:[/yellow] v2 still collapses non-sequential edges to topological order: "
             f"{', '.join(non_seq)}. Use `osop record` for correct conditional/fallback/parallel semantics."
         )
+
+    # Reference log resolution + agent-mode warning
+    has_agent_nodes = any(
+        isinstance(n, dict) and n.get("type") == "agent"
+        for n in (workflow.get("nodes") or [])
+    )
+    resolved_ref_log: _P | None = None
+    if not no_agent and has_agent_nodes:
+        if reference_log:
+            resolved_ref_log = _P(reference_log)
+        else:
+            resolved_ref_log = find_reference_log(osop_path)
+        if resolved_ref_log is None:
+            console.print(
+                "[yellow]Warning:[/yellow] workflow has agent nodes but no paired "
+                ".osoplog was found. Agent steps will be SKIPPED. Pass "
+                "--reference-log <path> to override, or use --no-agent to silence."
+            )
 
     # 3. Open the live log
     out_dir = _P(output_dir) if output_dir else _P.cwd()
@@ -512,16 +546,26 @@ def replay_cmd(osop_path, allow_exec, dry_run, interactive, output_dir,
         return click.confirm("  Run it?", default=False)
 
     # 5. Pre-flight panel
+    agent_line = ""
+    if has_agent_nodes and not no_agent and resolved_ref_log:
+        agent_line = (
+            f"\n[dim]agent ref:[/dim] {resolved_ref_log}  "
+            f"[dim]budget/node:[/dim] ${max_budget_per_node:.2f}"
+        )
     console.print(Panel(
         f"[bold]{workflow.get('name', osop_path)}[/bold]\n"
         f"[dim]source:[/dim] {osop_path}\n"
         f"[dim]allow_exec:[/dim] {allow_exec}  "
         f"[dim]interactive:[/dim] {interactive}  "
-        f"[dim]continue_on_error:[/dim] {continue_on_error}\n"
+        f"[dim]continue_on_error:[/dim] {continue_on_error}"
+        f"{agent_line}\n"
         f"[dim]live log:[/dim] {log.path}",
         title="osop replay",
         border_style="blue",
     ))
+
+    # Parse comma-separated allow list
+    tools_list = [t.strip() for t in (allowed_tools or "").split(",") if t.strip()]
 
     # 6. Execute with per-node progress
     def _on_start(node: dict) -> None:
@@ -543,6 +587,14 @@ def replay_cmd(osop_path, allow_exec, dry_run, interactive, output_dir,
         cli_timeout_seconds=timeout,
         on_node_start=_on_start,
         on_node_done=_on_done,
+        osop_path=osop_path,
+        reference_log_path=reference_log,
+        skip_agents=no_agent,
+        agent_max_budget_usd=max_budget_per_node,
+        agent_max_turns=agent_max_turns,
+        agent_allowed_tools=tools_list,
+        agent_cwd=str(_P.cwd()),
+        agent_timeout_seconds=agent_timeout,
     )
 
     # 7. Finalize log + summary
