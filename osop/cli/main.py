@@ -31,17 +31,22 @@ def _find_mcp_tools():
 @click.group()
 @click.version_option(package_name="osop")
 def cli():
-    """OSOP — Validate, Record, Replay, Log, Diff, Optimize, View AI agent workflows.
+    """OSOP — Record what AI does. Repeat it for free.
 
-    Eight commands:
-      osop init      One-step setup for a project (CLAUDE.md + sessions/)
-      osop validate  Check .osop or .osoplog against schema
-      osop record    Execute workflow via full executor (write .osoplog at end)
-      osop replay    Execute workflow with live .osoplog streaming (cli + human)
-      osop log       Synthesize .osop + .osoplog from a Claude Code transcript
-      osop diff      Compare two .osop or .osoplog files
-      osop optimize  Synthesize better .osop from execution logs
-      osop view      Render .sop into standalone HTML
+    The two pillars (this is the product):
+      osop log       RECORD — synthesize .osop + .osoplog from a Claude Code transcript
+      osop replay    REPEAT — re-execute a captured .osop with a fresh AI agent
+
+    Supporting commands (make the loop reliable):
+      osop init      One-step project setup (sessions/ + CLAUDE.md)
+      osop validate  Schema check .osop or .osoplog
+      osop record    Full executor (cost limits, risk_assess) — for hand-authored .osop
+      osop diff      Side-by-side compare two .osop or two .osoplog files
+      osop optimize  Synthesize a better .osop from multiple execution logs
+      osop view      Render .sop into standalone HTML for browsing
+
+    The closed loop:
+      osop log → osop replay → more .osoplog → osop diff → osop optimize → osop replay …
     """
     pass
 
