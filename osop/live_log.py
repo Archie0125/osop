@@ -103,7 +103,7 @@ class LiveLog:
         self.started_at = _iso_now()
         self._started_ts = time.time()
         self._trigger = {"type": "manual", "actor": actor, "timestamp": self.started_at, "source": trigger}
-        self._runtime = {"agent": runtime_agent, "model": runtime_model}
+        self._runtime = {"agent": runtime_agent, "model": runtime_model, "source": "live-log"}
         self._node_records: list[dict] = []
         self._current_record: dict | None = None
         self._status = "RUNNING"
