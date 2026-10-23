@@ -164,6 +164,39 @@ def test_echoed_exit_code_is_shown_for_unclear_runs(tmp_path):
     assert "⚠️" in row and "exit=1" in row.split(" | ")[2]
 
 
+def _verdicts(tmp_path, command, output="5 passed", is_error=False) -> str:
+    return _section(_receipt(_session(tmp_path, [("Bash", {"command": command}, output, is_error)])), "Tests")
+
+
+def test_more_runner_forms_are_detected(tmp_path):
+    for command in ["php vendor/bin/phpunit", "timeout 300 python -m pytest", "sudo -E npm test",
+                    "env CI=1 go test ./...", "time cargo test", "python -m unittest discover",
+                    "python manage.py test", "make test", "tox -e py311"]:
+        assert "No test command ran." not in _verdicts(tmp_path, command), command
+
+
+def test_runner_failure_markers_beat_exit_zero(tmp_path):
+    for output in ["FAILURES!\nTests: 5, Failures: 2.", "--- FAIL: TestLogin (0.01s)", "ok 1 - a\nnot ok 2 - b"]:
+        row = _verdicts(tmp_path, "npm test", output).splitlines()[2]
+        assert "❌" in row, output
+
+
+def test_failed_chain_before_the_test_is_not_blamed_on_the_test(tmp_path):
+    row = _verdicts(tmp_path, "mklink /J vendor ../vendor && php artisan test", "Exit code 1\nAccess denied",
+                    True).splitlines()[2]
+    assert "❌" in row and "earlier" in row
+
+
+def test_control_characters_in_commands_are_removed(tmp_path):
+    receipt = _receipt(_session(tmp_path, [("Bash", {"command": "printf '\x1b[31mred'"}, "red", False)]))
+    assert "\x1b" not in receipt
+
+
+def test_non_string_file_path_does_not_crash(tmp_path):
+    receipt = _receipt(_session(tmp_path, [("Edit", {"file_path": ["a.py"], "old_string": "a"}, "ok", False)]))
+    assert "## Files changed" in receipt
+
+
 def test_goal_skips_local_command_and_meta_messages(tmp_path):
     path = tmp_path / "s.jsonl"
     path.write_text("\n".join(json.dumps(e) for e in [

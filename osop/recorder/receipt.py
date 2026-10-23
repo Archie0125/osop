@@ -12,19 +12,28 @@ from pathlib import Path
 from osop.recorder.transcript import ToolCall, _walk
 
 _TEST_RUNNER = (
-    r"pytest|py\.test|phpunit|pest|artisan\s+test|(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?test"
-    r"|go\s+test|cargo\s+test|vitest|jest|rspec|mvn\s+test|gradlew?\s+test|dotnet\s+test"
+    r"pytest|py\.test|unittest|phpunit|pest|artisan\s+test|manage\.py\s+test|tox"
+    r"|(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?test|make\s+test|go\s+test|cargo\s+test"
+    r"|vitest|jest|rspec|mvn\s+test|gradlew?\s+test|dotnet\s+test"
 )
-# A runner only counts at the start of a shell command, optionally behind VAR=x, a launcher
-# (php, npx, uv run, `<interpreter> -m`) or a path. Run on code with quotes and heredocs removed.
+# A runner only counts at the start of a shell command, optionally behind wrappers (sudo, timeout N),
+# VAR=x, a launcher (php, npx, python, `<interpreter> -m`) and a path. Run on code with quotes and
+# heredocs removed.
 _TEST_COMMAND = re.compile(
-    r"(?:^|[;&|(\n])\s*(?:[A-Za-z_]\w*=\S*\s+)*"
-    r"(?:(?:php|npx|bunx|uv\s+run|poetry\s+run)\s+|\S+\s+-m\s+|\S*/)?"
+    r"(?:^|[;&|(\n])\s*"
+    r"(?:(?:sudo(?:\s+-\S+)*|time|nice|env|timeout\s+\S+)\s+)*"
+    r"(?:[A-Za-z_]\w*=\S*\s+)*"
+    r"(?:(?:php|npx|bunx|uv\s+run|poetry\s+run|python[\d.]*(?:\.exe)?|py)\s+|\S+\s+-m\s+)?"
+    r"(?:\S*/)?"
     rf"(?:{_TEST_RUNNER})\b"
 )
 _HEREDOC = re.compile(r"<<-?\s*(['\"]?)(\w+)\1[^\n]*\n.*?\n\s*\2\b", re.DOTALL)
 _QUOTED = re.compile(r"'[^']*'|\"(?:\\.|[^\"\\])*\"")
-_FAILURE = re.compile(r"(?i:\b[1-9]\d*\s+(?:failed|failures?|errors?)\b)|\bFAILED\b")
+_FAILURE = re.compile(
+    r"(?i:\b[1-9]\d*\s+(?:failed|failures?|errors?)\b|\bfailures?:\s*[1-9])"
+    r"|\bFAILED\b|FAILURES!|--- FAIL|\bnot ok\b"
+)
+_CONTROL = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]|[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 _PASSED_COUNT = re.compile(r"\b\d+\s+passed\b", re.IGNORECASE)
 _ECHOED_EXIT = re.compile(r"\bexit(?:\s+code)?\s*[=:]\s*\d+", re.IGNORECASE)
 _EXIT_CODE = re.compile(r"^Exit code (\d+)")
@@ -98,6 +107,8 @@ def _test_verdict(tc: ToolCall, code: str, match: re.Match) -> str:
     if tc.status == "PENDING":
         return "⏳ no result recorded"
     if tc.is_error:
+        if code[:match.start()].strip():
+            return _failed(tc) + ": this test or an earlier step in the chain failed"
         return _failed(tc)
     if _masked(code, match.end()):
         # The reported exit status belongs to whatever ran last, and the output mixes commands.
@@ -139,7 +150,7 @@ def _files_table(calls: list) -> str:
     files: dict[str, dict[str, set[str] | dict[str, int]]] = {}
     for by, tc in calls:
         path = tc.input.get("file_path") or tc.input.get("notebook_path")
-        if tc.tool not in _FILE_TOOLS or tc.is_error or not path:
+        if tc.tool not in _FILE_TOOLS or tc.is_error or not isinstance(path, str) or not path:
             continue
         entry = files.setdefault(path, {"tools": {}, "by": set()})
         entry["tools"][tc.tool] = entry["tools"].get(tc.tool, 0) + 1
@@ -215,7 +226,7 @@ def _tail(text: str, limit: int = 90) -> str:
 
 
 def _cell(text: str, limit: int = 120) -> str:
-    text = re.sub(r"\s+", " ", str(text)).strip()
+    text = re.sub(r"\s+", " ", _CONTROL.sub("", str(text))).strip()
     if len(text) > limit:
         text = text[: limit - 1] + "…"
     return text.replace("|", "\\|")
@@ -227,7 +238,7 @@ def _code(text: str, limit: int = 120) -> str:
 
 
 def _quote(text: str) -> str:
-    text = text.strip() or "(no prompt recorded)"
+    text = _CONTROL.sub("", text).strip() or "(no prompt recorded)"
     if len(text) > 600:
         text = text[:599] + "…"
     return "\n".join(f"> {line}" if line else ">" for line in text.splitlines())
