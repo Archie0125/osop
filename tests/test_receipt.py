@@ -187,6 +187,43 @@ def test_failed_chain_before_the_test_is_not_blamed_on_the_test(tmp_path):
     assert "❌" in row and "earlier" in row
 
 
+def test_nose_and_prove_are_detected(tmp_path):
+    for command in ["nosetests -v", "prove -r t/"]:
+        assert "No test command ran." not in _verdicts(tmp_path, command), command
+
+
+def test_dotnet_maven_jest_failure_markers_beat_exit_zero(tmp_path):
+    for command, output in [("dotnet test", "Failed!  - Failed:     1, Passed:     9"),
+                            ("mvn test", "[INFO] BUILD FAILURE"),
+                            ("npm run test", "FAIL src/a.test.js\n  ● renders")]:
+        assert "❌" in _verdicts(tmp_path, command, output).splitlines()[2], command
+
+
+def test_commands_table_does_not_claim_success(tmp_path):
+    commands = _section(_receipt(_session(tmp_path, [("Bash", {"command": "npm test"}, "FAIL src/a", False)])),
+                        "Commands")
+    assert "✅" not in commands and "exit 0" in commands
+
+
+def test_trailing_newline_does_not_mask_the_test(tmp_path):
+    assert "✅" in _verdicts(tmp_path, "python -m pytest -x\n", "4 passed")
+
+
+def test_or_fallback_after_test_is_unclear_not_passed(tmp_path):
+    row = _verdicts(tmp_path, "pytest -q >/dev/null 2>&1 || echo recovered", "recovered").splitlines()[2]
+    assert "⚠️" in row and "✅" not in row
+
+
+def test_quoted_runner_path_is_detected(tmp_path):
+    assert "✅" in _verdicts(tmp_path, '"/tmp/my venv/bin/pytest" -q', "3 passed")
+
+
+def test_backticks_in_command_are_shown_literally(tmp_path):
+    commands = _section(_receipt(_session(tmp_path, [("Bash", {"command": "echo `pwd`"}, "/repo", False)])),
+                        "Commands")
+    assert "`` echo `pwd` ``" in commands
+
+
 def test_control_characters_in_commands_are_removed(tmp_path):
     receipt = _receipt(_session(tmp_path, [("Bash", {"command": "printf '\x1b[31mred'"}, "red", False)]))
     assert "\x1b" not in receipt

@@ -12,7 +12,7 @@ from pathlib import Path
 from osop.recorder.transcript import ToolCall, _walk
 
 _TEST_RUNNER = (
-    r"pytest|py\.test|unittest|phpunit|pest|artisan\s+test|manage\.py\s+test|tox"
+    r"pytest|py\.test|unittest|nosetests|phpunit|pest|artisan\s+test|manage\.py\s+test|tox|prove"
     r"|(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?test|make\s+test|go\s+test|cargo\s+test"
     r"|vitest|jest|rspec|mvn\s+test|gradlew?\s+test|dotnet\s+test"
 )
@@ -29,9 +29,11 @@ _TEST_COMMAND = re.compile(
 )
 _HEREDOC = re.compile(r"<<-?\s*(['\"]?)(\w+)\1[^\n]*\n.*?\n\s*\2\b", re.DOTALL)
 _QUOTED = re.compile(r"'[^']*'|\"(?:\\.|[^\"\\])*\"")
+# Runners that can be called as a quoted executable path: "/my venv/bin/pytest".
+_RUNNER_EXECUTABLE = re.compile(r"[\\/](pytest|py\.test|nosetests|phpunit|pest|tox|prove|vitest|jest|rspec)(?:\.exe)?$")
 _FAILURE = re.compile(
-    r"(?i:\b[1-9]\d*\s+(?:failed|failures?|errors?)\b|\bfailures?:\s*[1-9])"
-    r"|\bFAILED\b|FAILURES!|--- FAIL|\bnot ok\b"
+    r"(?i:\b[1-9]\d*\s+(?:failed|failures?|errors?)\b|\bfail(?:ed|ures?):\s*[1-9])"
+    r"|\bFAILED\b|\bFAIL\b|FAILURES!|BUILD FAILURE|\bnot ok\b"
 )
 _CONTROL = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]|[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 _PASSED_COUNT = re.compile(r"\b\d+\s+passed\b", re.IGNORECASE)
@@ -124,15 +126,20 @@ def _test_verdict(tc: ToolCall, code: str, match: re.Match) -> str:
 
 def _masked(code: str, test_end: int) -> bool:
     """Whether what follows the test command can hide its exit status."""
-    rest = code[test_end:]
-    if re.search(r"\|\|\s*(true|:)", rest) or ";" in rest or "\n" in rest:
+    rest = code[test_end:].rstrip()
+    # `|| anything` runs the fallback when the test fails, and its exit status wins.
+    if "||" in rest or ";" in rest or "\n" in rest:
         return True
     return bool(re.search(r"(?<!\|)\|(?!\|)", rest)) and "pipefail" not in code
 
 
 def _shell_code(command: str) -> str:
     """The command with heredoc bodies and quoted strings blanked out."""
-    return _QUOTED.sub('""', _HEREDOC.sub("<<heredoc", command))
+    def blank(m: re.Match) -> str:
+        runner = _RUNNER_EXECUTABLE.search(m.group(0)[1:-1])
+        return f"/{runner.group(1)}" if runner else '""'
+
+    return _QUOTED.sub(blank, _HEREDOC.sub("<<heredoc", command))
 
 
 def _commands_table(calls: list) -> str:
@@ -202,7 +209,8 @@ def _owner(node_id: str, labels: dict[str, str]) -> str:
 def _status(tc: ToolCall) -> str:
     if tc.status == "PENDING":
         return "⏳ no result recorded"
-    return _failed(tc) if tc.is_error else "✅ ok"
+    # No ✅ here: exit 0 is only what the tool reported; the Tests section judges test runs.
+    return _failed(tc) if tc.is_error else "exit 0"
 
 
 def _failed(tc: ToolCall) -> str:
@@ -234,7 +242,11 @@ def _cell(text: str, limit: int = 120) -> str:
 
 def _code(text: str, limit: int = 120) -> str:
     cell = _cell(text, limit)
-    return f"`{cell}`" if cell and "`" not in cell else cell
+    if not cell:
+        return cell
+    # A code span needs a fence longer than any backtick run inside it.
+    fence = "`" * (max((len(run) for run in re.findall(r"`+", cell)), default=0) + 1)
+    return f"{fence} {cell} {fence}" if len(fence) > 1 else f"`{cell}`"
 
 
 def _quote(text: str) -> str:
