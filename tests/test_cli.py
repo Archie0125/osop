@@ -55,10 +55,10 @@ class TestLogCommand:
         assert calls[0]["output"] == "3 passed in 0.12s"
         assert calls[0]["is_error"] is False
 
-    def test_writes_only_osoplog(self, runner, tmp_path):
+    def test_writes_no_osop_workflow_file(self, runner, tmp_path):
         result = runner.invoke(cli, ["log", str(MINIMAL_SESSION), "-o", str(tmp_path), "-d", "demo"])
         assert result.exit_code == 0
-        assert [p.name for p in tmp_path.iterdir()] == ["2026-10-23-demo.osoplog.yaml"]
+        assert not list(tmp_path.glob("*.osop.yaml"))
 
     def test_stdout_survives_non_utf8_console(self, tmp_path):
         # Windows consoles in zh-TW default to cp950, which cannot encode ✓.

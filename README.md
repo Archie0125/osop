@@ -17,21 +17,30 @@ whether it failed. No cooperation from the agent, no LLM, zero tokens.
 ```bash
 osop init                     # once per project: sessions/ + a CLAUDE.md section
 # ...run a Claude Code session, then:
-osop log -d fix-auth-bug      # → sessions/<date>-fix-auth-bug.osoplog.yaml
-osop log --stdout             # print instead of writing
+osop log -d fix-auth-bug      # → sessions/<date>-fix-auth-bug.receipt.md
+                              #   sessions/<date>-fix-auth-bug.osoplog.yaml
+osop log --stdout             # print the .osoplog instead of writing files
 ```
+
+## The receipt
+
+`receipt.md` is one page per session, sub-agents included:
+
+- **Goal**: the first prompt you typed
+- **Tests**: every test run and its result. `✅` / `❌` come from the exit status the tool reported. `⚠️ unclear` means a pipe or `;` after the test command hid that status (`pytest | tail` reports `tail`'s exit code)
+- **Commands**, **Files changed**, **Errors**, **Sub-agents**: what actually ran, and who ran it
 
 ## Commands
 
 | Command | What |
 |---------|------|
-| `osop log [session-id \| path]` | Build an `.osoplog` evidence record from a Claude Code transcript (latest session for the current directory by default) |
+| `osop log [session-id \| path]` | Write `receipt.md` + `.osoplog` from a Claude Code transcript (latest session for the current directory by default) |
 | `osop init` | One-step project setup |
 
 ## What's next
 
-A one-page receipt per session that flags claims made without evidence
-("tests pass" with no passing test run). Not built yet.
+Check the agent's final "done / passed / verified" claims against the
+receipt, and flag the ones with no evidence behind them.
 
 ## License
 
