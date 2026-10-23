@@ -1,11 +1,13 @@
 """Tests for osop.cli.main — CLI commands via Click's CliRunner."""
 import pytest
+import yaml
 from pathlib import Path
 from click.testing import CliRunner
 from osop.cli.main import cli
 
 
 FIXTURES = Path(__file__).parent / "fixtures"
+MINIMAL_SESSION = FIXTURES / "minimal_session.jsonl"
 
 
 @pytest.fixture
@@ -13,115 +15,49 @@ def runner():
     return CliRunner()
 
 
-# ---------------------------------------------------------------------------
-# Help and version
-# ---------------------------------------------------------------------------
-
 class TestCLIHelp:
-    def test_help(self, runner):
+    def test_help_lists_log_and_init(self, runner):
         result = runner.invoke(cli, ["--help"])
         assert result.exit_code == 0
-        assert "OSOP" in result.output
+        assert "log" in result.output
+        assert "init" in result.output
 
-    def test_validate_help(self, runner):
-        result = runner.invoke(cli, ["validate", "--help"])
-        assert result.exit_code == 0
-        assert "Validate" in result.output
-
-    def test_record_help(self, runner):
-        result = runner.invoke(cli, ["record", "--help"])
-        assert result.exit_code == 0
-        assert "record" in result.output.lower()
-
-    def test_diff_help(self, runner):
-        result = runner.invoke(cli, ["diff", "--help"])
-        assert result.exit_code == 0
-        assert "Compare" in result.output
-
-    def test_optimize_help(self, runner):
-        result = runner.invoke(cli, ["optimize", "--help"])
-        assert result.exit_code == 0
-        assert "optimize" in result.output.lower()
-
-    def test_unknown_command(self, runner):
-        result = runner.invoke(cli, ["nonexistent"])
+    @pytest.mark.parametrize("removed", ["replay", "record", "validate", "diff", "optimize", "view"])
+    def test_removed_commands_are_gone(self, runner, removed):
+        result = runner.invoke(cli, [removed])
         assert result.exit_code != 0
 
 
-# ---------------------------------------------------------------------------
-# validate command
-# ---------------------------------------------------------------------------
-
-class TestValidateCommand:
-    def test_validate_valid_file(self, runner):
-        result = runner.invoke(cli, ["validate", str(FIXTURES / "valid_minimal.osop")])
+class TestInitCommand:
+    def test_creates_sessions_and_claude_md(self, runner, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        result = runner.invoke(cli, ["init"])
         assert result.exit_code == 0
-        assert "Valid" in result.output
+        assert (tmp_path / "sessions").is_dir()
+        assert "## OSOP" in (tmp_path / "CLAUDE.md").read_text(encoding="utf-8")
 
-    def test_validate_valid_json(self, runner):
-        result = runner.invoke(cli, ["validate", str(FIXTURES / "valid_minimal.json")])
+    def test_second_run_does_not_duplicate_section(self, runner, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        runner.invoke(cli, ["init"])
+        runner.invoke(cli, ["init"])
+        assert (tmp_path / "CLAUDE.md").read_text(encoding="utf-8").count("## OSOP") == 1
+
+
+class TestLogCommand:
+    def test_stdout_contains_real_tool_call(self, runner):
+        result = runner.invoke(cli, ["log", str(MINIMAL_SESSION), "--stdout"])
         assert result.exit_code == 0
-        assert "Valid" in result.output
+        doc = yaml.safe_load(result.output)
+        calls = [tc for rec in doc["node_records"] for tc in rec.get("tool_calls", [])]
+        assert [tc["input"]["command"] for tc in calls] == ["python -m pytest -q"]
+        assert calls[0]["output"] == "3 passed in 0.12s"
+        assert calls[0]["is_error"] is False
 
-    def test_validate_missing_fields(self, runner):
-        result = runner.invoke(cli, ["validate", str(FIXTURES / "missing_fields.osop")])
-        assert result.exit_code == 1
-
-    def test_validate_nonexistent_file(self, runner):
-        result = runner.invoke(cli, ["validate", "/no/such/file.osop"])
-        assert result.exit_code == 1
-        assert "Error" in result.output
-
-    def test_validate_invalid_yaml(self, runner):
-        result = runner.invoke(cli, ["validate", str(FIXTURES / "invalid_yaml.osop")])
-        assert result.exit_code == 1
-
-    def test_validate_empty_file(self, runner):
-        result = runner.invoke(cli, ["validate", str(FIXTURES / "empty.osop")])
-        assert result.exit_code == 1
-
-    def test_validate_complex_workflow(self, runner):
-        result = runner.invoke(cli, ["validate", str(FIXTURES / "valid_complex.osop")])
+    def test_writes_only_osoplog(self, runner, tmp_path):
+        result = runner.invoke(cli, ["log", str(MINIMAL_SESSION), "-o", str(tmp_path), "-d", "demo"])
         assert result.exit_code == 0
-        assert "Valid" in result.output
+        assert [p.name for p in tmp_path.iterdir()] == ["2026-10-23-demo.osoplog.yaml"]
 
-    def test_validate_shows_node_count(self, runner):
-        result = runner.invoke(cli, ["validate", str(FIXTURES / "valid_minimal.osop")])
-        assert result.exit_code == 0
-        assert "nodes" in result.output.lower()
-
-    def test_validate_shows_workflow_name(self, runner):
-        result = runner.invoke(cli, ["validate", str(FIXTURES / "valid_minimal.osop")])
-        assert "Minimal Test Workflow" in result.output
-
-
-# ---------------------------------------------------------------------------
-# record command
-# ---------------------------------------------------------------------------
-
-class TestRecordCommand:
-    def test_record_nonexistent_file(self, runner):
-        result = runner.invoke(cli, ["record", "/no/such/file.osop"])
-        assert result.exit_code == 1
-        assert "Error" in result.output
-
-    def test_record_mock_mode(self, runner):
-        result = runner.invoke(cli, ["record", "--mock", str(FIXTURES / "valid_minimal.osop")])
-        assert result.exit_code == 0
-        assert "mock" in result.output.lower()
-
-    def test_record_strict_fails_without_mcp(self, runner):
-        result = runner.invoke(cli, ["record", str(FIXTURES / "valid_minimal.osop")])
-        # Should fail with error if osop-mcp not installed, or succeed if it is
-        # Either way, it shouldn't crash
-        assert result.exit_code in (0, 1)
-
-
-# ---------------------------------------------------------------------------
-# diff command
-# ---------------------------------------------------------------------------
-
-class TestDiffCommand:
-    def test_diff_nonexistent_file(self, runner):
-        result = runner.invoke(cli, ["diff", "/no/such/a.osop", "/no/such/b.osop"])
+    def test_missing_transcript_fails(self, runner):
+        result = runner.invoke(cli, ["log", "no-such-session-id"])
         assert result.exit_code != 0

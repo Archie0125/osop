@@ -1,0 +1,4 @@
+{"type":"user","timestamp":"2026-10-23T10:00:00.000Z","sessionId":"fixture-minimal","cwd":"/work/demo","message":{"role":"user","content":"run the tests"}}
+{"type":"assistant","timestamp":"2026-10-23T10:00:05.000Z","message":{"model":"claude-opus-5-5","content":[{"type":"text","text":"Running the test suite."},{"type":"tool_use","id":"toolu_1","name":"Bash","input":{"command":"python -m pytest -q"}}]}}
+{"type":"user","timestamp":"2026-10-23T10:00:09.000Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"3 passed in 0.12s","is_error":false}]}}
+{"type":"assistant","timestamp":"2026-10-23T10:00:10.000Z","message":{"model":"claude-opus-5-5","content":[{"type":"text","text":"All 3 tests pass."}]}}

@@ -1,18 +1,8 @@
-"""Cross-writer .osoplog schema conformance.
+""".osoplog schema conformance for the transcript recorder.
 
-Three writers produce .osoplog files in this codebase:
-
-1. LiveLog SDK (osop.live_log) — used directly by host apps and by `osop replay`.
-2. Transcript parser (osop.recorder.transcript) — used by `osop log` to
-   synthesize .osoplog from Claude Code session transcripts.
-3. Full executor (osop-mcp/tools/osoplog) — used by `osop record`. Not tested
-   here because it lives in a sibling package; it is covered by osop-mcp's
-   own test suite.
-
-This module pins the canonical contract: every writer in this repo MUST emit
-.osoplog files that satisfy the spec at osop-spec/schema/osoplog.schema.json
-AND set ``runtime.source`` to a canonical value so consumers can attribute
-each log to its origin.
+Pins the contract: `osop log` MUST emit .osoplog files that satisfy the spec
+at osop-spec/schema/osoplog.schema.json AND set ``runtime.source`` so
+consumers can attribute each log to its origin.
 """
 
 from __future__ import annotations
@@ -21,9 +11,7 @@ import json
 from pathlib import Path
 
 import pytest
-import yaml
 
-from osop import LiveLog
 from osop.recorder import parse_transcript, synthesize
 
 
@@ -31,6 +19,7 @@ SPEC_SCHEMA = (
     Path(__file__).resolve().parents[2]
     / "osop-spec" / "schema" / "osoplog.schema.json"
 )
+MINIMAL_SESSION = Path(__file__).parent / "fixtures" / "minimal_session.jsonl"
 
 
 def _load_schema():
@@ -47,8 +36,7 @@ def _validate_against_schema(doc: dict) -> list[str]:
     """
     errors: list[str] = []
     schema = _load_schema()
-    required = schema["required"]
-    for key in required:
+    for key in schema["required"]:
         if key not in doc:
             errors.append(f"missing required: {key}")
 
@@ -72,111 +60,15 @@ def _validate_against_schema(doc: dict) -> list[str]:
     return errors
 
 
-# ---------------------------------------------------------------------------
-# LiveLog (used by `osop replay` + direct host apps)
-# ---------------------------------------------------------------------------
-
-WORKFLOW_YAML = """\
-osop_version: "1.0"
-id: "schema-conformance-test"
-name: "Conformance test workflow"
-description: "Used by test_schema_conformance to drive LiveLog."
-nodes:
-  - id: "step-a"
-    type: "cli"
-    name: "A"
-    description: "first"
-edges: []
-"""
-
-
-@pytest.fixture
-def workflow_file(tmp_path):
-    p = tmp_path / "wf.osop.yaml"
-    p.write_text(WORKFLOW_YAML, encoding="utf-8")
-    return p
-
-
-def test_live_log_output_matches_canonical_schema(workflow_file, tmp_path):
-    log = LiveLog.start(workflow_file, output_dir=tmp_path / "logs")
-    with log.node("step-a") as ctx:
-        ctx.output(rows=1)
-    out_path = log.finish("COMPLETED")
-
-    doc = yaml.safe_load(out_path.read_text(encoding="utf-8"))
-    errs = _validate_against_schema(doc)
-    assert not errs, f"LiveLog output failed schema: {errs}"
-
-
-def test_live_log_sets_canonical_runtime_source(workflow_file, tmp_path):
-    log = LiveLog.start(workflow_file, output_dir=tmp_path / "logs")
-    with log.node("step-a"):
-        pass
-    out_path = log.finish("COMPLETED")
-    doc = yaml.safe_load(out_path.read_text(encoding="utf-8"))
-    assert doc["runtime"]["source"] == "live-log", \
-        f"LiveLog must set runtime.source='live-log', got {doc['runtime'].get('source')!r}"
-
-
-# ---------------------------------------------------------------------------
-# Transcript parser (used by `osop log`)
-# ---------------------------------------------------------------------------
-
-
-# Pick a real transcript checked in via the user's Claude Code project.
-# Skip if the user doesn't have one (e.g. fresh CI).
-_PROJECT_TRANSCRIPTS = (
-    Path.home() / ".claude" / "projects" / "C--Users-A7-Desktop-osop"
-)
-
-
-def _has_real_transcript() -> bool:
-    return _PROJECT_TRANSCRIPTS.exists() and any(
-        _PROJECT_TRANSCRIPTS.glob("*.jsonl")
-    )
-
-
-@pytest.mark.skipif(
-    not _has_real_transcript(),
-    reason="No Claude Code transcript available for transcript-parser conformance test",
-)
 def test_transcript_parser_output_matches_canonical_schema():
-    transcript = sorted(_PROJECT_TRANSCRIPTS.glob("*.jsonl"))[0]
-    parsed = parse_transcript(transcript)
-    if not parsed["nodes"]:
-        pytest.skip("transcript has no usable events")
-    osop_doc, log_doc = synthesize(parsed, short_desc="conformance-test")
-
+    log_doc = synthesize(parse_transcript(MINIMAL_SESSION), short_desc="conformance-test")
     errs = _validate_against_schema(log_doc)
     assert not errs, f"transcript-parser output failed schema: {errs}"
 
 
-@pytest.mark.skipif(
-    not _has_real_transcript(),
-    reason="No Claude Code transcript available",
-)
 def test_transcript_parser_sets_canonical_runtime_source():
-    transcript = sorted(_PROJECT_TRANSCRIPTS.glob("*.jsonl"))[0]
-    parsed = parse_transcript(transcript)
-    if not parsed["nodes"]:
-        pytest.skip("transcript has no usable events")
-    _, log_doc = synthesize(parsed, short_desc="conformance-test")
-
-    assert log_doc["runtime"]["source"] == "transcript-parser", \
-        f"transcript parser must set runtime.source='transcript-parser', got {log_doc['runtime'].get('source')!r}"
-
-
-# ---------------------------------------------------------------------------
-# BLOCKED status (new in canonical v1.0)
-# ---------------------------------------------------------------------------
-
-
-def test_node_status_enum_includes_blocked():
-    """Schema must allow BLOCKED as a node status — emitted by osop replay."""
-    schema = _load_schema()
-    statuses = schema["$defs"]["nodeRecord"]["properties"]["status"]["enum"]
-    assert "BLOCKED" in statuses, \
-        f"BLOCKED missing from node status enum; have {statuses}"
+    log_doc = synthesize(parse_transcript(MINIMAL_SESSION), short_desc="conformance-test")
+    assert log_doc["runtime"]["source"] == "transcript-parser"
 
 
 def test_tool_calls_field_defined():
