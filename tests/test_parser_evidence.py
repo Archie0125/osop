@@ -88,6 +88,36 @@ def test_unreadable_subagent_file_does_not_lose_the_session(tmp_path):
     assert "git status" in commands
 
 
+@pytest.mark.parametrize("bad", ["meta_not_utf8", "null_line", "directory"])
+def test_one_broken_subagent_file_does_not_lose_the_session(tmp_path, bad):
+    session = _jsonl(tmp_path / "s.jsonl", [
+        {"type": "user", "timestamp": "2026-10-23T10:00:00Z", "message": {"role": "user", "content": "go"}},
+        {"type": "assistant", "timestamp": "2026-10-23T10:00:01Z", "message": {"content": [
+            {"type": "tool_use", "id": "t1", "name": "Bash", "input": {"command": "git status"}}]}},
+    ])
+    subagents = tmp_path / "s" / "subagents"
+    subagents.mkdir(parents=True)
+    if bad == "meta_not_utf8":
+        (subagents / "agent-x.meta.json").write_bytes(b'{"toolUseId": "\xff"}')
+    elif bad == "null_line":
+        (subagents / "agent-x.jsonl").write_text('null\n[1, 2]\n{"type": "user"}\n', encoding="utf-8")
+    else:
+        (subagents / "agent-x.jsonl").mkdir()
+
+    commands = [tc.input.get("command") for tc in _calls(parse_transcript(session))]
+    assert "git status" in commands
+
+
+def test_undecodable_bytes_do_not_drop_the_rest_of_a_transcript(tmp_path):
+    session = tmp_path / "s.jsonl"
+    session.write_bytes(
+        b'{"type": "user", "timestamp": "2026-10-23T10:00:00Z", "message": {"role": "user", "content": "go \xff"}}\n'
+        b'{"type": "assistant", "timestamp": "2026-10-23T10:00:01Z", "message": {"content": '
+        b'[{"type": "tool_use", "id": "t1", "name": "Bash", "input": {"command": "git status"}}]}}\n')
+
+    assert [tc.input.get("command") for tc in _calls(parse_transcript(session))] == ["git status"]
+
+
 @pytest.mark.parametrize("cwd, slug", [
     (r"C:\Users\A7\Desktop\osop", "C--Users-A7-Desktop-osop"),
     (r"C:\Users\A7\Desktop\other_web\medirank", "C--Users-A7-Desktop-other-web-medirank"),

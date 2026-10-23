@@ -68,16 +68,22 @@ class PhaseNode:
 
 
 def _iter_jsonl(path: Path) -> Iterable[dict]:
-    """Yield each non-empty JSON line from a transcript file."""
-    with open(path, encoding="utf-8") as f:
+    """Yield each JSON object line from a transcript file.
+
+    Transcripts are external data: undecodable bytes are replaced rather than losing the file,
+    and lines that are not JSON objects (bad JSON, null, arrays) are skipped.
+    """
+    with open(path, encoding="utf-8", errors="replace") as f:
         for line in f:
             line = line.strip()
             if not line:
                 continue
             try:
-                yield json.loads(line)
+                event = json.loads(line)
             except json.JSONDecodeError:
                 continue
+            if isinstance(event, dict):
+                yield event
 
 
 def _extract_tool_uses(event: dict) -> list[dict]:
@@ -439,7 +445,7 @@ def _subagent_index(subagent_root: Path) -> dict[str, str]:
     for meta_path in subagent_root.glob("agent-*.meta.json"):
         try:
             meta = json.loads(meta_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
+        except (OSError, ValueError):  # unreadable, not UTF-8, or not JSON
             continue
         tool_use_id = meta.get("toolUseId") if isinstance(meta, dict) else None
         if isinstance(tool_use_id, str) and tool_use_id:
@@ -464,7 +470,7 @@ def _attach_subagent(parent: PhaseNode, subagent_root: Path, sub_id: str, prefix
         return
     try:
         sub = parse_transcript(sub_path, subagent_root=subagent_root)
-    except (ValueError, FileNotFoundError):
+    except (OSError, ValueError):  # one unreadable or empty sub-agent must not lose the session
         return
     # Every transcript numbers its phases from 1, so prefix the sub-agent's ids.
     _prefix_ids(sub["nodes"], prefix)
