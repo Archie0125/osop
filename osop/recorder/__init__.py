@@ -1,8 +1,7 @@
-"""Transcript-based OSOP log recorder.
+"""Transcript-based OSOP recorder.
 
-Parses Claude Code JSONL session transcripts and synthesizes accurate
-.osop workflow definitions and .osoplog execution records from real
-tool-call evidence (not LLM self-report).
+Parses Claude Code JSONL session transcripts and synthesizes .osoplog
+execution records from real tool-call evidence (not LLM self-report).
 """
 
 from osop.recorder.transcript import (

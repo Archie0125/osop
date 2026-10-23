@@ -5,14 +5,14 @@ build-backend = "hatchling.build"
 [project]
 name = "osop"
 version = "0.1.0"
-description = "OSOP — Open Standard Operating Procedures. CLI and runtime for defining, validating, and executing process workflows."
+description = "OSOP — what an AI agent actually did, recorded from its Claude Code transcript, not its own report."
 readme = "README.md"
 license = "Apache-2.0"
 requires-python = ">=3.11"
 authors = [
     { name = "OSOP Contributors", email = "hello@osop.ai" },
 ]
-keywords = ["workflow", "process", "automation", "sop", "osop"]
+keywords = ["claude-code", "ai-agent", "transcript", "audit", "osop"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
@@ -26,7 +26,6 @@ classifiers = [
 ]
 dependencies = [
     "pyyaml>=6.0",
-    "jsonschema>=4.20",
     "click>=8.1",
     "rich>=13.0",
 ]
@@ -35,10 +34,9 @@ dependencies = [
 osop = "osop.cli.main:cli"
 
 [project.urls]
-Homepage = "https://osop.ai"
-Documentation = "https://osop.ai/docs"
-Repository = "https://github.com/osop/osop"
-Issues = "https://github.com/osop/osop/issues"
+Homepage = "https://github.com/Archie0125/osop"
+Repository = "https://github.com/Archie0125/osop"
+Issues = "https://github.com/Archie0125/osop/issues"
 
 [project.optional-dependencies]
 dev = [

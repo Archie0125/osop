@@ -1,4 +1,4 @@
-"""Parse Claude Code JSONL session transcripts → OSOP workflow + log.
+"""Parse Claude Code JSONL session transcripts → .osoplog evidence record.
 
 The transcript at ~/.claude/projects/<slug>/<session-id>.jsonl is the
 canonical record of every tool call. We parse it rather than re-asking
@@ -584,63 +584,21 @@ def _truncate(text: str, n: int) -> str:
 # ---------------------------------------------------------------------------
 
 
-def synthesize(
-    parsed: dict,
-    short_desc: str = "session",
-    tags: list[str] | None = None,
-) -> tuple[dict, dict]:
-    """Turn a parsed transcript into (osop_dict, osoplog_dict)."""
-    tags = list(tags or [])
-    tags = ["claude-code"] + [t for t in tags if t and t != "claude-code"]
-
+def synthesize(parsed: dict, short_desc: str = "session") -> dict:
+    """Turn a parsed transcript into an osoplog dict."""
     nodes = parsed["nodes"]
 
     safe_desc = short_desc[len("session-"):] if short_desc.startswith("session-") else short_desc
     wf_id = f"session-{safe_desc}"
     run_id = str(uuid.uuid4())
 
-    # Flatten children for .osoplog (they keep parent_id)
+    # Flatten children (they keep parent_id)
     flat: list[PhaseNode] = []
     for n in nodes:
         flat.append(n)
         for child in n.children:
             flat.append(child)
 
-    # Build .osop workflow (nodes + edges)
-    osop_nodes = []
-    for n in flat:
-        entry = {
-            "id": n.node_id,
-            "type": n.node_type,
-            "name": n.name or n.node_id,
-            "description": n.description or (n.assistant_summary[:240] if n.assistant_summary else ""),
-        }
-        if n.subtype:
-            entry["subtype"] = n.subtype
-        if n.parent_id:
-            entry["parent"] = n.parent_id
-        osop_nodes.append(entry)
-
-    # Edges: sequential between top-level nodes
-    edges = []
-    for i in range(len(nodes) - 1):
-        edges.append({
-            "from": nodes[i].node_id,
-            "to": nodes[i + 1].node_id,
-            "mode": "sequential",
-        })
-
-    osop_doc = {
-        "osop_version": "1.0",
-        "id": wf_id,
-        "name": _derive_workflow_name(nodes, short_desc),
-        "description": _derive_workflow_description(nodes),
-        "tags": tags,
-        "nodes": osop_nodes,
-        "edges": edges,
-    }
-
-    # Build .osoplog
     started = parsed["started_at"]
     ended = parsed["ended_at"]
     node_records = []
@@ -705,7 +663,7 @@ def synthesize(
         "result_summary": _derive_result_summary(nodes),
     }
 
-    return osop_doc, osoplog_doc
+    return osoplog_doc
 
 
 def _trim_input(inp: dict, limit: int = 500) -> dict:
@@ -717,20 +675,6 @@ def _trim_input(inp: dict, limit: int = 500) -> dict:
         else:
             out[k] = v
     return out
-
-
-def _derive_workflow_name(nodes: list[PhaseNode], short_desc: str) -> str:
-    human_nodes = [n for n in nodes if n.node_type == "human" and n.user_prompt]
-    if human_nodes:
-        return _truncate(human_nodes[0].name or short_desc, 80)
-    return short_desc.replace("-", " ").title()
-
-
-def _derive_workflow_description(nodes: list[PhaseNode]) -> str:
-    human_nodes = [n for n in nodes if n.node_type == "human" and n.user_prompt]
-    if human_nodes:
-        return _truncate(human_nodes[0].user_prompt or "", 240)
-    return f"Session captured from Claude Code transcript ({len(nodes)} nodes)."
 
 
 def _derive_result_summary(nodes: list[PhaseNode]) -> str:
