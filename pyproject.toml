@@ -60,3 +60,5 @@ strict = true
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra -q"
+# Fail when our own code calls a deprecated API, before the dependency removes it.
+filterwarnings = ["error::DeprecationWarning:osop"]

@@ -1,3 +1,4 @@
+import sys
 from pathlib import Path
 
 import click
@@ -148,9 +149,8 @@ def log_cmd(source, short_desc, out_dir, stdout):
 
     if stdout:
         # Bytes, not text: a cp950/cp1252 console cannot encode every character a transcript holds.
-        out = click.get_binary_stream("stdout")
-        out.write(osoplog_yaml.encode("utf-8"))
-        out.flush()
+        sys.stdout.buffer.write(osoplog_yaml.encode("utf-8"))
+        sys.stdout.buffer.flush()
         return
 
     target_dir = Path(out_dir) if out_dir else (Path.cwd() / "sessions")
