@@ -291,8 +291,7 @@ def test_goal_skips_local_command_and_meta_messages(tmp_path):
     assert [n.user_prompt for n in parsed["nodes"] if n.node_type == "human"] == ["fix the login bug"]
 
 
-def test_log_command_writes_receipt_next_to_osoplog(tmp_path):
+def test_log_command_writes_the_receipt(tmp_path):
     result = CliRunner().invoke(cli, ["log", str(MINIMAL_SESSION), "-o", str(tmp_path), "-d", "demo"])
     assert result.exit_code == 0
-    assert sorted(p.name for p in tmp_path.iterdir()) == ["2026-10-23-demo.osoplog.yaml",
-                                                          "2026-10-23-demo.receipt.md"]
+    assert [p.name for p in tmp_path.iterdir()] == ["2026-10-23-demo.receipt.md"]

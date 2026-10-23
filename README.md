@@ -18,8 +18,7 @@ whether it failed. No cooperation from the agent, no LLM, zero tokens.
 osop init                     # once per project: sessions/ + a CLAUDE.md section
 # ...run a Claude Code session, then:
 osop log -d fix-auth-bug      # → sessions/<date>-fix-auth-bug.receipt.md
-                              #   sessions/<date>-fix-auth-bug.osoplog.yaml
-osop log --stdout             # print the .osoplog instead of writing files
+osop log --stdout             # print the receipt instead of writing a file
 ```
 
 ## The receipt
@@ -34,7 +33,7 @@ osop log --stdout             # print the .osoplog instead of writing files
 
 | Command | What |
 |---------|------|
-| `osop log [session-id \| path]` | Write `receipt.md` + `.osoplog` from a Claude Code transcript (latest session for the current directory by default) |
+| `osop log [session-id \| path]` | Write `receipt.md` from a Claude Code transcript (latest session for the current directory by default) |
 | `osop init` | One-step project setup |
 
 ## What's next

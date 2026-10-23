@@ -16,7 +16,7 @@ def cli():
     The record comes from the Claude Code session transcript, not from the
     agent's own report.
 
-      osop log    Build an .osoplog evidence record from a session transcript
+      osop log    Write a receipt of what the agent ran, from a session transcript
       osop init   One-step project setup (sessions/ + CLAUDE.md)
     """
     pass
@@ -32,7 +32,7 @@ _CLAUDE_MD_OSOP_SECTION = """\
 This project uses OSOP to record what AI agent sessions actually did, read
 straight from the Claude Code transcript (not the agent's own report).
 
-- `osop log [session-id]` — write `sessions/<date>-<desc>.osoplog.yaml` from a session transcript
+- `osop log [session-id]` — write `sessions/<date>-<desc>.receipt.md` from a session transcript
 - `osop init` — this setup
 
 Run `osop log` after a multi-step task.
@@ -89,14 +89,12 @@ def init_cmd():
 @click.option("-o", "--out-dir", "out_dir", type=click.Path(), default=None,
               help="Output directory (default: ./sessions)")
 @click.option("--stdout", is_flag=True, default=False,
-              help="Print YAML to stdout instead of writing files")
+              help="Print the receipt to stdout instead of writing a file")
 def log_cmd(source, short_desc, out_dir, stdout):
-    """Build an .osoplog evidence record from a Claude Code session transcript.
+    """Write a receipt of what the agent actually did in a Claude Code session.
 
-    Reads the canonical JSONL transcript and records every tool call with
-    its real input, output, timing, and error flag — no LLM self-report.
-    Each user prompt becomes a `human` node; the agent work that follows
-    becomes one node per phase, with full per-call detail in `tool_calls[]`.
+    Reads the canonical JSONL transcript, sub-agents included, and builds the
+    receipt from real tool calls and their results: no LLM self-report.
 
     SOURCE may be:
       - A path to a transcript .jsonl
@@ -112,12 +110,7 @@ def log_cmd(source, short_desc, out_dir, stdout):
     from datetime import datetime as _dt
 
     from osop.recorder.receipt import render_receipt
-    from osop.recorder.transcript import (
-        parse_transcript,
-        resolve_transcript_path,
-        synthesize,
-        to_yaml,
-    )
+    from osop.recorder.transcript import parse_transcript, resolve_transcript_path
 
     try:
         path = resolve_transcript_path(source, cwd=Path.cwd())
@@ -145,34 +138,21 @@ def log_cmd(source, short_desc, out_dir, stdout):
     elif not short_desc.startswith(date_str):
         short_desc = f"{date_str}-{short_desc}"
 
-    osoplog_doc = synthesize(parsed, short_desc=short_desc)
-    osoplog_yaml = to_yaml(osoplog_doc)
+    receipt = render_receipt(parsed, source=path)
 
     if stdout:
         # Bytes, not text: a cp950/cp1252 console cannot encode every character a transcript holds.
-        sys.stdout.buffer.write(osoplog_yaml.encode("utf-8"))
+        sys.stdout.buffer.write(receipt.encode("utf-8"))
         sys.stdout.buffer.flush()
         return
 
     target_dir = Path(out_dir) if out_dir else (Path.cwd() / "sessions")
     target_dir.mkdir(parents=True, exist_ok=True)
-    log_path = target_dir / f"{short_desc}.osoplog.yaml"
-    log_path.write_text(osoplog_yaml, encoding="utf-8", newline="\n")
     receipt_path = target_dir / f"{short_desc}.receipt.md"
-    receipt_path.write_text(render_receipt(parsed, source=path), encoding="utf-8", newline="\n")
-
-    total_calls = sum(
-        len(rec.get("tool_calls", [])) for rec in osoplog_doc["node_records"]
-    )
+    receipt_path.write_text(receipt, encoding="utf-8", newline="\n")
 
     console.print(Panel(
-        f"[bold]{osoplog_doc['workflow_id']}[/bold]\n"
-        f"[dim]source:[/dim] {path}\n"
-        f"[dim]nodes:[/dim] {len(osoplog_doc['node_records'])}  "
-        f"[dim]tool calls:[/dim] {total_calls}  "
-        f"[dim]duration:[/dim] {osoplog_doc['duration_ms']}ms\n"
-        f"[green]{receipt_path}[/green]\n"
-        f"[green]{log_path}[/green]",
+        f"[dim]source:[/dim] {path}\n[green]{receipt_path}[/green]",
         title="osop log",
         border_style="green",
     ))
