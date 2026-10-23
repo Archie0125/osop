@@ -1,23 +1,20 @@
-"""Parse Claude Code JSONL session transcripts → .osoplog evidence record.
+"""Parse Claude Code JSONL session transcripts into phases of tool calls.
 
 The transcript at ~/.claude/projects/<slug>/<session-id>.jsonl is the
 canonical record of every tool call. We parse it rather than re-asking
 an LLM to "remember" what it did.
 
-Phase segmentation (Option B):
+Phase segmentation:
   - Each real user message starts a new "phase".
-  - All subsequent assistant turns + tool calls in that phase roll up
-    into one `agent` (or `cli` / `api` / `human`) node, with full tool
-    call detail preserved in `tool_calls[]` on the node record.
-  - Sub-agent invocations (Agent tool) get their own child nodes.
+  - The assistant turns and tool calls that follow roll up into one agent
+    phase, with full per-call detail in `tool_calls`.
+  - Sub-agent transcripts become child phases.
 """
 
 from __future__ import annotations
 
 import json
-import os
 import re
-import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -42,6 +39,7 @@ class ToolCall:
     output_summary: str
     is_error: bool
     sub_transcript_id: str | None = None  # for Agent tool dispatch
+    output: str = ""  # full result text; verdicts read this, never the truncated summary
 
 
 @dataclass
@@ -62,44 +60,6 @@ class PhaseNode:
     assistant_summary: str = ""
     children: list["PhaseNode"] = field(default_factory=list)
     parent_id: str | None = None
-
-
-# ---------------------------------------------------------------------------
-# Tool → node type mapping
-# ---------------------------------------------------------------------------
-
-
-# Tool name → (node_type, subtype)
-_TOOL_TYPE: dict[str, tuple[str, str]] = {
-    "Bash": ("cli", "script"),
-    "BashOutput": ("cli", "script"),
-    "KillShell": ("cli", "script"),
-    "Read": ("agent", "llm"),
-    "Write": ("agent", "llm"),
-    "Edit": ("agent", "llm"),
-    "Glob": ("agent", "llm"),
-    "Grep": ("agent", "llm"),
-    "NotebookEdit": ("agent", "llm"),
-    "WebFetch": ("api", "rest"),
-    "WebSearch": ("api", "rest"),
-    "Agent": ("agent", "explore"),
-    "Task": ("agent", "explore"),
-    "AskUserQuestion": ("human", "review"),
-    "TaskCreate": ("agent", "planner"),
-    "TaskUpdate": ("agent", "planner"),
-    "TaskList": ("agent", "planner"),
-    "TodoWrite": ("agent", "planner"),
-    "Skill": ("agent", "llm"),
-    "ToolSearch": ("agent", "llm"),
-    "ScheduleWakeup": ("agent", "planner"),
-    "CronCreate": ("agent", "planner"),
-    "EnterPlanMode": ("agent", "planner"),
-    "ExitPlanMode": ("agent", "planner"),
-}
-
-
-def _tool_type(tool: str) -> tuple[str, str]:
-    return _TOOL_TYPE.get(tool, ("agent", "llm"))
 
 
 # ---------------------------------------------------------------------------
@@ -193,8 +153,8 @@ def _ms_between(start: str, end: str | None) -> int:
         return 0
 
 
-def _summarize_output(content: Any, limit: int = 400) -> str:
-    """Compact one-line summary of a tool_result for node records."""
+def _output_text(content: Any) -> str:
+    """Full text of a tool_result, with terminal colour codes and binary noise removed."""
     if isinstance(content, str):
         text = content
     elif isinstance(content, list):
@@ -210,7 +170,11 @@ def _summarize_output(content: Any, limit: int = 400) -> str:
     else:
         text = str(content)
     text = re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", text)  # terminal colour codes
-    text = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", "", text)  # binary noise, e.g. crash dumps
+    return re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", "", text)  # binary noise, e.g. crash dumps
+
+
+def _summarize_output(text: str, limit: int = 400) -> str:
+    """Compact one-line summary of a tool result, for display only."""
     text = re.sub(r"\s+", " ", text).strip()
     if len(text) > limit:
         # Keep both ends: errors tend to come first, test summaries last.
@@ -225,11 +189,11 @@ def _summarize_output(content: Any, limit: int = 400) -> str:
 
 
 def _project_slug(cwd: Path) -> str:
-    """Claude Code's project-dir slug: forward/back slashes + colons → dashes."""
-    s = str(cwd).replace("\\", "-").replace("/", "-").replace(":", "")
-    # Collapse multiple dashes and trim
-    s = re.sub(r"-+", "-", s).strip("-")
-    return s
+    """Claude Code's project-dir name: every non-alphanumeric character becomes '-'.
+
+    C:\\Users\\A7\\Desktop\\osop → C--Users-A7-Desktop-osop; /work/team-a/app → -work-team-a-app.
+    """
+    return re.sub(r"[^A-Za-z0-9]", "-", str(cwd))
 
 
 def resolve_transcript_path(
@@ -260,15 +224,8 @@ def resolve_transcript_path(
         raise FileNotFoundError(f"No transcript found for: {arg}")
 
     # Auto-resolve: most recent transcript for cwd
-    slug = _project_slug(cwd)
-    proj_dir = Path.home() / ".claude" / "projects" / slug
-    if not proj_dir.exists():
-        # Fallback: any project dir ending with last path component
-        last = cwd.name
-        for p in (Path.home() / ".claude" / "projects").glob(f"*{last}"):
-            if p.is_dir():
-                proj_dir = p
-                break
+    # No guessing by name suffix: that can pick another project's transcript.
+    proj_dir = Path.home() / ".claude" / "projects" / _project_slug(cwd)
     if not proj_dir.exists():
         raise FileNotFoundError(
             f"No transcript directory under ~/.claude/projects matching {cwd}"
@@ -306,12 +263,9 @@ def parse_transcript(path: Path, subagent_root: Path | None = None) -> dict:
     if not events:
         raise ValueError(f"Transcript is empty: {path}")
 
+    is_top_level = subagent_root is None
     subagent_root = subagent_root or (path.parent / path.stem / "subagents")
     subagents = _subagent_index(subagent_root)
-
-    # Index tool_use → tool_result by id
-    tool_use_by_id: dict[str, tuple[str, dict]] = {}  # id → (timestamp, tool_use)
-    tool_result_by_id: dict[str, tuple[str, dict, bool]] = {}  # id → (ts, result, is_error)
 
     session_id = ""
     cwd = ""
@@ -331,22 +285,13 @@ def parse_transcript(path: Path, subagent_root: Path | None = None) -> dict:
         msg = ev.get("message") or {}
         if isinstance(msg, dict) and not model:
             model = msg.get("model", "") or model
-        for tu in _extract_tool_uses(ev):
-            tid = tu.get("id", "")
-            if tid:
-                tool_use_by_id[tid] = (ts, tu)
-        for tr in _extract_tool_results(ev):
-            tid = tr.get("tool_use_id", "")
-            if tid:
-                tool_result_by_id[tid] = (
-                    ts,
-                    tr,
-                    bool(tr.get("is_error")),
-                )
 
     # Walk events in order to build phase nodes
     phases: list[PhaseNode] = []
     current: PhaseNode | None = None
+    # Calls still waiting for a result, by tool_use id. A result can arrive after the user has
+    # already typed the next prompt, so results are matched across phases, not only the current one.
+    pending: dict[str, ToolCall] = {}
     phase_counter = 0
     agent_counter = 0
 
@@ -393,21 +338,17 @@ def parse_transcript(path: Path, subagent_root: Path | None = None) -> dict:
                     duration_ms=0,
                     status="COMPLETED",
                 )
-            # else: tool_result event — attach results to open tool calls
             else:
-                if current is None:
-                    continue
                 for tr in _extract_tool_results(ev):
-                    tid = tr.get("tool_use_id", "")
-                    for tc in current.tool_calls:
-                        # Match by id stored via Bash/tool_use detection below
-                        if tc.input.get("_id") == tid:
-                            tc.ended_at = ts
-                            tc.duration_ms = _ms_between(tc.started_at, ts)
-                            tc.output_summary = _summarize_output(tr.get("content"))
-                            tc.is_error = bool(tr.get("is_error"))
-                            tc.status = "FAILED" if tc.is_error else "COMPLETED"
-                            break
+                    tc = pending.pop(tr.get("tool_use_id", ""), None)
+                    if tc is None:
+                        continue
+                    tc.ended_at = ts
+                    tc.duration_ms = _ms_between(tc.started_at, ts)
+                    tc.output = _output_text(tr.get("content"))
+                    tc.output_summary = _summarize_output(tc.output)
+                    tc.is_error = bool(tr.get("is_error"))
+                    tc.status = "FAILED" if tc.is_error else "COMPLETED"
 
         elif ev_type == "assistant":
             if current is None:
@@ -451,6 +392,8 @@ def parse_transcript(path: Path, subagent_root: Path | None = None) -> dict:
                 if tool_name in ("Agent", "Task"):
                     tc.sub_transcript_id = subagents.get(tid)
                 current.tool_calls.append(tc)
+                if tid:
+                    pending[tid] = tc
 
         # attachment / permission-mode / system events: ignored for node graph
         else:
@@ -459,26 +402,19 @@ def parse_transcript(path: Path, subagent_root: Path | None = None) -> dict:
     # Close trailing phase
     _close(current, last_ts)
 
-    # Post-process: name + classify agent phases based on tool mix
-    for p in phases:
-        if p.node_type == "agent" and not p.name:
-            p.name, p.node_type, p.subtype = _classify_agent_phase(p)
-
     # Recursively parse sub-agents
     for p in phases:
         for tc in p.tool_calls:
             if tc.sub_transcript_id:
-                sub_path = subagent_root / f"agent-{tc.sub_transcript_id}.jsonl"
-                if sub_path.exists():
-                    try:
-                        sub = parse_transcript(sub_path, subagent_root=subagent_root)
-                        # Every transcript numbers its phases from 1, so prefix the sub-agent's ids.
-                        _prefix_ids(sub["nodes"], tc.sub_transcript_id)
-                        for child in sub["nodes"]:
-                            child.parent_id = p.node_id
-                            p.children.append(child)
-                    except (ValueError, FileNotFoundError):
-                        pass
+                _attach_subagent(p, subagent_root, tc.sub_transcript_id, tc.sub_transcript_id)
+
+    # Sub-agent transcripts no Agent call links to (no meta file, or a stale one) still hold evidence.
+    if is_top_level and phases:
+        linked = {tc.sub_transcript_id for n in _walk(phases) for tc in n.tool_calls if tc.sub_transcript_id}
+        for sub_path in sorted(subagent_root.glob("agent-*.jsonl")):
+            sub_id = sub_path.stem[len("agent-"):]
+            if sub_id not in linked:
+                _attach_subagent(phases[-1], subagent_root, sub_id, f"unlinked-{sub_id}")
 
     started = phases[0].started_at if phases else first_ts
     ended = phases[-1].ended_at if phases else last_ts
@@ -507,6 +443,21 @@ def _subagent_index(subagent_root: Path) -> dict[str, str]:
     return index
 
 
+def _attach_subagent(parent: PhaseNode, subagent_root: Path, sub_id: str, prefix: str) -> None:
+    sub_path = subagent_root / f"agent-{sub_id}.jsonl"
+    if not sub_path.exists():
+        return
+    try:
+        sub = parse_transcript(sub_path, subagent_root=subagent_root)
+    except (ValueError, FileNotFoundError):
+        return
+    # Every transcript numbers its phases from 1, so prefix the sub-agent's ids.
+    _prefix_ids(sub["nodes"], prefix)
+    for child in sub["nodes"]:
+        child.parent_id = parent.node_id
+        parent.children.append(child)
+
+
 def _prefix_ids(nodes: list[PhaseNode], prefix: str) -> None:
     for n in nodes:
         n.node_id = f"{prefix}.{n.node_id}"
@@ -522,7 +473,7 @@ def _walk(nodes: list[PhaseNode]) -> Iterable[PhaseNode]:
 
 
 # ---------------------------------------------------------------------------
-# Node naming / classification
+# Helpers
 # ---------------------------------------------------------------------------
 
 
@@ -531,216 +482,8 @@ def _derive_human_name(prompt: str) -> str:
     return _truncate(first, 60)
 
 
-def _classify_agent_phase(p: PhaseNode) -> tuple[str, str, str]:
-    """Pick name + type + subtype for an agent phase based on its tool mix."""
-    if not p.tool_calls:
-        # No tools: pure reasoning / text response
-        name = _truncate(_first_line(p.assistant_summary) or "Respond", 60)
-        return name, "agent", "llm"
-
-    # Count tools by category
-    counts: dict[str, int] = {}
-    for tc in p.tool_calls:
-        counts[tc.tool] = counts.get(tc.tool, 0) + 1
-
-    # Primary category wins
-    cli_count = sum(counts.get(t, 0) for t in ("Bash", "BashOutput", "KillShell"))
-    api_count = sum(counts.get(t, 0) for t in ("WebFetch", "WebSearch"))
-    human_count = counts.get("AskUserQuestion", 0)
-    agent_count = len(p.tool_calls) - cli_count - api_count - human_count
-
-    if human_count and human_count >= max(cli_count, api_count, agent_count):
-        return "Ask user", "human", "review"
-    if cli_count and cli_count >= max(agent_count, api_count):
-        name = _summarize_cli(p)
-        return name, "cli", "script"
-    if api_count and api_count >= max(agent_count, cli_count):
-        name = _summarize_api(p)
-        return name, "api", "rest"
-
-    # Default: agent work
-    name = _summarize_agent(p)
-    return name, "agent", "llm"
-
-
-def _summarize_cli(p: PhaseNode) -> str:
-    cmds = [tc.input.get("command", "") for tc in p.tool_calls if tc.tool == "Bash"]
-    if cmds:
-        verb = cmds[0].split()[0] if cmds[0] else "Run"
-        if len(cmds) == 1:
-            return _truncate(f"Run `{verb}`", 60)
-        return f"Run {len(cmds)} shell commands (e.g. {verb})"
-    return f"Shell work ({len(p.tool_calls)} calls)"
-
-
-def _summarize_api(p: PhaseNode) -> str:
-    urls = [tc.input.get("url", "") for tc in p.tool_calls if tc.tool == "WebFetch"]
-    queries = [tc.input.get("query", "") for tc in p.tool_calls if tc.tool == "WebSearch"]
-    if urls:
-        return _truncate(f"Fetch {urls[0]}", 60) if len(urls) == 1 else f"Fetch {len(urls)} URLs"
-    if queries:
-        return _truncate(f"Web search: {queries[0]}", 60)
-    return f"API calls ({len(p.tool_calls)})"
-
-
-def _summarize_agent(p: PhaseNode) -> str:
-    by_tool: dict[str, int] = {}
-    for tc in p.tool_calls:
-        by_tool[tc.tool] = by_tool.get(tc.tool, 0) + 1
-    parts = [f"{n}× {t}" for t, n in sorted(by_tool.items(), key=lambda x: -x[1])[:3]]
-    return _truncate(", ".join(parts) or "Agent work", 60)
-
-
-def _first_line(text: str) -> str:
-    for line in text.splitlines():
-        line = line.strip()
-        if line:
-            return line
-    return ""
-
-
 def _truncate(text: str, n: int) -> str:
     text = text.strip()
     if len(text) <= n:
         return text
     return text[: n - 1] + "…"
-
-
-# ---------------------------------------------------------------------------
-# Synthesis → .osop + .osoplog dicts
-# ---------------------------------------------------------------------------
-
-
-def synthesize(parsed: dict, short_desc: str = "session") -> dict:
-    """Turn a parsed transcript into an osoplog dict."""
-    nodes = parsed["nodes"]
-
-    safe_desc = short_desc[len("session-"):] if short_desc.startswith("session-") else short_desc
-    wf_id = f"session-{safe_desc}"
-    run_id = str(uuid.uuid4())
-
-    # Flatten all descendants (they keep parent_id)
-    flat = list(_walk(nodes))
-
-    started = parsed["started_at"]
-    ended = parsed["ended_at"]
-    node_records = []
-    overall_status = "COMPLETED"
-    for n in flat:
-        tool_calls_raw = []
-        for tc in n.tool_calls:
-            inp = {k: v for k, v in tc.input.items() if k != "_id"}
-            tool_calls_raw.append({
-                "tool": tc.tool,
-                "started_at": tc.started_at,
-                "ended_at": tc.ended_at or tc.started_at,
-                "duration_ms": tc.duration_ms,
-                "status": tc.status if tc.status != "PENDING" else "COMPLETED",
-                "input": _trim_input(inp),
-                "output": tc.output_summary,
-                "is_error": tc.is_error,
-            })
-        by_tool: dict[str, int] = {}
-        for tc in n.tool_calls:
-            by_tool[tc.tool] = by_tool.get(tc.tool, 0) + 1
-        tools_used = [{"tool": t, "calls": c} for t, c in sorted(by_tool.items(), key=lambda x: -x[1])]
-
-        rec = {
-            "node_id": n.node_id,
-            "node_type": n.node_type,
-            "attempt": 1,
-            "status": n.status,
-            "started_at": n.started_at,
-            "ended_at": n.ended_at,
-            "duration_ms": n.duration_ms,
-        }
-        if n.parent_id:
-            rec["parent_id"] = n.parent_id
-        if n.user_prompt:
-            rec["outputs"] = {"user_prompt": _truncate(n.user_prompt, 2000)}
-        elif n.assistant_summary:
-            rec["outputs"] = {"assistant_summary": _truncate(n.assistant_summary, 2000)}
-        if tools_used:
-            rec["tools_used"] = tools_used
-        if tool_calls_raw:
-            rec["tool_calls"] = tool_calls_raw
-        node_records.append(rec)
-        if n.status == "FAILED":
-            overall_status = "FAILED"
-
-    osoplog_doc = {
-        "osoplog_version": "1.0",
-        "run_id": run_id,
-        "workflow_id": wf_id,
-        "status": overall_status,
-        "started_at": started,
-        "ended_at": ended,
-        "duration_ms": parsed["duration_ms"],
-        "runtime": {
-            "agent": "claude-code",
-            "model": parsed.get("model") or "unknown",
-            "session_id": parsed.get("session_id", ""),
-            "source": "transcript-parser",
-        },
-        "node_records": node_records,
-        "result_summary": _derive_result_summary(nodes),
-    }
-
-    return osoplog_doc
-
-
-def _trim_input(inp: dict, limit: int = 500) -> dict:
-    """Trim large tool inputs so .osoplog stays readable."""
-    out: dict = {}
-    for k, v in inp.items():
-        if isinstance(v, str) and len(v) > limit:
-            out[k] = v[: limit - 1] + "…"
-        else:
-            out[k] = v
-    return out
-
-
-def _derive_result_summary(nodes: list[PhaseNode]) -> str:
-    if not nodes:
-        return "Empty session."
-    total = sum(len(n.tool_calls) for n in nodes)
-    phases = len([n for n in nodes if n.node_type != "human"])
-    humans = len([n for n in nodes if n.node_type == "human"])
-    failed = sum(1 for n in nodes if n.status == "FAILED")
-    summary = (
-        f"{humans} user turn(s), {phases} agent phase(s), {total} tool call(s)"
-    )
-    if failed:
-        summary += f", {failed} failed"
-    return summary + "."
-
-
-# ---------------------------------------------------------------------------
-# YAML rendering (pretty, stable key order)
-# ---------------------------------------------------------------------------
-
-
-def to_yaml(doc: dict) -> str:
-    """Render a dict as YAML with stable key order and readable formatting."""
-    try:
-        import yaml  # type: ignore
-    except ImportError as e:
-        raise RuntimeError("PyYAML is required. pip install pyyaml") from e
-
-    class _Dumper(yaml.SafeDumper):
-        pass
-
-    def _str_representer(dumper, data):
-        if "\n" in data or len(data) > 120:
-            return dumper.represent_scalar("tag:yaml.org,2002:str", data, style="|")
-        return dumper.represent_scalar("tag:yaml.org,2002:str", data)
-
-    _Dumper.add_representer(str, _str_representer)
-    return yaml.dump(
-        doc,
-        Dumper=_Dumper,
-        default_flow_style=False,
-        sort_keys=False,
-        allow_unicode=True,
-        width=100,
-    )

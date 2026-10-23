@@ -1,7 +1,7 @@
 """Transcript-based OSOP recorder.
 
-Parses Claude Code JSONL session transcripts and synthesizes .osoplog
-execution records from real tool-call evidence (not LLM self-report).
+Parses Claude Code JSONL session transcripts into phases of tool calls with
+their real results (not LLM self-report), and renders a receipt from them.
 """
 
 from osop.recorder.transcript import (
@@ -9,7 +9,6 @@ from osop.recorder.transcript import (
     ToolCall,
     parse_transcript,
     resolve_transcript_path,
-    synthesize,
 )
 
 __all__ = [
@@ -17,5 +16,4 @@ __all__ = [
     "ToolCall",
     "parse_transcript",
     "resolve_transcript_path",
-    "synthesize",
 ]

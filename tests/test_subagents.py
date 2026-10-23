@@ -9,7 +9,8 @@ Claude Code stores each sub-agent next to the session transcript:
 import json
 from pathlib import Path
 
-from osop.recorder import parse_transcript, synthesize
+from osop.recorder import parse_transcript
+from osop.recorder.transcript import _walk
 
 
 def _jsonl(path: Path, events: list[dict]) -> None:
@@ -49,23 +50,22 @@ def _session_with_one_subagent(root: Path) -> Path:
 
 
 def test_subagent_tool_calls_are_in_the_record(tmp_path):
-    log = synthesize(parse_transcript(_session_with_one_subagent(tmp_path)))
+    nodes = list(_walk(parse_transcript(_session_with_one_subagent(tmp_path))["nodes"]))
 
-    child_records = [r for r in log["node_records"] if r.get("parent_id")]
-    calls = [tc for r in child_records for tc in r.get("tool_calls", [])]
-    assert [tc["input"]["command"] for tc in calls] == ["python -m pytest -q"]
-    assert calls[0]["is_error"] is True
+    calls = [tc for n in nodes if n.parent_id for tc in n.tool_calls]
+    assert [tc.input["command"] for tc in calls] == ["python -m pytest -q"]
+    assert calls[0].is_error is True
 
 
 def test_node_ids_are_unique_and_parents_exist(tmp_path):
-    log = synthesize(parse_transcript(_session_with_one_subagent(tmp_path)))
+    nodes = list(_walk(parse_transcript(_session_with_one_subagent(tmp_path))["nodes"]))
 
-    ids = [r["node_id"] for r in log["node_records"]]
+    ids = [n.node_id for n in nodes]
     assert len(ids) == len(set(ids))
-    for r in log["node_records"]:
-        if r.get("parent_id"):
-            assert r["parent_id"] in ids
-            assert r["parent_id"] != r["node_id"]
+    for n in nodes:
+        if n.parent_id:
+            assert n.parent_id in ids
+            assert n.parent_id != n.node_id
 
 
 def test_nested_subagent_work_is_recorded(tmp_path):
@@ -88,9 +88,7 @@ def test_nested_subagent_work_is_recorded(tmp_path):
              {"type": "tool_use", "id": "toolu_nested_bash", "name": "Bash", "input": {"command": "git log -1"}}]}},
     ])
 
-    log = synthesize(parse_transcript(session))
-
-    commands = [tc["input"].get("command") for r in log["node_records"] for tc in r.get("tool_calls", [])]
+    commands = [tc.input.get("command") for n in _walk(parse_transcript(session)["nodes"]) for tc in n.tool_calls]
     assert "git log -1" in commands
 
 
