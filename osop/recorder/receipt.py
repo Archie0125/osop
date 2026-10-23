@@ -35,7 +35,7 @@ _FAILURE = re.compile(
     r"(?i:\b[1-9]\d*\s+(?:failed|failures?|errors?)\b|\bfail(?:ed|ures?):\s*[1-9])"
     r"|\bFAILED\b|--- FAIL|(?<![\w\[])FAIL\s+\S*[/\\.]|FAILURES!|BUILD FAILURE|\bnot ok\b"
 )
-_PIPEFAIL_ON = re.compile(r"\bset\s+-[a-z]*o\s+pipefail\b")
+_PIPEFAIL = re.compile(r"\bset\s+([-+])[a-z]*o\s+pipefail\b")
 _CONTROL = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]|[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 _PASSED_COUNT = re.compile(r"\b\d+\s+passed\b", re.IGNORECASE)
 _ECHOED_EXIT = re.compile(r"\bexit(?:\s+code)?\s*[=:]\s*\d+", re.IGNORECASE)
@@ -109,12 +109,12 @@ def _test_verdict(tc: ToolCall, code: str, match: re.Match) -> str:
     out = tc.output_summary
     if tc.status == "PENDING":
         return "⏳ no result recorded"
-    if tc.input.get("run_in_background"):
-        return "⏳ started in background; no exit status in the transcript"
     if tc.is_error:
         if code[:match.start()].strip():
             return _failed(tc) + ": this test or an earlier step in the chain failed"
         return _failed(tc)
+    if tc.input.get("run_in_background"):
+        return "⏳ started in background; no exit status in the transcript"
     if _masked(code, match.end()):
         # The reported exit status belongs to whatever ran last, and the output mixes commands.
         echoed = _ECHOED_EXIT.findall(out)
@@ -133,16 +133,19 @@ def _masked(code: str, test_end: int) -> bool:
     # `|| anything` runs the fallback when the test fails, and its exit status wins.
     if "||" in rest or ";" in rest or "\n" in rest:
         return True
-    return bool(re.search(r"(?<!\|)\|(?!\|)", rest)) and not _PIPEFAIL_ON.search(code)
+    # Only the last `set -o pipefail` / `set +o pipefail` before the test applies.
+    switches = _PIPEFAIL.findall(code[:test_end])
+    return bool(re.search(r"(?<!\|)\|(?!\|)", rest)) and not (switches and switches[-1] == "-")
 
 
 def _shell_code(command: str) -> str:
-    """The command with heredoc bodies and quoted strings blanked out."""
+    """The command with heredoc bodies, quoted strings and comments blanked out."""
     def blank(m: re.Match) -> str:
         runner = _RUNNER_EXECUTABLE.search(m.group(0)[1:-1])
         return f"/{runner.group(1)}" if runner else '""'
 
-    return _QUOTED.sub(blank, _HEREDOC.sub("<<heredoc", command))
+    code = _QUOTED.sub(blank, _HEREDOC.sub("<<heredoc", command))
+    return re.sub(r"(?m)(^|[\s;&|(])#[^\n]*", r"\1", code)
 
 
 def _commands_table(calls: list) -> str:
@@ -212,10 +215,12 @@ def _owner(node_id: str, labels: dict[str, str]) -> str:
 def _status(tc: ToolCall) -> str:
     if tc.status == "PENDING":
         return "⏳ no result recorded"
+    if tc.is_error:
+        return _failed(tc)
     if tc.input.get("run_in_background"):
         return "⏳ started in background"
     # No ✅ here: exit 0 is only what the tool reported; the Tests section judges test runs.
-    return _failed(tc) if tc.is_error else "exit 0"
+    return "exit 0"
 
 
 def _failed(tc: ToolCall) -> str:

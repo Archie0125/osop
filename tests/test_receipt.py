@@ -220,6 +220,21 @@ def test_disabled_pipefail_still_masks(tmp_path):
     assert "✅" in _verdicts(tmp_path, "set -euo pipefail\npytest -q 2>&1 | tee log", "3 passed")
 
 
+def test_pipefail_switched_off_again_still_masks(tmp_path):
+    assert "⚠️" in _verdicts(tmp_path, "set -o pipefail && set +o pipefail && pytest | cat", "")
+
+
+def test_commented_out_pipefail_does_not_count(tmp_path):
+    assert "⚠️" in _verdicts(tmp_path, "# set -o pipefail\npytest -q | grep passed", "2 passed")
+
+
+def test_background_launch_failure_is_a_failure(tmp_path):
+    receipt = _receipt(_session(tmp_path, [
+        ("Bash", {"command": "pytest", "run_in_background": True}, "Error: failed to start background command",
+         True)]))
+    assert "❌" in _section(receipt, "Tests") and "❌" in _section(receipt, "Commands")
+
+
 def test_background_run_has_no_result_yet(tmp_path):
     receipt = _receipt(_session(tmp_path, [
         ("Bash", {"command": "pytest", "run_in_background": True}, "Command running in background with ID: abc",
