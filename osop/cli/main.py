@@ -111,6 +111,7 @@ def log_cmd(source, short_desc, out_dir, stdout):
     """
     from datetime import datetime as _dt
 
+    from osop.recorder.receipt import render_receipt
     from osop.recorder.transcript import (
         parse_transcript,
         resolve_transcript_path,
@@ -157,6 +158,8 @@ def log_cmd(source, short_desc, out_dir, stdout):
     target_dir.mkdir(parents=True, exist_ok=True)
     log_path = target_dir / f"{short_desc}.osoplog.yaml"
     log_path.write_text(osoplog_yaml, encoding="utf-8", newline="\n")
+    receipt_path = target_dir / f"{short_desc}.receipt.md"
+    receipt_path.write_text(render_receipt(parsed, source=path), encoding="utf-8", newline="\n")
 
     total_calls = sum(
         len(rec.get("tool_calls", [])) for rec in osoplog_doc["node_records"]
@@ -168,6 +171,7 @@ def log_cmd(source, short_desc, out_dir, stdout):
         f"[dim]nodes:[/dim] {len(osoplog_doc['node_records'])}  "
         f"[dim]tool calls:[/dim] {total_calls}  "
         f"[dim]duration:[/dim] {osoplog_doc['duration_ms']}ms\n"
+        f"[green]{receipt_path}[/green]\n"
         f"[green]{log_path}[/green]",
         title="osop log",
         border_style="green",

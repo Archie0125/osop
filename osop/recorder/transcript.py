@@ -154,25 +154,32 @@ def _extract_assistant_text(event: dict) -> str:
 
 
 def _extract_user_prompt(event: dict) -> str | None:
-    """Return the user's real prompt text, or None if this is a tool_result event."""
+    """Return the text a human typed, or None for tool results and injected messages.
+
+    Claude Code marks typed prompts with origin.kind == "human". Slash-command
+    echoes, skill bodies (isMeta) and task notifications are not prompts.
+    """
+    origin = event.get("origin")
+    kind = origin.get("kind") if isinstance(origin, dict) else None
+    if event.get("isMeta") or (kind and kind != "human"):
+        return None
     msg = event.get("message") or {}
     content = msg.get("content")
     if isinstance(content, str):
-        return content.strip() or None
-    if not isinstance(content, list):
-        return None
-    # If any item is a tool_result, this is a tool-result-carrying user event, not a real prompt.
-    for c in content:
-        if isinstance(c, dict) and c.get("type") == "tool_result":
+        text = content.strip()
+    elif isinstance(content, list):
+        # If any item is a tool_result, this is a tool-result-carrying user event, not a real prompt.
+        if any(isinstance(c, dict) and c.get("type") == "tool_result" for c in content):
             return None
-    parts: list[str] = []
-    for c in content:
-        if isinstance(c, dict) and c.get("type") == "text":
-            parts.append(c.get("text", ""))
-        elif isinstance(c, str):
-            parts.append(c)
-    combined = "\n".join(p for p in parts if p).strip()
-    return combined or None
+        parts = [c.get("text", "") if isinstance(c, dict) and c.get("type") == "text" else c
+                 for c in content if isinstance(c, str) or (isinstance(c, dict) and c.get("type") == "text")]
+        text = "\n".join(p for p in parts if p).strip()
+    else:
+        return None
+    # Transcripts written before origin existed: recognise slash-command echoes by their tags.
+    if not text or (not kind and text.startswith(("<command-", "<local-command-"))):
+        return None
+    return text
 
 
 def _ms_between(start: str, end: str | None) -> int:
@@ -202,9 +209,13 @@ def _summarize_output(content: Any, limit: int = 400) -> str:
         text = ""
     else:
         text = str(content)
+    text = re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", text)  # terminal colour codes
+    text = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", "", text)  # binary noise, e.g. crash dumps
     text = re.sub(r"\s+", " ", text).strip()
     if len(text) > limit:
-        text = text[: limit - 1] + "…"
+        # Keep both ends: errors tend to come first, test summaries last.
+        half = (limit - 3) // 2
+        text = text[:half] + " … " + text[-half:]
     return text
 
 
