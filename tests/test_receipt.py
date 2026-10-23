@@ -1,6 +1,7 @@
 """receipt.md — one page of evidence per session, built from the transcript."""
 
 import json
+import re
 from pathlib import Path
 
 from click.testing import CliRunner
@@ -209,9 +210,32 @@ def test_trailing_newline_does_not_mask_the_test(tmp_path):
     assert "✅" in _verdicts(tmp_path, "python -m pytest -x\n", "4 passed")
 
 
+def test_fail_inside_a_test_name_is_not_a_failure(tmp_path):
+    row = _verdicts(tmp_path, "pytest -rA", "PASSED tests/test_status.py::test_status[FAIL] 1 passed").splitlines()[2]
+    assert "✅" in row
+
+
+def test_disabled_pipefail_still_masks(tmp_path):
+    assert "⚠️" in _verdicts(tmp_path, "set +o pipefail; pytest > /tmp/r | cat", "")
+    assert "✅" in _verdicts(tmp_path, "set -euo pipefail\npytest -q 2>&1 | tee log", "3 passed")
+
+
+def test_background_run_has_no_result_yet(tmp_path):
+    receipt = _receipt(_session(tmp_path, [
+        ("Bash", {"command": "pytest", "run_in_background": True}, "Command running in background with ID: abc",
+         False)]))
+    assert "✅" not in _section(receipt, "Tests") and "background" in _section(receipt, "Tests")
+    assert "background" in _section(receipt, "Commands")
+
+
+def _columns(row: str) -> int:
+    return len(re.findall(r"(?<!\\)\|", row))
+
+
 def test_or_fallback_after_test_is_unclear_not_passed(tmp_path):
-    row = _verdicts(tmp_path, "pytest -q >/dev/null 2>&1 || echo recovered", "recovered").splitlines()[2]
-    assert "⚠️" in row and "✅" not in row
+    lines = _verdicts(tmp_path, "pytest -q >/dev/null 2>&1 || echo recovered", "recovered").splitlines()
+    assert "⚠️" in lines[2] and "✅" not in lines[2]
+    assert _columns(lines[2]) == _columns(lines[0])
 
 
 def test_quoted_runner_path_is_detected(tmp_path):

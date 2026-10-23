@@ -33,8 +33,9 @@ _QUOTED = re.compile(r"'[^']*'|\"(?:\\.|[^\"\\])*\"")
 _RUNNER_EXECUTABLE = re.compile(r"[\\/](pytest|py\.test|nosetests|phpunit|pest|tox|prove|vitest|jest|rspec)(?:\.exe)?$")
 _FAILURE = re.compile(
     r"(?i:\b[1-9]\d*\s+(?:failed|failures?|errors?)\b|\bfail(?:ed|ures?):\s*[1-9])"
-    r"|\bFAILED\b|\bFAIL\b|FAILURES!|BUILD FAILURE|\bnot ok\b"
+    r"|\bFAILED\b|--- FAIL|(?<![\w\[])FAIL\s+\S*[/\\.]|FAILURES!|BUILD FAILURE|\bnot ok\b"
 )
+_PIPEFAIL_ON = re.compile(r"\bset\s+-[a-z]*o\s+pipefail\b")
 _CONTROL = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]|[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 _PASSED_COUNT = re.compile(r"\b\d+\s+passed\b", re.IGNORECASE)
 _ECHOED_EXIT = re.compile(r"\bexit(?:\s+code)?\s*[=:]\s*\d+", re.IGNORECASE)
@@ -108,6 +109,8 @@ def _test_verdict(tc: ToolCall, code: str, match: re.Match) -> str:
     out = tc.output_summary
     if tc.status == "PENDING":
         return "⏳ no result recorded"
+    if tc.input.get("run_in_background"):
+        return "⏳ started in background; no exit status in the transcript"
     if tc.is_error:
         if code[:match.start()].strip():
             return _failed(tc) + ": this test or an earlier step in the chain failed"
@@ -118,7 +121,7 @@ def _test_verdict(tc: ToolCall, code: str, match: re.Match) -> str:
         hint = (f"; output prints {echoed[-1]}" if echoed
                 else "; output mentions failures" if _FAILURE.search(out)
                 else "; output shows tests passing" if _PASSED_COUNT.search(out) else "")
-        return "⚠️ unclear: a pipe or `;` after the test hides its exit status" + hint
+        return "⚠️ unclear: a pipe, `;` or `\\|\\|` after the test hides its exit status" + hint
     if _FAILURE.search(out):
         return "❌ exit 0 but output reports failures"
     return "✅ passed" if _PASSED_COUNT.search(out) else "✅ exit 0, no pass/fail summary seen"
@@ -130,7 +133,7 @@ def _masked(code: str, test_end: int) -> bool:
     # `|| anything` runs the fallback when the test fails, and its exit status wins.
     if "||" in rest or ";" in rest or "\n" in rest:
         return True
-    return bool(re.search(r"(?<!\|)\|(?!\|)", rest)) and "pipefail" not in code
+    return bool(re.search(r"(?<!\|)\|(?!\|)", rest)) and not _PIPEFAIL_ON.search(code)
 
 
 def _shell_code(command: str) -> str:
@@ -209,6 +212,8 @@ def _owner(node_id: str, labels: dict[str, str]) -> str:
 def _status(tc: ToolCall) -> str:
     if tc.status == "PENDING":
         return "⏳ no result recorded"
+    if tc.input.get("run_in_background"):
+        return "⏳ started in background"
     # No ✅ here: exit 0 is only what the tool reported; the Tests section judges test runs.
     return _failed(tc) if tc.is_error else "exit 0"
 
