@@ -86,9 +86,15 @@ def _iter_jsonl(path: Path) -> Iterable[dict]:
                 yield event
 
 
+def _message(event: dict) -> dict:
+    """The event's message object, or {} when it is missing or not an object."""
+    msg = event.get("message")
+    return msg if isinstance(msg, dict) else {}
+
+
 def _extract_tool_uses(event: dict) -> list[dict]:
     """Pull tool_use blocks from an assistant event."""
-    msg = event.get("message") or {}
+    msg = _message(event)
     content = msg.get("content") or []
     if not isinstance(content, list):
         return []
@@ -97,7 +103,7 @@ def _extract_tool_uses(event: dict) -> list[dict]:
 
 def _extract_tool_results(event: dict) -> list[dict]:
     """Pull tool_result blocks from a user event."""
-    msg = event.get("message") or {}
+    msg = _message(event)
     content = msg.get("content") or []
     if not isinstance(content, list):
         return []
@@ -106,7 +112,7 @@ def _extract_tool_results(event: dict) -> list[dict]:
 
 def _extract_assistant_text(event: dict) -> str:
     """Concat text blocks from an assistant turn."""
-    msg = event.get("message") or {}
+    msg = _message(event)
     content = msg.get("content") or []
     if isinstance(content, str):
         return content
@@ -129,7 +135,7 @@ def _extract_user_prompt(event: dict) -> str | None:
     kind = origin.get("kind") if isinstance(origin, dict) else None
     if event.get("isMeta") or (kind and kind != "human"):
         return None
-    msg = event.get("message") or {}
+    msg = _message(event)
     content = msg.get("content")
     if isinstance(content, str):
         text = content.strip()
@@ -251,7 +257,7 @@ def resolve_transcript_path(
 # ---------------------------------------------------------------------------
 
 
-def parse_transcript(path: Path, subagent_root: Path | None = None) -> dict:
+def parse_transcript(path: Path, subagent_root: Path | None = None, _attached: set[str] | None = None) -> dict:
     """Parse a transcript into a structured session record.
 
     Returns:
@@ -272,6 +278,9 @@ def parse_transcript(path: Path, subagent_root: Path | None = None) -> dict:
     is_top_level = subagent_root is None
     subagent_root = subagent_root or (path.parent / path.stem / "subagents")
     subagents = _subagent_index(subagent_root)
+    # Sub-agent ids already attached anywhere in this session: a sub-agent is attached once,
+    # and a link cycle (a sub-agent spawning itself) cannot recurse.
+    attached = _attached if _attached is not None else set()
 
     session_id = ""
     cwd = ""
@@ -382,7 +391,8 @@ def parse_transcript(path: Path, subagent_root: Path | None = None) -> dict:
             for tu in _extract_tool_uses(ev):
                 tid = tu.get("id", "")
                 tool_name = tu.get("name", "unknown")
-                inp = dict(tu.get("input") or {})
+                raw_input = tu.get("input")
+                inp = dict(raw_input) if isinstance(raw_input, dict) else {}
                 inp["_id"] = tid
                 tc = ToolCall(
                     tool=tool_name,
@@ -412,7 +422,7 @@ def parse_transcript(path: Path, subagent_root: Path | None = None) -> dict:
     for p in phases:
         for tc in p.tool_calls:
             if tc.sub_transcript_id:
-                _attach_subagent(p, subagent_root, tc.sub_transcript_id, tc.sub_transcript_id)
+                _attach_subagent(p, subagent_root, tc.sub_transcript_id, tc.sub_transcript_id, attached)
 
     # Sub-agent transcripts no Agent call links to (no meta file, or a stale one) still hold evidence.
     # "Linked" means spawned by an Agent call in ANY transcript of this session, including orphans:
@@ -420,11 +430,11 @@ def parse_transcript(path: Path, subagent_root: Path | None = None) -> dict:
     if is_top_level and phases:
         sub_paths = sorted(subagent_root.glob("agent-*.jsonl"))
         spawn_ids = {tid for p in [path, *sub_paths] for tid in _agent_call_ids(p)}
-        linked = {subagents[tid] for tid in spawn_ids if tid in subagents}
-        for sub_path in sub_paths:
-            sub_id = sub_path.stem[len("agent-"):]
-            if sub_id not in linked:
-                _attach_subagent(phases[-1], subagent_root, sub_id, f"unlinked-{sub_id}")
+        spawned = {subagents[tid] for tid in spawn_ids if tid in subagents}
+        ids = [sub_path.stem[len("agent-"):] for sub_path in sub_paths]
+        # Roots first (nothing spawned them), so their children attach under them, not as orphans.
+        for sub_id in [i for i in ids if i not in spawned] + [i for i in ids if i in spawned]:
+            _attach_subagent(phases[-1], subagent_root, sub_id, f"unlinked-{sub_id}", attached)
 
     started = phases[0].started_at if phases else first_ts
     ended = phases[-1].ended_at if phases else last_ts
@@ -464,12 +474,14 @@ def _agent_call_ids(path: Path) -> set[str]:
         return set()
 
 
-def _attach_subagent(parent: PhaseNode, subagent_root: Path, sub_id: str, prefix: str) -> None:
+def _attach_subagent(parent: PhaseNode, subagent_root: Path, sub_id: str, prefix: str,
+                     attached: set[str]) -> None:
     sub_path = subagent_root / f"agent-{sub_id}.jsonl"
-    if not sub_path.exists():
+    if sub_id in attached or not sub_path.exists():
         return
+    attached.add(sub_id)  # before parsing, so a sub-agent that spawns itself stops here
     try:
-        sub = parse_transcript(sub_path, subagent_root=subagent_root)
+        sub = parse_transcript(sub_path, subagent_root=subagent_root, _attached=attached)
     except (OSError, ValueError):  # one unreadable or empty sub-agent must not lose the session
         return
     # Every transcript numbers its phases from 1, so prefix the sub-agent's ids.

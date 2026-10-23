@@ -108,6 +108,47 @@ def test_one_broken_subagent_file_does_not_lose_the_session(tmp_path, bad):
     assert "git status" in commands
 
 
+def _session_with_subagent_lines(tmp_path, sub_lines: list[dict], meta: dict | None = None) -> Path:
+    session = _jsonl(tmp_path / "s.jsonl", [
+        {"type": "user", "timestamp": "2026-10-23T10:00:00Z", "message": {"role": "user", "content": "go"}},
+        {"type": "assistant", "timestamp": "2026-10-23T10:00:01Z", "message": {"content": [
+            {"type": "tool_use", "id": "t1", "name": "Bash", "input": {"command": "git status"}}]}},
+    ])
+    subagents = tmp_path / "s" / "subagents"
+    subagents.mkdir(parents=True)
+    _jsonl(subagents / "agent-a.jsonl", sub_lines)
+    if meta is not None:
+        (subagents / "agent-a.meta.json").write_text(json.dumps(meta), encoding="utf-8")
+    return session
+
+
+def test_non_object_message_field_does_not_crash(tmp_path):
+    session = _session_with_subagent_lines(tmp_path, [{"type": "assistant", "message": "broken"},
+                                                      {"type": "user", "message": ["x"]}])
+    assert "git status" in [tc.input.get("command") for tc in _calls(parse_transcript(session))]
+
+
+def test_subagent_that_links_to_itself_does_not_recurse_forever(tmp_path):
+    session = _session_with_subagent_lines(tmp_path, [
+        {"type": "user", "timestamp": "2026-10-23T10:01:00Z", "message": {"role": "user", "content": "sub"}},
+        {"type": "assistant", "timestamp": "2026-10-23T10:01:01Z", "message": {"content": [
+            {"type": "tool_use", "id": "loop", "name": "Agent", "input": {}},
+            {"type": "tool_use", "id": "b1", "name": "Bash", "input": {"command": "make"}}]}},
+    ], meta={"toolUseId": "loop"})
+    commands = [tc.input.get("command") for tc in _calls(parse_transcript(session))]
+    assert "git status" in commands and commands.count("make") == 1
+
+
+def test_one_malformed_tool_input_keeps_the_rest_of_the_subagent(tmp_path):
+    session = _session_with_subagent_lines(tmp_path, [
+        {"type": "user", "timestamp": "2026-10-23T10:01:00Z", "message": {"role": "user", "content": "sub"}},
+        {"type": "assistant", "timestamp": "2026-10-23T10:01:01Z", "message": {"content": [
+            {"type": "tool_use", "id": "b1", "name": "Bash", "input": {"command": "git push"}},
+            {"type": "tool_use", "id": "bad", "name": "Bash", "input": "x"}]}},
+    ])
+    assert "git push" in [tc.input.get("command") for tc in _calls(parse_transcript(session))]
+
+
 def test_undecodable_bytes_do_not_drop_the_rest_of_a_transcript(tmp_path):
     session = tmp_path / "s.jsonl"
     session.write_bytes(
