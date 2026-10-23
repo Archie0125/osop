@@ -118,11 +118,8 @@ def _extract_assistant_text(event: dict) -> str:
         return content
     if not isinstance(content, list):
         return ""
-    parts: list[str] = []
-    for c in content:
-        if isinstance(c, dict) and c.get("type") == "text":
-            parts.append(c.get("text", ""))
-    return "\n".join(p for p in parts if p).strip()
+    parts = [c.get("text") for c in content if isinstance(c, dict) and c.get("type") == "text"]
+    return "\n".join(p for p in parts if isinstance(p, str) and p).strip()
 
 
 def _extract_user_prompt(event: dict) -> str | None:
@@ -143,9 +140,9 @@ def _extract_user_prompt(event: dict) -> str | None:
         # If any item is a tool_result, this is a tool-result-carrying user event, not a real prompt.
         if any(isinstance(c, dict) and c.get("type") == "tool_result" for c in content):
             return None
-        parts = [c.get("text", "") if isinstance(c, dict) and c.get("type") == "text" else c
+        parts = [c.get("text") if isinstance(c, dict) and c.get("type") == "text" else c
                  for c in content if isinstance(c, str) or (isinstance(c, dict) and c.get("type") == "text")]
-        text = "\n".join(p for p in parts if p).strip()
+        text = "\n".join(p for p in parts if isinstance(p, str) and p).strip()
     else:
         return None
     # Transcripts written before origin existed: recognise slash-command echoes by their tags.
@@ -172,10 +169,8 @@ def _output_text(content: Any) -> str:
     elif isinstance(content, list):
         parts = []
         for c in content:
-            if isinstance(c, dict):
-                parts.append(c.get("text", "") or c.get("content", ""))
-            else:
-                parts.append(str(c))
+            value = (c.get("text", "") or c.get("content", "")) if isinstance(c, dict) else c
+            parts.append(value if isinstance(value, str) else str(value))
         text = " ".join(p for p in parts if p)
     elif content is None:
         text = ""
@@ -257,7 +252,15 @@ def resolve_transcript_path(
 # ---------------------------------------------------------------------------
 
 
-def parse_transcript(path: Path, subagent_root: Path | None = None, _attached: set[str] | None = None) -> dict:
+@dataclass
+class _ParseState:
+    """Shared by one session's main transcript and all its sub-agent transcripts."""
+
+    attached: set[str] = field(default_factory=set)  # sub-agent ids already attached
+    skipped: list[tuple[str, str]] = field(default_factory=list)  # (file name, why it could not be read)
+
+
+def parse_transcript(path: Path, subagent_root: Path | None = None, _state: _ParseState | None = None) -> dict:
     """Parse a transcript into a structured session record.
 
     Returns:
@@ -278,9 +281,8 @@ def parse_transcript(path: Path, subagent_root: Path | None = None, _attached: s
     is_top_level = subagent_root is None
     subagent_root = subagent_root or (path.parent / path.stem / "subagents")
     subagents = _subagent_index(subagent_root)
-    # Sub-agent ids already attached anywhere in this session: a sub-agent is attached once,
-    # and a link cycle (a sub-agent spawning itself) cannot recurse.
-    attached = _attached if _attached is not None else set()
+    # A sub-agent is attached once per session, so a link cycle (a sub-agent spawning itself) cannot recurse.
+    state = _state or _ParseState()
 
     session_id = ""
     cwd = ""
@@ -422,7 +424,7 @@ def parse_transcript(path: Path, subagent_root: Path | None = None, _attached: s
     for p in phases:
         for tc in p.tool_calls:
             if tc.sub_transcript_id:
-                _attach_subagent(p, subagent_root, tc.sub_transcript_id, tc.sub_transcript_id, attached)
+                _attach_subagent(p, subagent_root, tc.sub_transcript_id, tc.sub_transcript_id, state)
 
     # Sub-agent transcripts no Agent call links to (no meta file, or a stale one) still hold evidence.
     # "Linked" means spawned by an Agent call in ANY transcript of this session, including orphans:
@@ -434,7 +436,7 @@ def parse_transcript(path: Path, subagent_root: Path | None = None, _attached: s
         ids = [sub_path.stem[len("agent-"):] for sub_path in sub_paths]
         # Roots first (nothing spawned them), so their children attach under them, not as orphans.
         for sub_id in [i for i in ids if i not in spawned] + [i for i in ids if i in spawned]:
-            _attach_subagent(phases[-1], subagent_root, sub_id, f"unlinked-{sub_id}", attached)
+            _attach_subagent(phases[-1], subagent_root, sub_id, f"unlinked-{sub_id}", state)
 
     started = phases[0].started_at if phases else first_ts
     ended = phases[-1].ended_at if phases else last_ts
@@ -446,6 +448,7 @@ def parse_transcript(path: Path, subagent_root: Path | None = None, _attached: s
         "ended_at": ended,
         "duration_ms": _ms_between(started, ended),
         "nodes": phases,
+        "skipped": state.skipped,
     }
 
 
@@ -475,14 +478,15 @@ def _agent_call_ids(path: Path) -> set[str]:
 
 
 def _attach_subagent(parent: PhaseNode, subagent_root: Path, sub_id: str, prefix: str,
-                     attached: set[str]) -> None:
+                     state: _ParseState) -> None:
     sub_path = subagent_root / f"agent-{sub_id}.jsonl"
-    if sub_id in attached or not sub_path.exists():
+    if sub_id in state.attached or not sub_path.exists():
         return
-    attached.add(sub_id)  # before parsing, so a sub-agent that spawns itself stops here
+    state.attached.add(sub_id)  # before parsing, so a sub-agent that spawns itself stops here
     try:
-        sub = parse_transcript(sub_path, subagent_root=subagent_root, _attached=attached)
-    except (OSError, ValueError):  # one unreadable or empty sub-agent must not lose the session
+        sub = parse_transcript(sub_path, subagent_root=subagent_root, _state=state)
+    except Exception as e:  # noqa: BLE001 — one malformed file must not lose the session; it is reported
+        state.skipped.append((sub_path.name, f"{type(e).__name__}: {e}"))
         return
     # Every transcript numbers its phases from 1, so prefix the sub-agent's ids.
     _prefix_ids(sub["nodes"], prefix)

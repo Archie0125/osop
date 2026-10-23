@@ -81,6 +81,11 @@ def _overview(parsed: dict, goal: str, calls: list, tests: list) -> str:
         ("Tool calls", f"{len(calls)} total, {failed} failed, {by_subagents} by sub-agents"),
         ("Tests", _tests_summary(tests)),
     ]
+    skipped = parsed.get("skipped") or []
+    if skipped:
+        # Missing evidence must be visible: "not read" is not "nothing happened".
+        names = "; ".join(f"{_code(name)} ({_cell(why, 60)})" for name, why in skipped)
+        rows.append(("Sub-agents not read", f"⚠️ {len(skipped)} could not be read, so their work is missing: {names}"))
     return f"# Receipt: {title}\n\n| | |\n|---|---|\n" + "\n".join(f"| {k} | {v} |" for k, v in rows)
 
 

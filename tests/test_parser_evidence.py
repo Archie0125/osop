@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from osop.recorder import parse_transcript
+from osop.recorder.receipt import render_receipt
 from osop.recorder.transcript import _project_slug, _walk, resolve_transcript_path
 
 
@@ -147,6 +148,29 @@ def test_one_malformed_tool_input_keeps_the_rest_of_the_subagent(tmp_path):
             {"type": "tool_use", "id": "bad", "name": "Bash", "input": "x"}]}},
     ])
     assert "git push" in [tc.input.get("command") for tc in _calls(parse_transcript(session))]
+
+
+def test_non_string_text_does_not_crash(tmp_path):
+    session = _jsonl(tmp_path / "s.jsonl", [
+        {"type": "user", "timestamp": "2026-10-23T10:00:00Z", "message": {"role": "user", "content": [
+            {"type": "text", "text": 7}, {"type": "text", "text": "go"}]}},
+        {"type": "assistant", "timestamp": "2026-10-23T10:00:01Z", "message": {"content": [
+            {"type": "text", "text": 123},
+            {"type": "tool_use", "id": "t1", "name": "Bash", "input": {"command": "git status"}}]}},
+        {"type": "user", "timestamp": "2026-10-23T10:00:02Z", "message": {"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": "t1", "content": [{"type": "text", "text": 5}]}]}},
+    ])
+    assert [tc.input.get("command") for tc in _calls(parse_transcript(session))] == ["git status"]
+
+
+def test_unreadable_subagent_is_reported_not_silently_dropped(tmp_path):
+    session = _session_with_subagent_lines(tmp_path, [{"type": "user", "message": {"content": "ok"}}])
+    (tmp_path / "s" / "subagents" / "agent-x.jsonl").mkdir()
+
+    parsed = parse_transcript(session)
+    assert [name for name, _ in parsed["skipped"]] == ["agent-x.jsonl"]
+    receipt = render_receipt(parsed, source=session)
+    assert "could not be read" in receipt and "agent-x.jsonl" in receipt
 
 
 def test_undecodable_bytes_do_not_drop_the_rest_of_a_transcript(tmp_path):
