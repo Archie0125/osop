@@ -147,7 +147,8 @@ def log_cmd(source, short_desc, out_dir, stdout):
     osoplog_yaml = to_yaml(osoplog_doc)
 
     if stdout:
-        click.echo(osoplog_yaml)
+        # Bytes, not text: a cp950/cp1252 console cannot encode every character a transcript holds.
+        click.get_binary_stream("stdout").write(osoplog_yaml.encode("utf-8"))
         return
 
     target_dir = Path(out_dir) if out_dir else (Path.cwd() / "sessions")

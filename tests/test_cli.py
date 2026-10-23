@@ -58,6 +58,17 @@ class TestLogCommand:
         assert result.exit_code == 0
         assert [p.name for p in tmp_path.iterdir()] == ["2026-10-23-demo.osoplog.yaml"]
 
+    def test_stdout_survives_non_utf8_console(self, tmp_path):
+        # Windows consoles in zh-TW default to cp950, which cannot encode ✓.
+        session = tmp_path / "session.jsonl"
+        session.write_text(MINIMAL_SESSION.read_text(encoding="utf-8").replace(
+            "3 passed in 0.12s", "✓ 3 passed，全部通過"), encoding="utf-8")
+        result = CliRunner(charset="cp950").invoke(cli, ["log", str(session), "--stdout"])
+        assert result.exit_code == 0, result.exception
+        doc = yaml.safe_load(result.stdout_bytes.decode("utf-8"))
+        calls = [tc for rec in doc["node_records"] for tc in rec.get("tool_calls", [])]
+        assert calls[0]["output"] == "✓ 3 passed，全部通過"
+
     def test_missing_transcript_fails(self, runner):
         result = runner.invoke(cli, ["log", "no-such-session-id"])
         assert result.exit_code != 0
