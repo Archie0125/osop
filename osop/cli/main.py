@@ -1,3 +1,4 @@
+import sys
 from pathlib import Path
 
 import click
@@ -147,13 +148,15 @@ def log_cmd(source, short_desc, out_dir, stdout):
     osoplog_yaml = to_yaml(osoplog_doc)
 
     if stdout:
-        click.echo(osoplog_yaml)
+        # Bytes, not text: a cp950/cp1252 console cannot encode every character a transcript holds.
+        sys.stdout.buffer.write(osoplog_yaml.encode("utf-8"))
+        sys.stdout.buffer.flush()
         return
 
     target_dir = Path(out_dir) if out_dir else (Path.cwd() / "sessions")
     target_dir.mkdir(parents=True, exist_ok=True)
     log_path = target_dir / f"{short_desc}.osoplog.yaml"
-    log_path.write_text(osoplog_yaml, encoding="utf-8")
+    log_path.write_text(osoplog_yaml, encoding="utf-8", newline="\n")
 
     total_calls = sum(
         len(rec.get("tool_calls", [])) for rec in osoplog_doc["node_records"]
