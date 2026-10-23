@@ -461,6 +461,8 @@ def parse_transcript(path: Path, subagent_root: Path | None = None) -> dict:
                 if sub_path.exists():
                     try:
                         sub = parse_transcript(sub_path, subagent_root=subagent_root)
+                        # Every transcript numbers its phases from 1, so prefix the sub-agent's ids.
+                        _prefix_ids(sub["nodes"], tc.sub_transcript_id)
                         for child in sub["nodes"]:
                             child.parent_id = p.node_id
                             p.children.append(child)
@@ -488,10 +490,24 @@ def _subagent_index(subagent_root: Path) -> dict[str, str]:
             meta = json.loads(meta_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             continue
-        tool_use_id = meta.get("toolUseId")
-        if tool_use_id:
+        tool_use_id = meta.get("toolUseId") if isinstance(meta, dict) else None
+        if isinstance(tool_use_id, str) and tool_use_id:
             index[tool_use_id] = meta_path.name[len("agent-"):-len(".meta.json")]
     return index
+
+
+def _prefix_ids(nodes: list[PhaseNode], prefix: str) -> None:
+    for n in nodes:
+        n.node_id = f"{prefix}.{n.node_id}"
+        if n.parent_id:
+            n.parent_id = f"{prefix}.{n.parent_id}"
+        _prefix_ids(n.children, prefix)
+
+
+def _walk(nodes: list[PhaseNode]) -> Iterable[PhaseNode]:
+    for n in nodes:
+        yield n
+        yield from _walk(n.children)
 
 
 # ---------------------------------------------------------------------------
@@ -592,12 +608,8 @@ def synthesize(parsed: dict, short_desc: str = "session") -> dict:
     wf_id = f"session-{safe_desc}"
     run_id = str(uuid.uuid4())
 
-    # Flatten children (they keep parent_id)
-    flat: list[PhaseNode] = []
-    for n in nodes:
-        flat.append(n)
-        for child in n.children:
-            flat.append(child)
+    # Flatten all descendants (they keep parent_id)
+    flat = list(_walk(nodes))
 
     started = parsed["started_at"]
     ended = parsed["ended_at"]
