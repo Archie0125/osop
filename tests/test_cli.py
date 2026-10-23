@@ -1,4 +1,6 @@
 """Tests for osop.cli.main — CLI commands via Click's CliRunner."""
+import re
+
 import pytest
 import yaml
 from pathlib import Path
@@ -68,6 +70,15 @@ class TestLogCommand:
         doc = yaml.safe_load(result.stdout_bytes.decode("utf-8"))
         calls = [tc for rec in doc["node_records"] for tc in rec.get("tool_calls", [])]
         assert calls[0]["output"] == "✓ 3 passed，全部通過"
+
+    def test_stdout_bytes_match_file_bytes(self, runner, tmp_path):
+        def without_run_id(data: bytes) -> bytes:
+            return re.sub(rb"run_id: \S+", b"run_id: X", data)
+
+        printed = runner.invoke(cli, ["log", str(MINIMAL_SESSION), "--stdout", "-d", "same"]).stdout_bytes
+        runner.invoke(cli, ["log", str(MINIMAL_SESSION), "-o", str(tmp_path), "-d", "same"])
+        written = (tmp_path / "2026-10-23-same.osoplog.yaml").read_bytes()
+        assert without_run_id(printed) == without_run_id(written)
 
     def test_missing_transcript_fails(self, runner):
         result = runner.invoke(cli, ["log", "no-such-session-id"])
