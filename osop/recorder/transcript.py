@@ -86,6 +86,11 @@ def _iter_jsonl(path: Path) -> Iterable[dict]:
                 yield event
 
 
+def _id(value: Any) -> str:
+    """A tool_use / tool_result id, or "" when it is not a string."""
+    return value if isinstance(value, str) else ""
+
+
 def _message(event: dict) -> dict:
     """The event's message object, or {} when it is missing or not an object."""
     msg = event.get("message")
@@ -357,7 +362,7 @@ def parse_transcript(path: Path, subagent_root: Path | None = None, _state: _Par
                 )
             else:
                 for tr in _extract_tool_results(ev):
-                    tc = pending.pop(tr.get("tool_use_id", ""), None)
+                    tc = pending.pop(_id(tr.get("tool_use_id")), None)
                     if tc is None:
                         continue
                     tc.ended_at = ts
@@ -391,7 +396,7 @@ def parse_transcript(path: Path, subagent_root: Path | None = None, _state: _Par
                 current.assistant_summary += text
             # Record tool calls
             for tu in _extract_tool_uses(ev):
-                tid = tu.get("id", "")
+                tid = _id(tu.get("id"))
                 tool_name = tu.get("name", "unknown")
                 raw_input = tu.get("input")
                 inp = dict(raw_input) if isinstance(raw_input, dict) else {}
@@ -470,7 +475,7 @@ def _agent_call_ids(path: Path) -> set[str]:
     """tool_use ids of the Agent / Task calls in a transcript; none if the file can't be read."""
     try:
         return {
-            tu.get("id", "") for ev in _iter_jsonl(path) for tu in _extract_tool_uses(ev)
+            _id(tu.get("id")) for ev in _iter_jsonl(path) for tu in _extract_tool_uses(ev)
             if tu.get("name") in ("Agent", "Task")
         }
     except (OSError, ValueError):  # UnicodeDecodeError is a ValueError
@@ -480,9 +485,13 @@ def _agent_call_ids(path: Path) -> set[str]:
 def _attach_subagent(parent: PhaseNode, subagent_root: Path, sub_id: str, prefix: str,
                      state: _ParseState) -> None:
     sub_path = subagent_root / f"agent-{sub_id}.jsonl"
-    if sub_id in state.attached or not sub_path.exists():
+    if sub_id in state.attached:
         return
     state.attached.add(sub_id)  # before parsing, so a sub-agent that spawns itself stops here
+    if not sub_path.exists():
+        # A meta file links an Agent call here, but its transcript is gone: say so.
+        state.skipped.append((sub_path.name, "transcript file missing"))
+        return
     try:
         sub = parse_transcript(sub_path, subagent_root=subagent_root, _state=state)
     except Exception as e:  # noqa: BLE001 — one malformed file must not lose the session; it is reported

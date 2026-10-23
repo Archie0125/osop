@@ -173,6 +173,27 @@ def test_unreadable_subagent_is_reported_not_silently_dropped(tmp_path):
     assert "could not be read" in receipt and "agent-x.jsonl" in receipt
 
 
+def test_linked_subagent_with_missing_transcript_is_reported(tmp_path):
+    session = _jsonl(tmp_path / "s.jsonl", [
+        {"type": "user", "timestamp": "2026-10-23T10:00:00Z", "message": {"role": "user", "content": "go"}},
+        {"type": "assistant", "timestamp": "2026-10-23T10:00:01Z", "message": {"content": [
+            {"type": "tool_use", "id": "toolu_1", "name": "Agent", "input": {"description": "check"}}]}},
+    ])
+    subagents = tmp_path / "s" / "subagents"
+    subagents.mkdir(parents=True)
+    (subagents / "agent-abc.meta.json").write_text(json.dumps({"toolUseId": "toolu_1"}), encoding="utf-8")
+
+    assert [name for name, _ in parse_transcript(session)["skipped"]] == ["agent-abc.jsonl"]
+
+
+def test_non_string_ids_do_not_abort(tmp_path):
+    session = _session_with_subagent_lines(tmp_path, [
+        {"type": "assistant", "message": {"content": [{"type": "tool_use", "name": "Agent", "id": []}]}},
+        {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": {}, "content": "x"}]}},
+    ])
+    assert "git status" in [tc.input.get("command") for tc in _calls(parse_transcript(session))]
+
+
 def test_undecodable_bytes_do_not_drop_the_rest_of_a_transcript(tmp_path):
     session = tmp_path / "s.jsonl"
     session.write_bytes(
