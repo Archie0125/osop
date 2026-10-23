@@ -295,7 +295,8 @@ def parse_transcript(path: Path, subagent_root: Path | None = None) -> dict:
     if not events:
         raise ValueError(f"Transcript is empty: {path}")
 
-    subagent_root = subagent_root or (path.parent / "subagents")
+    subagent_root = subagent_root or (path.parent / path.stem / "subagents")
+    subagents = _subagent_index(subagent_root)
 
     # Index tool_use → tool_result by id
     tool_use_by_id: dict[str, tuple[str, dict]] = {}  # id → (timestamp, tool_use)
@@ -437,9 +438,7 @@ def parse_transcript(path: Path, subagent_root: Path | None = None) -> dict:
                 )
                 # Sub-agent linkage (Agent / Task tool)
                 if tool_name in ("Agent", "Task"):
-                    sub_id = _find_sub_transcript_id(subagent_root, tid)
-                    if sub_id:
-                        tc.sub_transcript_id = sub_id
+                    tc.sub_transcript_id = subagents.get(tid)
                 current.tool_calls.append(tc)
 
         # attachment / permission-mode / system events: ignored for node graph
@@ -481,17 +480,18 @@ def parse_transcript(path: Path, subagent_root: Path | None = None) -> dict:
     }
 
 
-def _find_sub_transcript_id(subagent_root: Path, tool_use_id: str) -> str | None:
-    """Sub-agent transcripts are named agent-<id>.jsonl; no stable mapping
-    from tool_use_id exists, so we return None and let the caller fall back
-    to parsing all sub-transcripts if desired.
-
-    Future: if Claude Code adds a mapping, fill this in. For now, sub-agent
-    detail is left in the outer transcript (which records the full Agent
-    tool_result).
-    """
-    _ = (subagent_root, tool_use_id)
-    return None
+def _subagent_index(subagent_root: Path) -> dict[str, str]:
+    """Map Agent tool_use id → sub-agent id, from agent-<id>.meta.json files."""
+    index: dict[str, str] = {}
+    for meta_path in subagent_root.glob("agent-*.meta.json"):
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        tool_use_id = meta.get("toolUseId")
+        if tool_use_id:
+            index[tool_use_id] = meta_path.name[len("agent-"):-len(".meta.json")]
+    return index
 
 
 # ---------------------------------------------------------------------------
