@@ -50,6 +50,30 @@ def test_subagent_without_meta_is_still_recorded(tmp_path):
     assert "git push" in commands
 
 
+@pytest.mark.parametrize("orphan, child", [("a", "b"), ("z", "b")])
+def test_linked_child_of_an_unlinked_subagent_is_counted_once(tmp_path, orphan, child):
+    session = _jsonl(tmp_path / "s.jsonl", [
+        {"type": "user", "timestamp": "2026-10-23T10:00:00Z", "message": {"role": "user", "content": "go"}},
+    ])
+    subagents = tmp_path / "s" / "subagents"
+    subagents.mkdir(parents=True)
+    # The orphan has no meta file; it spawns `child`, which does have one.
+    _jsonl(subagents / f"agent-{orphan}.jsonl", [
+        {"type": "user", "timestamp": "2026-10-23T10:01:00Z", "message": {"role": "user", "content": "sub"}},
+        {"type": "assistant", "timestamp": "2026-10-23T10:01:01Z", "message": {"content": [
+            {"type": "tool_use", "id": "spawn", "name": "Agent", "input": {"description": "child"}}]}},
+    ])
+    (subagents / f"agent-{child}.meta.json").write_text(json.dumps({"toolUseId": "spawn"}), encoding="utf-8")
+    _jsonl(subagents / f"agent-{child}.jsonl", [
+        {"type": "user", "timestamp": "2026-10-23T10:02:00Z", "message": {"role": "user", "content": "do"}},
+        {"type": "assistant", "timestamp": "2026-10-23T10:02:01Z", "message": {"content": [
+            {"type": "tool_use", "id": "b1", "name": "Bash", "input": {"command": "make build"}}]}},
+    ])
+
+    commands = [tc.input.get("command") for tc in _calls(parse_transcript(session))]
+    assert commands.count("make build") == 1
+
+
 @pytest.mark.parametrize("cwd, slug", [
     (r"C:\Users\A7\Desktop\osop", "C--Users-A7-Desktop-osop"),
     (r"C:\Users\A7\Desktop\other_web\medirank", "C--Users-A7-Desktop-other-web-medirank"),

@@ -409,9 +409,13 @@ def parse_transcript(path: Path, subagent_root: Path | None = None) -> dict:
                 _attach_subagent(p, subagent_root, tc.sub_transcript_id, tc.sub_transcript_id)
 
     # Sub-agent transcripts no Agent call links to (no meta file, or a stale one) still hold evidence.
+    # "Linked" means spawned by an Agent call in ANY transcript of this session, including orphans:
+    # an orphan's own children get attached through the orphan and must not be added twice.
     if is_top_level and phases:
-        linked = {tc.sub_transcript_id for n in _walk(phases) for tc in n.tool_calls if tc.sub_transcript_id}
-        for sub_path in sorted(subagent_root.glob("agent-*.jsonl")):
+        sub_paths = sorted(subagent_root.glob("agent-*.jsonl"))
+        spawn_ids = {tid for p in [path, *sub_paths] for tid in _agent_call_ids(p)}
+        linked = {subagents[tid] for tid in spawn_ids if tid in subagents}
+        for sub_path in sub_paths:
             sub_id = sub_path.stem[len("agent-"):]
             if sub_id not in linked:
                 _attach_subagent(phases[-1], subagent_root, sub_id, f"unlinked-{sub_id}")
@@ -441,6 +445,14 @@ def _subagent_index(subagent_root: Path) -> dict[str, str]:
         if isinstance(tool_use_id, str) and tool_use_id:
             index[tool_use_id] = meta_path.name[len("agent-"):-len(".meta.json")]
     return index
+
+
+def _agent_call_ids(path: Path) -> set[str]:
+    """tool_use ids of the Agent / Task calls in a transcript."""
+    return {
+        tu.get("id", "") for ev in _iter_jsonl(path) for tu in _extract_tool_uses(ev)
+        if tu.get("name") in ("Agent", "Task")
+    }
 
 
 def _attach_subagent(parent: PhaseNode, subagent_root: Path, sub_id: str, prefix: str) -> None:
