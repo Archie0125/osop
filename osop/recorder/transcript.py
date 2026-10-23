@@ -448,11 +448,14 @@ def _subagent_index(subagent_root: Path) -> dict[str, str]:
 
 
 def _agent_call_ids(path: Path) -> set[str]:
-    """tool_use ids of the Agent / Task calls in a transcript."""
-    return {
-        tu.get("id", "") for ev in _iter_jsonl(path) for tu in _extract_tool_uses(ev)
-        if tu.get("name") in ("Agent", "Task")
-    }
+    """tool_use ids of the Agent / Task calls in a transcript; none if the file can't be read."""
+    try:
+        return {
+            tu.get("id", "") for ev in _iter_jsonl(path) for tu in _extract_tool_uses(ev)
+            if tu.get("name") in ("Agent", "Task")
+        }
+    except (OSError, ValueError):  # UnicodeDecodeError is a ValueError
+        return set()
 
 
 def _attach_subagent(parent: PhaseNode, subagent_root: Path, sub_id: str, prefix: str) -> None:

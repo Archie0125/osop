@@ -74,6 +74,20 @@ def test_linked_child_of_an_unlinked_subagent_is_counted_once(tmp_path, orphan, 
     assert commands.count("make build") == 1
 
 
+def test_unreadable_subagent_file_does_not_lose_the_session(tmp_path):
+    session = _jsonl(tmp_path / "s.jsonl", [
+        {"type": "user", "timestamp": "2026-10-23T10:00:00Z", "message": {"role": "user", "content": "go"}},
+        {"type": "assistant", "timestamp": "2026-10-23T10:00:01Z", "message": {"content": [
+            {"type": "tool_use", "id": "t1", "name": "Bash", "input": {"command": "git status"}}]}},
+    ])
+    subagents = tmp_path / "s" / "subagents"
+    subagents.mkdir(parents=True)
+    (subagents / "agent-bad.jsonl").write_bytes(b'{"type": "user"}\n\xff\xfe broken\n')
+
+    commands = [tc.input.get("command") for tc in _calls(parse_transcript(session))]
+    assert "git status" in commands
+
+
 @pytest.mark.parametrize("cwd, slug", [
     (r"C:\Users\A7\Desktop\osop", "C--Users-A7-Desktop-osop"),
     (r"C:\Users\A7\Desktop\other_web\medirank", "C--Users-A7-Desktop-other-web-medirank"),
