@@ -26,8 +26,9 @@ osop log --stdout             # print the receipt instead of writing a file
 `receipt.md` is one page per session, sub-agents included:
 
 - **Goal**: the first prompt you typed
-- **Tests**: every test run and its result. `✅` / `❌` come from the exit status the tool reported. `⚠️ unclear` means a pipe or `;` after the test command hid that status (`pytest | tail` reports `tail`'s exit code)
-- **Commands**, **Files changed**, **Errors**, **Sub-agents**: what actually ran, and who ran it
+- **Tests**: every test run and its result, read from the exit status the tool reported and the whole output. `🟡 probably passed` means the output shows tests passing and no failure, but a pipe, `;` or `&` after the test command hid its exit status (`pytest | tail` reports `tail`'s exit code). `⚠️ unclear` means the status was hidden and the output does not settle it
+- **Files changed**: files edited with Edit / MultiEdit / Write, plus shell commands that may have changed files (`>`, `tee`, `sed -i`, `mv`…). An edit with no result recorded is not counted
+- **Commands**, **Errors**, **Sub-agents**: what actually ran, and who ran it
 
 ## Commands
 

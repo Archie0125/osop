@@ -60,8 +60,8 @@ def test_failure_in_output_beats_exit_zero(tmp_path):
 
 def test_piped_test_command_is_flagged_as_masked(tmp_path):
     tests = _section(_receipt(_session(tmp_path, [
-        ("Bash", {"command": "python -m pytest -q | tail -3"}, "5 passed in 1.0s", False)])), "Tests")
-    assert "⚠️" in tests
+        ("Bash", {"command": "python -m pytest -q | tail -3"}, "collected 5 items", False)])), "Tests")
+    assert "⚠️" in tests and "✅" not in tests
 
 
 def test_no_test_command(tmp_path):
@@ -225,7 +225,8 @@ def test_pipefail_switched_off_again_still_masks(tmp_path):
 
 
 def test_commented_out_pipefail_does_not_count(tmp_path):
-    assert "⚠️" in _verdicts(tmp_path, "# set -o pipefail\npytest -q | grep passed", "2 passed")
+    row = _verdicts(tmp_path, "# set -o pipefail\npytest -q | grep passed", "2 passed").splitlines()[2]
+    assert "✅" not in row and "🟡" in row
 
 
 def test_background_launch_failure_is_a_failure(tmp_path):
@@ -295,3 +296,280 @@ def test_log_command_writes_the_receipt(tmp_path):
     result = CliRunner().invoke(cli, ["log", str(MINIMAL_SESSION), "-o", str(tmp_path), "-d", "demo"])
     assert result.exit_code == 0
     assert [p.name for p in tmp_path.iterdir()] == ["2026-10-23-demo.receipt.md"]
+
+
+# --- Verdicts that must not overstate the evidence ---------------------------------------------
+
+
+def test_background_ampersand_hides_the_exit_status(tmp_path):
+    for command in ["pytest -q &", "python -m pytest > log 2>&1 &", "nohup npm test &\nsleep 1"]:
+        row = _verdicts(tmp_path, command, "").splitlines()[2]
+        assert "⚠️" in row and "✅" not in row, command
+
+
+def test_stderr_redirect_is_not_a_background_run(tmp_path):
+    assert "✅" in _verdicts(tmp_path, "python -m pytest -q 2>&1", "3 passed")
+    assert "✅" in _verdicts(tmp_path, "pytest &> log", "")
+
+
+def test_probably_passed_when_a_pipe_hides_a_clean_run(tmp_path):
+    row = _verdicts(tmp_path, "python -m pytest -q 2>&1 | tail -3", "5 passed in 1.0s").splitlines()[2]
+    assert "🟡 probably passed" in row and "✅" not in row and "⚠️" not in row
+
+
+def test_probably_passed_is_counted_apart_from_passed(tmp_path):
+    receipt = _receipt(_session(tmp_path, [
+        ("Bash", {"command": "pytest -q | tail -3"}, "5 passed in 1.0s", False),
+        ("Bash", {"command": "pytest -q"}, "5 passed in 1.0s", False)]))
+    assert "2 runs: 1 passed, 1 probably passed" in receipt
+
+
+def test_failure_marker_or_echoed_exit_keeps_a_piped_run_unclear(tmp_path):
+    for output in ["1 failed, 4 passed in 1.0s", "5 passed in 1.0s\npytest exit=1"]:
+        row = _verdicts(tmp_path, "pytest -q | tail -3; echo pytest exit=$?", output).splitlines()[2]
+        assert "⚠️" in row and "🟡" not in row, output
+
+
+def test_verdict_reads_the_whole_output_not_a_summary(tmp_path):
+    # Two packages: the first fails in the middle of a long output, the last one passes, exit 0.
+    output = "." * 300 + "\nTests: 1 failed, 5 total\n" + "." * 300 + "\nTests: 10 passed, 10 total"
+    row = _verdicts(tmp_path, "npm test", output).splitlines()[2]
+    assert "❌" in row and "✅" not in row
+
+
+def test_pending_edit_is_not_a_changed_file(tmp_path):
+    path = tmp_path / "s.jsonl"
+    path.write_text("\n".join(json.dumps(e) for e in [
+        {"type": "user", "timestamp": "2026-10-23T10:00:00Z", "sessionId": "s",
+         "message": {"role": "user", "content": "do the task"}},
+        {"type": "assistant", "timestamp": "2026-10-23T10:00:01Z", "message": {"content": [
+            {"type": "tool_use", "id": "t0", "name": "Edit",
+             "input": {"file_path": "src/app.py", "old_string": "a", "new_string": "b"}}]}},
+    ]) + "\n", encoding="utf-8")
+    files = _section(_receipt(path), "Files changed")
+    assert "Edit ×1" not in files
+    assert "no result recorded" in files and "src/app.py" in files
+
+
+def test_multiedit_is_a_changed_file(tmp_path):
+    files = _section(_receipt(_session(tmp_path, [
+        ("MultiEdit", {"file_path": "src/app.py", "edits": [{"old_string": "a", "new_string": "b"}]}, "ok", False),
+    ])), "Files changed")
+    assert "src/app.py" in files and "MultiEdit ×1" in files
+
+
+def test_shell_commands_that_may_change_files_are_listed(tmp_path):
+    files = _section(_receipt(_session(tmp_path, [
+        ("Bash", {"command": "sed -i 's/a/b/' src/app.py"}, "", False),
+        ("Bash", {"command": "echo hi > notes.txt"}, "", False),
+        ("Bash", {"command": "cat a.log | tee -a b.log"}, "", False),
+        ("Bash", {"command": "mv old.py new.py"}, "", False),
+        ("Bash", {"command": "git status"}, "clean", False),
+        ("Bash", {"command": "python -m pytest -q 2>&1"}, "3 passed", False),
+        ("Bash", {"command": "cat big.log > /dev/null"}, "", False),
+        ("Bash", {"command": 'git commit -m "a > b"'}, "", False),
+    ])), "Files changed")
+    may = files.split("may have changed", 1)[1]
+    for command in ["sed -i", "echo hi > notes.txt", "tee -a b.log", "mv old.py new.py"]:
+        assert command in may, command
+    for command in ["git status", "pytest", "/dev/null", "git commit"]:
+        assert command not in may, command
+
+
+def test_test_inside_bash_c_is_detected(tmp_path):
+    assert "✅" in _verdicts(tmp_path, "bash -lc 'cd /repo && python -m pytest -q'", "3 passed")
+    assert "✅" in _verdicts(tmp_path, 'sh -c "npm test"', "Tests: 3 passed")
+    assert "🟡" in _verdicts(tmp_path, "bash -c 'pytest -q | tail -3'", "3 passed").splitlines()[2]
+    assert "🟡" in _verdicts(tmp_path, "bash -c 'pytest -q' | tail -3", "3 passed").splitlines()[2]
+
+
+# --- Round 2: independent verifier and Codex findings on PR #11 -------------------------------
+
+
+def test_inner_pipefail_does_not_protect_an_outer_pipe(tmp_path):
+    row = _verdicts(tmp_path, "bash -c 'set -o pipefail; pytest -q' | tail -1", "no tests ran in 0.01s").splitlines()[2]
+    assert "⚠️" in row and "✅" not in row
+    assert "✅" in _verdicts(tmp_path, "bash -c 'set -o pipefail; pytest -q | tee log'", "3 passed")
+
+
+def test_inner_comment_does_not_erase_the_outer_fallback(tmp_path):
+    row = _verdicts(tmp_path, "bash -c 'pytest -q # smoke tests' || true", "no tests ran in 0.01s").splitlines()[2]
+    assert "⚠️" in row and "✅" not in row
+
+
+def test_two_test_runs_in_one_call_are_not_probably_passed(tmp_path):
+    row = _verdicts(tmp_path, "pytest tests/unit -q >/dev/null 2>&1; pytest tests/smoke -q",
+                    "3 passed in 0.01s").splitlines()[2]
+    assert "⚠️" in row and "🟡" not in row and "2 test commands" in row
+    assert "✅" in _verdicts(tmp_path, "pytest tests/unit -q && pytest tests/smoke -q", "3 passed\n5 passed")
+
+
+def test_doubtful_output_is_not_probably_passed(tmp_path):
+    for output in [
+        "FAIL Required test coverage of 80% not reached. Total coverage: 50.00%\n5 passed in 1.0s",
+        "ERROR: Coverage failure: total of 75 is less than fail-under=90\n5 passed",
+        'Tests: 5 passed, 5 total\nJest: "global" coverage threshold for statements (80%) not met: 70%',
+        "Tests: 5 passed, 5 total\nnpm ERR! Test failed.",
+        "5 passed in 1s\nmake: *** [Makefile:3: test] Error 1",
+        "5 passed\nTraceback (most recent call last):\n  File x, line 1",
+    ]:
+        row = _verdicts(tmp_path, "pytest -q 2>&1 | tail -5", output).splitlines()[2]
+        assert "⚠️" in row and "🟡" not in row and "failures" in row, output
+
+
+def test_multiline_echoed_exit_keeps_one_table_row(tmp_path):
+    lines = _verdicts(tmp_path, "pytest -q >/dev/null 2>&1; printf 'pytest exit=\n%s\n' \"$?\"",
+                      "pytest exit=\n1\n").splitlines()
+    assert len(lines) == 3 and _columns(lines[2]) == _columns(lines[0])
+    assert "⚠️" in lines[2] and "exit= 1" in lines[2]
+
+
+def test_unquoted_and_later_bash_c_scripts_are_seen(tmp_path):
+    assert "✅" in _verdicts(tmp_path, "bash -c pytest", "3 passed")
+    assert "✅" in _verdicts(tmp_path, "bash -c true && bash -c 'pytest -q'", "3 passed")
+
+
+def test_pipe_with_stderr_is_a_pipe_not_a_background_run(tmp_path):
+    row = _verdicts(tmp_path, "pytest -q |& tee log", "3 passed").splitlines()[2]
+    assert "🟡" in row and "pipe" in row and "background" not in row
+
+
+def test_failed_inside_a_test_id_is_not_a_failure(tmp_path):
+    assert "✅" in _verdicts(tmp_path, "pytest -v", "test_x.py::test_state[FAILED] PASSED\n5 passed")
+
+
+def test_more_shell_writes_are_listed(tmp_path):
+    files = _section(_receipt(_session(tmp_path, [
+        ("Bash", {"command": "git reset --hard HEAD~1"}, "", False),
+        ("Bash", {"command": "git checkout ."}, "", False),
+        ("Bash", {"command": "perl -pi -e 's/a/b/' x.py"}, "", False),
+        ("Bash", {"command": "perl -Ilib t/basic.t"}, "ok", False),
+        ("Bash", {"command": "git checkout main"}, "", False),
+    ])), "Files changed")
+    may = files.split("may have changed", 1)[1]
+    for command in ["git reset --hard", "git checkout .", "perl -pi"]:
+        assert command in may, command
+    for command in ["perl -Ilib", "git checkout main"]:
+        assert command not in may, command
+
+
+# --- Round 3: nested shells, pipefail scope, chains that fail after the test ----------------------
+
+
+def test_nested_shell_c_is_detected(tmp_path):
+    assert "🟡" in _verdicts(tmp_path, "bash -c \"bash -c 'pytest | tail'\"", "3 passed").splitlines()[2]
+    assert "✅" in _verdicts(tmp_path, "bash -c 'sh -c \"pytest -q\"'", "3 passed")
+    assert "✅" in _verdicts(tmp_path, "timeout 300 bash -c 'pytest -q'", "3 passed")
+    row = _verdicts(tmp_path, "pytest tests/unit -q >/dev/null 2>&1; bash -c \"bash -c 'pytest tests/smoke -q'\"",
+                    "3 passed in 0.01s").splitlines()[2]
+    assert "⚠️" in row and "2 test commands" in row
+
+
+def test_pipefail_scope_follows_the_shell(tmp_path):
+    # A subshell inherits the option; a new shell (`bash -c`) does not; a closed group no longer applies.
+    assert "✅" in _verdicts(tmp_path, "set -o pipefail; ( pytest -q | tee log )", "3 passed")
+    assert "✅" in _verdicts(tmp_path, "set -o pipefail; bash -c 'ruff check .'; pytest -q | tee log", "3 passed")
+    for command in ["set -o pipefail; bash -c 'pytest -q | cat'",
+                    "(set -o pipefail; ruff check .) && (pytest -q | tail -1)",
+                    "bash -c 'set -o pipefail; ruff check .' && bash -c 'pytest -q | tail -1'",
+                    "( set -o pipefail ); ( pytest -q | tee log )",
+                    "bash -c 'set -o pipefail; pytest -q | cat' | cat"]:
+        row = _verdicts(tmp_path, command, "3 passed").splitlines()[2]
+        assert "🟡" in row and "✅" not in row, command
+
+
+def test_or_fallback_is_never_probably_passed(tmp_path):
+    row = _verdicts(tmp_path, "pytest -q || echo recovered", "5 passed\nrecovered").splitlines()[2]
+    assert "⚠️" in row and "🟡" not in row
+
+
+def test_failure_after_the_test_is_not_blamed_on_the_test(tmp_path):
+    row = _verdicts(tmp_path, "pytest -q && ruff check .",
+                    "Exit code 1\n5 passed in 0.01s\nF401 unused import", True).splitlines()[2]
+    assert "⚠️" in row and "❌" not in row and "later" in row
+    # "Found 1 error." is ruff's, but it reads like a test failure: the chain is ❌, and the blame stays open.
+    for output in ["Exit code 1\n5 passed in 0.01s\nF401 unused import\nFound 1 error.",
+                   "Exit code 1\n1 failed, 4 passed"]:
+        row = _verdicts(tmp_path, "pytest -q && ruff check .", output, True).splitlines()[2]
+        assert "❌" in row and "later" in row, output
+
+
+def test_internal_error_is_not_probably_passed(tmp_path):
+    for output in ["5 passed in 0.01s\nINTERNALERROR> RuntimeError: session cleanup failed",
+                   "5 passed\nRuntimeError: boom"]:
+        row = _verdicts(tmp_path, "pytest -q 2>&1 | cat", output).splitlines()[2]
+        assert "⚠️" in row and "🟡" not in row, output
+
+
+def test_backslash_before_a_pipe_is_shown_as_it_ran(tmp_path):
+    # cmark-gfm (GitHub) treats a pipe behind any backslash as escaped, so `\|` in a command is written
+    # `\\|`: the row stays one row and the command renders with its backslash, as it ran.
+    command = "pytest -q | grep 'passed" + chr(92) + "|failed'"
+    receipt = _receipt(_session(tmp_path, [("Bash", {"command": command}, "3 passed", False)]))
+    for title in ("Tests", "Commands"):
+        lines = _section(receipt, title).splitlines()
+        assert _columns(lines[2]) == _columns(lines[0]), title
+        assert "passed" + chr(92) * 2 + "|failed" in lines[2], title
+
+
+def test_unquoted_bash_c_word_stops_at_the_separator(tmp_path):
+    assert "✅" in _verdicts(tmp_path, "bash -c true; pytest -q", "3 passed")
+    assert "🟡" in _verdicts(tmp_path, "bash -c pytest| tail -1", "3 passed").splitlines()[2]
+
+
+def test_git_checkout_of_a_path_is_a_possible_write(tmp_path):
+    files = _section(_receipt(_session(tmp_path, [("Bash", {"command": "git checkout ./x.py"}, "", False)])),
+                     "Files changed")
+    assert "git checkout ./x.py" in files.split("may have changed", 1)[1]
+
+
+def test_interrupted_or_crashed_run_is_not_probably_passed(tmp_path):
+    for output in ["5 passed\n!!!!!!!!!!!! KeyboardInterrupt !!!!!!!!!!!!",
+                   "5 passed\nFatal Python error: Segmentation fault"]:
+        row = _verdicts(tmp_path, "pytest -q | cat", output).splitlines()[2]
+        assert "⚠️" in row and "🟡" not in row, output
+
+
+def test_shell_options_before_c_are_skipped(tmp_path):
+    assert "❌" in _verdicts(tmp_path, "bash -o pipefail -c 'pytest -q'", "Exit code 1\n1 failed", True)
+    # `-o pipefail` on the shell itself protects the pipes in its script.
+    assert "✅" in _verdicts(tmp_path, "bash --norc -o pipefail -c 'pytest -q | tee log'", "3 passed")
+    assert "🟡" in _verdicts(tmp_path, "bash --norc -c 'pytest -q | tee log'", "3 passed").splitlines()[2]
+
+
+def test_many_sibling_shell_scripts_are_all_unwrapped(tmp_path):
+    command = "; ".join(["bash -c 'true'"] * 6 + ["bash -c 'pytest -q'"])
+    assert "❌" in _verdicts(tmp_path, command, "Exit code 1\n1 failed", True)
+
+
+def test_combined_shell_flags_before_c_are_skipped(tmp_path):
+    assert "✅" in _verdicts(tmp_path, "bash -euo pipefail -c 'pytest -q | tee log'", "3 passed")
+    assert "❌" in _verdicts(tmp_path, "bash -euo pipefail -c 'pytest -q'", "Exit code 1\n1 failed", True)
+    assert "🟡" in _verdicts(tmp_path, "bash +o pipefail -c 'pytest -q | tee log'", "3 passed").splitlines()[2]
+    for command in ["bash -c -- 'pytest -q'", "bash -O extglob -c 'pytest -q'", "bash --rcfile x -c 'pytest -q'",
+                    "C:/Git/bin/bash.exe -c 'pytest -q'", "/usr/bin/bash -lc 'pytest -q'"]:
+        assert "✅" in _verdicts(tmp_path, command, "3 passed"), command
+
+
+def test_set_pipefail_before_the_test_is_not_an_earlier_step(tmp_path):
+    for command in ["bash -o pipefail -c 'pytest -q'", "set -o pipefail; pytest -q"]:
+        row = _verdicts(tmp_path, command, "Exit code 1\n1 failed", True).splitlines()[2]
+        assert "❌" in row and "earlier" not in row, command
+
+
+def test_env_assignment_and_syntax_check_shell(tmp_path):
+    assert "❌" in _verdicts(tmp_path, "env PYTHONPATH=. bash -c 'pytest -q'", "Exit code 1\n1 failed in 0.01s", True)
+    assert "✅" in _verdicts(tmp_path, "/bin/bash -c 'pytest -q'", "3 passed")
+    # `-n` checks syntax only: nothing ran, so there is no test run to report.
+    assert "No test command ran." in _verdicts(tmp_path, "bash -n -c 'pytest -q'", "")
+    assert "No test command ran." in _verdicts(tmp_path, "bash -nc 'pytest -q'", "")
+    assert "✅" in _verdicts(tmp_path, "bash -n -c 'true'; bash -c 'pytest -q'", "3 passed")
+
+
+def test_wrapper_options_are_not_the_shells(tmp_path):
+    for command in ["sudo -n bash -c 'pytest -q'", "sudo -u ci bash -c 'pytest -q'",
+                    "env -i PATH=/usr/bin bash -c 'pytest -q'", "nice -n 10 bash -c 'pytest -q'",
+                    "timeout -s KILL 60 bash -c 'pytest -q'"]:
+        assert "✅" in _verdicts(tmp_path, command, "3 passed"), command
+    row = _verdicts(tmp_path, "bash -o pipefail +o pipefail -c 'pytest -q | tee log'", "3 passed").splitlines()[2]
+    assert "🟡" in row and "✅" not in row
