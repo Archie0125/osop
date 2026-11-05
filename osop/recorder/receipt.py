@@ -52,12 +52,16 @@ _EXIT_CODE = re.compile(r"^Exit code (\d+)")
 # A lone `&` runs the command in the background: not `&&`, and not the `&` of `2>&1`, `<&0`, `|&` or `&>`.
 _BACKGROUND = re.compile(r"(?<![<>&|])&(?![&>])")
 # `bash -c '<script>'` (also sh, zsh, dash, ksh, by name or path): group 1 is what separates it from the
-# previous command, group 2 the shell's own options before `-c` (`-euo pipefail`, `-O extglob`, `--norc`, `-l`).
+# previous command, group 2 the shell's own options before `-c` (`-euo pipefail`, `-O extglob`, `--norc`, `-l`),
+# group 3 the flag cluster holding `c`. Wrappers (`sudo -n`, `env -i`, `nice -n 10`, `timeout -s KILL 60`) come first.
 _SHELL_C = re.compile(
-    r"(^|[;&|(\n])\s*(?:(?:sudo(?:\s+-\S+)*|env|nohup|time|timeout\s+\S+)\s+)*(?:[A-Za-z_]\w*=\S*\s+)*"
+    r"(^|[;&|(\n])\s*"
+    r"(?:(?:sudo(?:\s+-\S+(?:\s+[^-\s]\S*)?)*|env(?:\s+-\S+)*|nohup|time|nice(?:\s+-n\s+\S+)?"
+    r"|timeout(?:\s+-\S+\s+\S+)?\s+\S+)\s+)*"
+    r"(?:[A-Za-z_]\w*=\S*\s+)*"
     r"(?:\S*[\\/])?(?:ba|z|da|k)?sh(?:\.exe)?\s+"
     r"((?:[-+][A-Za-z]*[oO]\s+\S+\s+|--(?:rcfile|init-file)\s+\S+\s+|--[a-z-]+\s+|-[A-Za-z]*\s+)*)"
-    r"-[A-Za-z]*c\s+(?:--\s+)?"
+    r"(-[A-Za-z]*c)\s+(?:--\s+)?"
 )
 _COMMAND_START = r"(?:^|[;&|(\n])\s*(?:sudo\s+)?"
 # Shell commands whose text shows a file write. Only the operator or program is recognised, never the file.
@@ -234,7 +238,8 @@ def _unwrap_shell_c(command: str) -> str:
         m = _SHELL_C.search(command, pos)
         if not m:
             break
-        if re.search(r"\s-[A-Za-z]*n[A-Za-z]*(?:\s|$)", m.group(0)):
+        options = f"{m.group(2)} {m.group(3)}"
+        if re.search(r"(?:^|\s)-[A-Za-z]*n[A-Za-z]*(?:\s|$)", options):
             pos = m.end()  # `-n` checks the script's syntax and runs nothing: there is no test run to see
             continue
         quoted = _QUOTED.match(command, m.end())
@@ -250,7 +255,8 @@ def _unwrap_shell_c(command: str) -> str:
             inner, end = word.group(0), m.end() + word.end()
         # Nested shells are unwrapped first; then the script's own quotes and comments end with the script.
         inner = _unwrap_shell_c(inner)
-        if re.search(r"-[A-Za-z]*o\s+pipefail\b", m.group(2)):
+        pipefail = re.findall(r"(?:^|\s)([-+])[A-Za-z]*o\s+pipefail\b", options)
+        if pipefail and pipefail[-1] == "-":  # a later `+o pipefail` turns it off again
             inner = "set -o pipefail; " + inner
         head = f"{command[:m.end(1)]} {_NEW_SHELL}( {_shell_code(inner)} ) "
         command = head + command[end:]

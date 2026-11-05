@@ -564,3 +564,12 @@ def test_env_assignment_and_syntax_check_shell(tmp_path):
     assert "No test command ran." in _verdicts(tmp_path, "bash -n -c 'pytest -q'", "")
     assert "No test command ran." in _verdicts(tmp_path, "bash -nc 'pytest -q'", "")
     assert "✅" in _verdicts(tmp_path, "bash -n -c 'true'; bash -c 'pytest -q'", "3 passed")
+
+
+def test_wrapper_options_are_not_the_shells(tmp_path):
+    for command in ["sudo -n bash -c 'pytest -q'", "sudo -u ci bash -c 'pytest -q'",
+                    "env -i PATH=/usr/bin bash -c 'pytest -q'", "nice -n 10 bash -c 'pytest -q'",
+                    "timeout -s KILL 60 bash -c 'pytest -q'"]:
+        assert "✅" in _verdicts(tmp_path, command, "3 passed"), command
+    row = _verdicts(tmp_path, "bash -o pipefail +o pipefail -c 'pytest -q | tee log'", "3 passed").splitlines()[2]
+    assert "🟡" in row and "✅" not in row
