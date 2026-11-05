@@ -34,15 +34,22 @@ _QUOTED = re.compile(r"'[^']*'|\"(?:\\.|[^\"\\])*\"")
 _RUNNER_EXECUTABLE = re.compile(r"[\\/](pytest|py\.test|nosetests|phpunit|pest|tox|prove|vitest|jest|rspec)(?:\.exe)?$")
 _FAILURE = re.compile(
     r"(?i:\b[1-9]\d*\s+(?:failed|failures?|errors?)\b|\bfail(?:ed|ures?):\s*[1-9])"
-    r"|\bFAILED\b|--- FAIL|(?<![\w\[])FAIL\s+\S*[/\\.]|FAILURES!|BUILD FAILURE|\bnot ok\b"
+    r"|(?<![\w\[])FAILED\b|--- FAIL|(?<![\w\[])FAIL\s+\S*[/\\.]|FAILURES!|BUILD FAILURE|\bnot ok\b"
+)
+# Failure language that a "probably passed" output must not contain. Broader than _FAILURE and only used to
+# withhold 🟡 when the exit status is hidden; it never makes an exit-0 run ❌ on its own.
+_DOUBT = re.compile(
+    r"npm ERR!|make: \*\*\*|Traceback \(most recent call last\)|(?<![\w\[])FAIL(?![\w\]])|\bError \d+\b"
+    r"|\bException\b|\bpanic\b|\bsegfault\b|core dumped|\bfatal:"
+    r"|(?i:coverage (?:failure|threshold)|fail-under|not reached)"
 )
 _PIPEFAIL = re.compile(r"\bset\s+([-+])[a-z]*o\s+pipefail\b")
 _CONTROL = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]|[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 _PASSED_COUNT = re.compile(r"\b\d+\s+passed\b", re.IGNORECASE)
 _ECHOED_EXIT = re.compile(r"\bexit(?:\s+code)?\s*[=:]\s*\d+", re.IGNORECASE)
 _EXIT_CODE = re.compile(r"^Exit code (\d+)")
-# A lone `&` runs the command in the background: not `&&`, and not the `&` of `2>&1`, `<&0` or `&>`.
-_BACKGROUND = re.compile(r"(?<![<>&])&(?![&>])")
+# A lone `&` runs the command in the background: not `&&`, and not the `&` of `2>&1`, `<&0`, `|&` or `&>`.
+_BACKGROUND = re.compile(r"(?<![<>&|])&(?![&>])")
 # `bash -c '<script>'` (also sh, zsh, dash, ksh), with whatever separates it from the previous command as group 1.
 _SHELL_C = re.compile(
     r"(^|[;&|(\n])\s*(?:(?:sudo(?:\s+-\S+)*|env|nohup|time)\s+)*"
@@ -54,11 +61,12 @@ _SHELL_WRITES = (
     ("`>`", re.compile(r"(?<![<>])>{1,2}(?!&)\s*(?!/dev/null\b)\S")),
     ("`tee`", re.compile(_COMMAND_START + r"tee\b")),
     ("`sed -i`", re.compile(r"\bsed\b[^|;&\n]*\s-(?:[A-Za-z]*i\S*|-in-place)")),
+    ("`perl -i`", re.compile(r"\bperl\b[^|;&\n]*\s-[a-z]*i\S*")),
     ("`mv`/`cp`/`rm`/`touch`", re.compile(_COMMAND_START + r"(?:mv|cp|rm|touch)\b")),
     ("`patch`", re.compile(_COMMAND_START + r"patch\b")),
     ("`git` changing the working tree", re.compile(
-        r"\bgit\s+(?:apply|restore|rm|mv|clean|stash(?!\s+list))\b"
-        r"|\bgit\s+checkout\b[^|;&\n]*\s--(?:ours|theirs)?(?:\s|$)")),
+        r"\bgit\s+(?:apply|restore|rm|mv|clean|stash(?!\s+list)|reset\s+--hard)\b"
+        r"|\bgit\s+checkout\b[^|;&\n]*\s(?:--(?:ours|theirs)?|\.)(?:\s|$)")),
 )
 _FILE_TOOLS = ("Edit", "MultiEdit", "Write", "NotebookEdit")
 _MAIN = "main"
@@ -125,7 +133,8 @@ def _tests_table(tests: list) -> str:
     if not tests:
         return "**No test command ran.**"
     rows = [
-        f"| {_cell(by)} | {_code(_command(tc))} | {_test_verdict(tc, code, m)} | {_cell(_tail(tc.output_summary), 90)} |"
+        f"| {_cell(by)} | {_code(_command(tc))} | {_cell(_test_verdict(tc, code, m), 200)} "
+        f"| {_cell(_tail(tc.output_summary), 90)} |"
         for by, tc, code, m in tests
     ]
     return "| By | Command | Result | Output (end) |\n|---|---|---|---|\n" + "\n".join(rows)
@@ -148,48 +157,67 @@ def _test_verdict(tc: ToolCall, code: str, match: re.Match) -> str:
         return "✅ passed" if _PASSED_COUNT.search(out) else "✅ exit 0, no pass/fail summary seen"
     # The reported exit status belongs to whatever ran last, so only the output is left to read.
     echoed = _ECHOED_EXIT.findall(out)
-    failing = bool(_FAILURE.search(out)) or any(int(re.search(r"\d+$", e).group()) for e in echoed)
-    if _PASSED_COUNT.search(out) and not failing:
+    mentions_failure = bool(_FAILURE.search(out) or _DOUBT.search(out))
+    doubtful = mentions_failure or any(int(re.search(r"\d+$", e).group()) for e in echoed)
+    runs = sum(1 for _ in _TEST_COMMAND.finditer(code))
+    if runs > 1:
+        # "3 passed" may belong to any of them; the others may have failed silently.
+        return f"⚠️ unclear: {hidden} after the test hides its exit status; {runs} test commands in one call"
+    if _PASSED_COUNT.search(out) and not doubtful:
         return (f"🟡 probably passed: {hidden} after the test hid its exit status; "
                 "output shows tests passing, no failure")
     hint = (f"; output prints {echoed[-1]}" if echoed
-            else "; output mentions failures" if _FAILURE.search(out) else "")
+            else "; output mentions failures" if mentions_failure else "")
     return f"⚠️ unclear: {hidden} after the test hides its exit status{hint}"
 
 
 def _hidden_status(code: str, test_end: int) -> str | None:
-    """What follows the test command and can hide its exit status, or None when nothing does.
-
-    The result is shown inside a markdown table cell, so `|` is escaped.
-    """
+    """What follows the test command and can hide its exit status, or None when nothing does."""
     rest = code[test_end:].rstrip()
     # `|| anything` runs the fallback when the test fails, and its exit status wins.
     if "||" in rest:
-        return "`\\|\\|`"
+        return "`||`"
     if ";" in rest:
         return "`;`"
     if "\n" in rest:
         return "a later line"
     if _BACKGROUND.search(rest):
         return "`&` (run in the background)"
-    # Only the last `set -o pipefail` / `set +o pipefail` before the test applies.
-    switches = _PIPEFAIL.findall(code[:test_end])
-    if re.search(r"(?<!\|)\|(?!\|)", rest) and not (switches and switches[-1] == "-"):
-        return "a pipe"
-    return None
+    pipe = re.search(r"(?<!\|)\|(?!\|)", rest)
+    if not pipe:
+        return None
+    # `set -o pipefail` protects a pipe only when set at the pipe's nesting level or outside it: a switch inside
+    # `( … )` or an unwrapped `bash -c '…'` does not reach a pipe after the closing bracket. The last one wins.
+    pipe_depth = _depth(code, test_end + pipe.start())
+    switches = [m.group(1) for m in _PIPEFAIL.finditer(code[:test_end]) if _depth(code, m.start()) <= pipe_depth]
+    return None if switches and switches[-1] == "-" else "a pipe"
+
+
+def _depth(code: str, pos: int) -> int:
+    """Bracket nesting at `pos`, on code with quotes already blanked."""
+    return code[:pos].count("(") - code[:pos].count(")")
 
 
 def _unwrap_shell_c(command: str) -> str:
-    """`bash -c '<script>'` is analysed as the script it runs, so a test inside it is seen."""
-    for _ in range(3):
+    """`bash -c '<script>'` becomes `( <script> )`: the test inside is seen, and an operator after the closing
+    quote still applies to the whole script rather than to its last command."""
+    for _ in range(5):
         m = _SHELL_C.search(command)
-        quoted = _QUOTED.match(command, m.end()) if m else None
-        if not quoted:
-            return command
-        inner = quoted.group(0)[1:-1]
-        if quoted.group(0)[0] == '"':
-            inner = re.sub(r'\\(["\\$`])', r"\1", inner)
-        command = command[:m.end(1)] + " " + inner + command[quoted.end():]
+        if not m:
+            break
+        quoted = _QUOTED.match(command, m.end())
+        if quoted:
+            inner = quoted.group(0)[1:-1]
+            if quoted.group(0)[0] == '"':
+                inner = re.sub(r'\\(["\\$`])', r"\1", inner)
+            end = quoted.end()
+        else:
+            word = re.match(r"\S+", command[m.end():])
+            if not word:
+                break
+            inner, end = word.group(0), m.end() + word.end()
+        # The script's own quotes and comments end with the script, not with the outer command.
+        command = f"{command[:m.end(1)]} ( {_shell_code(inner)} ) {command[end:]}"
     return command
 
 
