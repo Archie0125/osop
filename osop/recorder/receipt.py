@@ -51,11 +51,13 @@ _ECHOED_EXIT = re.compile(r"\bexit(?:\s+code)?\s*[=:]\s*\d+", re.IGNORECASE)
 _EXIT_CODE = re.compile(r"^Exit code (\d+)")
 # A lone `&` runs the command in the background: not `&&`, and not the `&` of `2>&1`, `<&0`, `|&` or `&>`.
 _BACKGROUND = re.compile(r"(?<![<>&|])&(?![&>])")
-# `bash -c '<script>'` (also sh, zsh, dash, ksh): group 1 is what separates it from the previous command,
-# group 2 the shell's own options before `-c` (`-o pipefail`, `--norc`, `-l`).
+# `bash -c '<script>'` (also sh, zsh, dash, ksh, by name or path): group 1 is what separates it from the
+# previous command, group 2 the shell's own options before `-c` (`-euo pipefail`, `-O extglob`, `--norc`, `-l`).
 _SHELL_C = re.compile(
-    r"(^|[;&|(\n])\s*(?:(?:sudo(?:\s+-\S+)*|env|nohup|time|timeout\s+\S+)\s+)*"
-    r"(?:ba|z|da|k)?sh(?:\.exe)?\s+((?:-o\s+\S+\s+|--[a-z-]+\s+|-[A-Za-z]*\s+)*)-[A-Za-z]*c\s+"
+    r"(^|[;&|(\n])\s*(?:(?:sudo(?:\s+-\S+)*|env|nohup|time|timeout\s+\S+)\s+)*(?:[A-Za-z_]\w*=\S*\s+)*"
+    r"(?:\S*[\\/])?(?:ba|z|da|k)?sh(?:\.exe)?\s+"
+    r"((?:[-+][A-Za-z]*[oO]\s+\S+\s+|--(?:rcfile|init-file)\s+\S+\s+|--[a-z-]+\s+|-[A-Za-z]*\s+)*)"
+    r"-[A-Za-z]*c\s+(?:--\s+)?"
 )
 _COMMAND_START = r"(?:^|[;&|(\n])\s*(?:sudo\s+)?"
 # Shell commands whose text shows a file write. Only the operator or program is recognised, never the file.
@@ -149,7 +151,8 @@ def _test_verdict(tc: ToolCall, code: str, match: re.Match) -> str:
     mentions_failure = bool(_FAILURE.search(out) or _DOUBT.search(out))
     clean_pass = bool(_PASSED_COUNT.search(out)) and not mentions_failure
     if tc.is_error:
-        before = bool(code[:match.start()].strip())
+        # `set -o pipefail`, separators and group brackets are not steps that can fail.
+        before = bool(re.sub(rf"[\s;&|(){_NEW_SHELL}]+", "", _PIPEFAIL.sub("", code[:match.start()])))
         after = _hidden_status(code, match.end()) is not None or "&&" in code[match.end():]
         which = "an earlier or later" if before and after else "an earlier" if before else "a later"
         if after and clean_pass:
@@ -226,10 +229,14 @@ def _unwrap_shell_c(command: str) -> str:
     """`bash -c '<script>'` becomes a marked group `( <script> )`: the test inside is seen, an operator after the
     closing quote applies to the whole script, and the mark records where a new shell started (see _governs)."""
     command = command.replace(_NEW_SHELL, "")
+    pos = 0
     for _ in range(100):  # each pass unwraps one `bash -c`; the bound only stops a pathological command
-        m = _SHELL_C.search(command)
+        m = _SHELL_C.search(command, pos)
         if not m:
             break
+        if re.search(r"\s-[A-Za-z]*n[A-Za-z]*(?:\s|$)", m.group(0)):
+            pos = m.end()  # `-n` checks the script's syntax and runs nothing: there is no test run to see
+            continue
         quoted = _QUOTED.match(command, m.end())
         if quoted:
             inner = quoted.group(0)[1:-1]
@@ -243,9 +250,11 @@ def _unwrap_shell_c(command: str) -> str:
             inner, end = word.group(0), m.end() + word.end()
         # Nested shells are unwrapped first; then the script's own quotes and comments end with the script.
         inner = _unwrap_shell_c(inner)
-        if re.search(r"-o\s+pipefail\b", m.group(2)):
+        if re.search(r"-[A-Za-z]*o\s+pipefail\b", m.group(2)):
             inner = "set -o pipefail; " + inner
-        command = f"{command[:m.end(1)]} {_NEW_SHELL}( {_shell_code(inner)} ) {command[end:]}"
+        head = f"{command[:m.end(1)]} {_NEW_SHELL}( {_shell_code(inner)} ) "
+        command = head + command[end:]
+        pos = len(head)
     return command
 
 

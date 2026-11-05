@@ -540,3 +540,27 @@ def test_shell_options_before_c_are_skipped(tmp_path):
 def test_many_sibling_shell_scripts_are_all_unwrapped(tmp_path):
     command = "; ".join(["bash -c 'true'"] * 6 + ["bash -c 'pytest -q'"])
     assert "❌" in _verdicts(tmp_path, command, "Exit code 1\n1 failed", True)
+
+
+def test_combined_shell_flags_before_c_are_skipped(tmp_path):
+    assert "✅" in _verdicts(tmp_path, "bash -euo pipefail -c 'pytest -q | tee log'", "3 passed")
+    assert "❌" in _verdicts(tmp_path, "bash -euo pipefail -c 'pytest -q'", "Exit code 1\n1 failed", True)
+    assert "🟡" in _verdicts(tmp_path, "bash +o pipefail -c 'pytest -q | tee log'", "3 passed").splitlines()[2]
+    for command in ["bash -c -- 'pytest -q'", "bash -O extglob -c 'pytest -q'", "bash --rcfile x -c 'pytest -q'",
+                    "C:/Git/bin/bash.exe -c 'pytest -q'", "/usr/bin/bash -lc 'pytest -q'"]:
+        assert "✅" in _verdicts(tmp_path, command, "3 passed"), command
+
+
+def test_set_pipefail_before_the_test_is_not_an_earlier_step(tmp_path):
+    for command in ["bash -o pipefail -c 'pytest -q'", "set -o pipefail; pytest -q"]:
+        row = _verdicts(tmp_path, command, "Exit code 1\n1 failed", True).splitlines()[2]
+        assert "❌" in row and "earlier" not in row, command
+
+
+def test_env_assignment_and_syntax_check_shell(tmp_path):
+    assert "❌" in _verdicts(tmp_path, "env PYTHONPATH=. bash -c 'pytest -q'", "Exit code 1\n1 failed in 0.01s", True)
+    assert "✅" in _verdicts(tmp_path, "/bin/bash -c 'pytest -q'", "3 passed")
+    # `-n` checks syntax only: nothing ran, so there is no test run to report.
+    assert "No test command ran." in _verdicts(tmp_path, "bash -n -c 'pytest -q'", "")
+    assert "No test command ran." in _verdicts(tmp_path, "bash -nc 'pytest -q'", "")
+    assert "✅" in _verdicts(tmp_path, "bash -n -c 'true'; bash -c 'pytest -q'", "3 passed")
