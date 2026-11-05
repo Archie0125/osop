@@ -390,7 +390,6 @@ def test_inner_pipefail_does_not_protect_an_outer_pipe(tmp_path):
     row = _verdicts(tmp_path, "bash -c 'set -o pipefail; pytest -q' | tail -1", "no tests ran in 0.01s").splitlines()[2]
     assert "⚠️" in row and "✅" not in row
     assert "✅" in _verdicts(tmp_path, "bash -c 'set -o pipefail; pytest -q | tee log'", "3 passed")
-    assert "✅" in _verdicts(tmp_path, "set -o pipefail; bash -c 'pytest -q | tee log'", "3 passed")
 
 
 def test_inner_comment_does_not_erase_the_outer_fallback(tmp_path):
@@ -452,3 +451,78 @@ def test_more_shell_writes_are_listed(tmp_path):
         assert command in may, command
     for command in ["perl -Ilib", "git checkout main"]:
         assert command not in may, command
+
+
+# --- Round 3: nested shells, pipefail scope, chains that fail after the test ----------------------
+
+
+def _gfm_columns(row: str) -> int:
+    """Pipes that GFM treats as cell separators: not escaped by an odd number of backslashes."""
+    n = i = 0
+    while i < len(row):
+        if row[i] == chr(92):
+            i += 2
+            continue
+        if row[i] == "|":
+            n += 1
+        i += 1
+    return n
+
+
+def test_nested_shell_c_is_detected(tmp_path):
+    assert "🟡" in _verdicts(tmp_path, "bash -c \"bash -c 'pytest | tail'\"", "3 passed").splitlines()[2]
+    assert "✅" in _verdicts(tmp_path, "bash -c 'sh -c \"pytest -q\"'", "3 passed")
+    assert "✅" in _verdicts(tmp_path, "timeout 300 bash -c 'pytest -q'", "3 passed")
+    row = _verdicts(tmp_path, "pytest tests/unit -q >/dev/null 2>&1; bash -c \"bash -c 'pytest tests/smoke -q'\"",
+                    "3 passed in 0.01s").splitlines()[2]
+    assert "⚠️" in row and "2 test commands" in row
+
+
+def test_pipefail_scope_follows_the_shell(tmp_path):
+    # A subshell inherits the option; a new shell (`bash -c`) does not; a closed group no longer applies.
+    assert "✅" in _verdicts(tmp_path, "set -o pipefail; ( pytest -q | tee log )", "3 passed")
+    assert "✅" in _verdicts(tmp_path, "set -o pipefail; bash -c 'ruff check .'; pytest -q | tee log", "3 passed")
+    for command in ["set -o pipefail; bash -c 'pytest -q | cat'",
+                    "(set -o pipefail; ruff check .) && (pytest -q | tail -1)",
+                    "bash -c 'set -o pipefail; ruff check .' && bash -c 'pytest -q | tail -1'",
+                    "( set -o pipefail ); ( pytest -q | tee log )",
+                    "bash -c 'set -o pipefail; pytest -q | cat' | cat"]:
+        row = _verdicts(tmp_path, command, "3 passed").splitlines()[2]
+        assert "🟡" in row and "✅" not in row, command
+
+
+def test_or_fallback_is_never_probably_passed(tmp_path):
+    row = _verdicts(tmp_path, "pytest -q || echo recovered", "5 passed\nrecovered").splitlines()[2]
+    assert "⚠️" in row and "🟡" not in row
+
+
+def test_failure_after_the_test_is_not_blamed_on_the_test(tmp_path):
+    row = _verdicts(tmp_path, "pytest -q && ruff check .",
+                    "Exit code 1\n5 passed in 0.01s\nF401 unused import", True).splitlines()[2]
+    assert "⚠️" in row and "❌" not in row and "later" in row
+    # "Found 1 error." is ruff's, but it reads like a test failure: the chain is ❌, and the blame stays open.
+    for output in ["Exit code 1\n5 passed in 0.01s\nF401 unused import\nFound 1 error.",
+                   "Exit code 1\n1 failed, 4 passed"]:
+        row = _verdicts(tmp_path, "pytest -q && ruff check .", output, True).splitlines()[2]
+        assert "❌" in row and "later" in row, output
+
+
+def test_internal_error_is_not_probably_passed(tmp_path):
+    for output in ["5 passed in 0.01s\nINTERNALERROR> RuntimeError: session cleanup failed",
+                   "5 passed\nRuntimeError: boom"]:
+        row = _verdicts(tmp_path, "pytest -q 2>&1 | cat", output).splitlines()[2]
+        assert "⚠️" in row and "🟡" not in row, output
+
+
+def test_backslash_before_a_pipe_does_not_break_the_table(tmp_path):
+    command = "pytest -q | grep 'passed" + chr(92) + "|failed'"
+    receipt = _receipt(_session(tmp_path, [("Bash", {"command": command}, "3 passed", False)]))
+    for title in ("Tests", "Commands"):
+        lines = _section(receipt, title).splitlines()
+        assert _gfm_columns(lines[2]) == _gfm_columns(lines[0]), title
+
+
+def test_git_checkout_of_a_path_is_a_possible_write(tmp_path):
+    files = _section(_receipt(_session(tmp_path, [("Bash", {"command": "git checkout ./x.py"}, "", False)])),
+                     "Files changed")
+    assert "git checkout ./x.py" in files.split("may have changed", 1)[1]

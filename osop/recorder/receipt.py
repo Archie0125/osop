@@ -40,7 +40,7 @@ _FAILURE = re.compile(
 # withhold 🟡 when the exit status is hidden; it never makes an exit-0 run ❌ on its own.
 _DOUBT = re.compile(
     r"npm ERR!|make: \*\*\*|Traceback \(most recent call last\)|(?<![\w\[])FAIL(?![\w\]])|\bError \d+\b"
-    r"|\bException\b|\bpanic\b|\bsegfault\b|core dumped|\bfatal:"
+    r"|INTERNALERROR|\b[A-Z][A-Za-z]*Error\b|\bException\b|\bpanic\b|\bsegfault\b|core dumped|\bfatal:"
     r"|(?i:coverage (?:failure|threshold)|fail-under|not reached)"
 )
 _PIPEFAIL = re.compile(r"\bset\s+([-+])[a-z]*o\s+pipefail\b")
@@ -52,7 +52,7 @@ _EXIT_CODE = re.compile(r"^Exit code (\d+)")
 _BACKGROUND = re.compile(r"(?<![<>&|])&(?![&>])")
 # `bash -c '<script>'` (also sh, zsh, dash, ksh), with whatever separates it from the previous command as group 1.
 _SHELL_C = re.compile(
-    r"(^|[;&|(\n])\s*(?:(?:sudo(?:\s+-\S+)*|env|nohup|time)\s+)*"
+    r"(^|[;&|(\n])\s*(?:(?:sudo(?:\s+-\S+)*|env|nohup|time|timeout\s+\S+)\s+)*"
     r"(?:ba|z|da|k)?sh(?:\.exe)?\s+(?:-[A-Za-z]*\s+)*-[A-Za-z]*c\s+"
 )
 _COMMAND_START = r"(?:^|[;&|(\n])\s*(?:sudo\s+)?"
@@ -66,7 +66,7 @@ _SHELL_WRITES = (
     ("`patch`", re.compile(_COMMAND_START + r"patch\b")),
     ("`git` changing the working tree", re.compile(
         r"\bgit\s+(?:apply|restore|rm|mv|clean|stash(?!\s+list)|reset\s+--hard)\b"
-        r"|\bgit\s+checkout\b[^|;&\n]*\s(?:--(?:ours|theirs)?|\.)(?:\s|$)")),
+        r"|\bgit\s+checkout\b[^|;&\n]*\s(?:--(?:ours|theirs)?|\.(?:/\S*)?)(?:\s|$)")),
 )
 _FILE_TOOLS = ("Edit", "MultiEdit", "Write", "NotebookEdit")
 _MAIN = "main"
@@ -144,9 +144,16 @@ def _test_verdict(tc: ToolCall, code: str, match: re.Match) -> str:
     out = tc.output  # the whole output: a failure in the middle of a long run must not be lost
     if tc.status == "PENDING":
         return "⏳ no result recorded"
+    mentions_failure = bool(_FAILURE.search(out) or _DOUBT.search(out))
+    clean_pass = bool(_PASSED_COUNT.search(out)) and not mentions_failure
     if tc.is_error:
-        if code[:match.start()].strip():
-            return _failed(tc) + ": this test or an earlier step in the chain failed"
+        before = bool(code[:match.start()].strip())
+        after = _hidden_status(code, match.end()) is not None or "&&" in code[match.end():]
+        which = "an earlier or later" if before and after else "an earlier" if before else "a later"
+        if after and clean_pass:
+            return f"⚠️ unclear: {_exit_text(tc)}, but output shows tests passing; {which} step in the chain may have failed"
+        if before or after:
+            return f"{_failed(tc)}: this test or {which} step in the chain failed"
         return _failed(tc)
     if tc.input.get("run_in_background"):
         return "⏳ started in background; no exit status in the transcript"
@@ -157,17 +164,18 @@ def _test_verdict(tc: ToolCall, code: str, match: re.Match) -> str:
         return "✅ passed" if _PASSED_COUNT.search(out) else "✅ exit 0, no pass/fail summary seen"
     # The reported exit status belongs to whatever ran last, so only the output is left to read.
     echoed = _ECHOED_EXIT.findall(out)
-    mentions_failure = bool(_FAILURE.search(out) or _DOUBT.search(out))
-    doubtful = mentions_failure or any(int(re.search(r"\d+$", e).group()) for e in echoed)
     runs = sum(1 for _ in _TEST_COMMAND.finditer(code))
     if runs > 1:
         # "3 passed" may belong to any of them; the others may have failed silently.
         return f"⚠️ unclear: {hidden} after the test hides its exit status; {runs} test commands in one call"
-    if _PASSED_COUNT.search(out) and not doubtful:
+    # A `||` fallback may have run and printed, and its output cannot be told apart from the test's.
+    echoed_failure = any(int(re.search(r"\d+$", e).group()) for e in echoed)
+    if clean_pass and hidden != "`||`" and not echoed_failure:
         return (f"🟡 probably passed: {hidden} after the test hid its exit status; "
                 "output shows tests passing, no failure")
     hint = (f"; output prints {echoed[-1]}" if echoed
-            else "; output mentions failures" if mentions_failure else "")
+            else "; output mentions failures" if mentions_failure
+            else "; output shows tests passing" if clean_pass else "")
     return f"⚠️ unclear: {hidden} after the test hides its exit status{hint}"
 
 
@@ -183,24 +191,39 @@ def _hidden_status(code: str, test_end: int) -> str | None:
         return "a later line"
     if _BACKGROUND.search(rest):
         return "`&` (run in the background)"
-    pipe = re.search(r"(?<!\|)\|(?!\|)", rest)
-    if not pipe:
-        return None
-    # `set -o pipefail` protects a pipe only when set at the pipe's nesting level or outside it: a switch inside
-    # `( … )` or an unwrapped `bash -c '…'` does not reach a pipe after the closing bracket. The last one wins.
-    pipe_depth = _depth(code, test_end + pipe.start())
-    switches = [m.group(1) for m in _PIPEFAIL.finditer(code[:test_end]) if _depth(code, m.start()) <= pipe_depth]
-    return None if switches and switches[-1] == "-" else "a pipe"
+    # Every pipe after the test, inner or outer, needs a `set -o pipefail` that still governs it; the last one wins.
+    for pipe in re.finditer(r"(?<!\|)\|(?!\|)", rest):
+        pipe_pos = test_end + pipe.start()
+        switches = [m.group(1) for m in _PIPEFAIL.finditer(code[:test_end]) if _governs(code, m.start(), pipe_pos)]
+        if not (switches and switches[-1] == "-"):
+            return "a pipe"
+    return None
 
 
-def _depth(code: str, pos: int) -> int:
-    """Bracket nesting at `pos`, on code with quotes already blanked."""
-    return code[:pos].count("(") - code[:pos].count(")")
+_NEW_SHELL = "\x01"  # placed before the `(` that stands for an unwrapped `bash -c '…'`
+
+
+def _governs(code: str, switch_pos: int, pipe_pos: int) -> bool:
+    """Whether `set ±o pipefail` at switch_pos still applies at pipe_pos.
+
+    A subshell `( … )` inherits the option, but it ends with the group that set it, and a new shell
+    (`bash -c`, marked by _NEW_SHELL) starts without it.
+    """
+    open_groups: list[bool] = []
+    for i in range(switch_pos, pipe_pos):
+        if code[i] == "(":
+            open_groups.append(i > 0 and code[i - 1] == _NEW_SHELL)
+        elif code[i] == ")":
+            if not open_groups:
+                return False
+            open_groups.pop()
+    return not any(open_groups)
 
 
 def _unwrap_shell_c(command: str) -> str:
-    """`bash -c '<script>'` becomes `( <script> )`: the test inside is seen, and an operator after the closing
-    quote still applies to the whole script rather than to its last command."""
+    """`bash -c '<script>'` becomes a marked group `( <script> )`: the test inside is seen, an operator after the
+    closing quote applies to the whole script, and the mark records where a new shell started (see _governs)."""
+    command = command.replace(_NEW_SHELL, "")
     for _ in range(5):
         m = _SHELL_C.search(command)
         if not m:
@@ -216,8 +239,9 @@ def _unwrap_shell_c(command: str) -> str:
             if not word:
                 break
             inner, end = word.group(0), m.end() + word.end()
-        # The script's own quotes and comments end with the script, not with the outer command.
-        command = f"{command[:m.end(1)]} ( {_shell_code(inner)} ) {command[end:]}"
+        # Nested shells are unwrapped first; then the script's own quotes and comments end with the script.
+        inner = _shell_code(_unwrap_shell_c(inner))
+        command = f"{command[:m.end(1)]} {_NEW_SHELL}( {inner} ) {command[end:]}"
     return command
 
 
@@ -333,8 +357,12 @@ def _status(tc: ToolCall) -> str:
 
 
 def _failed(tc: ToolCall) -> str:
+    return f"❌ {_exit_text(tc)}"
+
+
+def _exit_text(tc: ToolCall) -> str:
     m = _EXIT_CODE.match(tc.output_summary)
-    return f"❌ exit {m.group(1)}" if m else "❌ failed"
+    return f"exit {m.group(1)}" if m else "failed"
 
 
 def _command(tc: ToolCall) -> str:
@@ -356,7 +384,8 @@ def _cell(text: str, limit: int = 120) -> str:
     text = re.sub(r"\s+", " ", _CONTROL.sub("", str(text))).strip()
     if len(text) > limit:
         text = text[: limit - 1] + "…"
-    return text.replace("|", "\\|")
+    # A pipe already behind a backslash stays as it is: `\\|` would read as an escaped backslash and a bare pipe.
+    return re.sub(r"(?<!\\)\|", r"\\|", text)
 
 
 def _code(text: str, limit: int = 120) -> str:
