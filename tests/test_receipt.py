@@ -456,19 +456,6 @@ def test_more_shell_writes_are_listed(tmp_path):
 # --- Round 3: nested shells, pipefail scope, chains that fail after the test ----------------------
 
 
-def _gfm_columns(row: str) -> int:
-    """Pipes that GFM treats as cell separators: not escaped by an odd number of backslashes."""
-    n = i = 0
-    while i < len(row):
-        if row[i] == chr(92):
-            i += 2
-            continue
-        if row[i] == "|":
-            n += 1
-        i += 1
-    return n
-
-
 def test_nested_shell_c_is_detected(tmp_path):
     assert "🟡" in _verdicts(tmp_path, "bash -c \"bash -c 'pytest | tail'\"", "3 passed").splitlines()[2]
     assert "✅" in _verdicts(tmp_path, "bash -c 'sh -c \"pytest -q\"'", "3 passed")
@@ -514,15 +501,42 @@ def test_internal_error_is_not_probably_passed(tmp_path):
         assert "⚠️" in row and "🟡" not in row, output
 
 
-def test_backslash_before_a_pipe_does_not_break_the_table(tmp_path):
+def test_backslash_before_a_pipe_is_shown_as_it_ran(tmp_path):
+    # cmark-gfm (GitHub) treats a pipe behind any backslash as escaped, so `\|` in a command is written
+    # `\\|`: the row stays one row and the command renders with its backslash, as it ran.
     command = "pytest -q | grep 'passed" + chr(92) + "|failed'"
     receipt = _receipt(_session(tmp_path, [("Bash", {"command": command}, "3 passed", False)]))
     for title in ("Tests", "Commands"):
         lines = _section(receipt, title).splitlines()
-        assert _gfm_columns(lines[2]) == _gfm_columns(lines[0]), title
+        assert _columns(lines[2]) == _columns(lines[0]), title
+        assert "passed" + chr(92) * 2 + "|failed" in lines[2], title
+
+
+def test_unquoted_bash_c_word_stops_at_the_separator(tmp_path):
+    assert "✅" in _verdicts(tmp_path, "bash -c true; pytest -q", "3 passed")
+    assert "🟡" in _verdicts(tmp_path, "bash -c pytest| tail -1", "3 passed").splitlines()[2]
 
 
 def test_git_checkout_of_a_path_is_a_possible_write(tmp_path):
     files = _section(_receipt(_session(tmp_path, [("Bash", {"command": "git checkout ./x.py"}, "", False)])),
                      "Files changed")
     assert "git checkout ./x.py" in files.split("may have changed", 1)[1]
+
+
+def test_interrupted_or_crashed_run_is_not_probably_passed(tmp_path):
+    for output in ["5 passed\n!!!!!!!!!!!! KeyboardInterrupt !!!!!!!!!!!!",
+                   "5 passed\nFatal Python error: Segmentation fault"]:
+        row = _verdicts(tmp_path, "pytest -q | cat", output).splitlines()[2]
+        assert "⚠️" in row and "🟡" not in row, output
+
+
+def test_shell_options_before_c_are_skipped(tmp_path):
+    assert "❌" in _verdicts(tmp_path, "bash -o pipefail -c 'pytest -q'", "Exit code 1\n1 failed", True)
+    # `-o pipefail` on the shell itself protects the pipes in its script.
+    assert "✅" in _verdicts(tmp_path, "bash --norc -o pipefail -c 'pytest -q | tee log'", "3 passed")
+    assert "🟡" in _verdicts(tmp_path, "bash --norc -c 'pytest -q | tee log'", "3 passed").splitlines()[2]
+
+
+def test_many_sibling_shell_scripts_are_all_unwrapped(tmp_path):
+    command = "; ".join(["bash -c 'true'"] * 6 + ["bash -c 'pytest -q'"])
+    assert "❌" in _verdicts(tmp_path, command, "Exit code 1\n1 failed", True)

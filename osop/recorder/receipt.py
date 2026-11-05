@@ -40,7 +40,8 @@ _FAILURE = re.compile(
 # withhold 🟡 when the exit status is hidden; it never makes an exit-0 run ❌ on its own.
 _DOUBT = re.compile(
     r"npm ERR!|make: \*\*\*|Traceback \(most recent call last\)|(?<![\w\[])FAIL(?![\w\]])|\bError \d+\b"
-    r"|INTERNALERROR|\b[A-Z][A-Za-z]*Error\b|\bException\b|\bpanic\b|\bsegfault\b|core dumped|\bfatal:"
+    r"|INTERNALERROR|\b[A-Z][A-Za-z]*Error\b|\bException\b|KeyboardInterrupt|Fatal Python error"
+    r"|\bpanic\b|\bsegfault\b|Segmentation fault|core dumped|\bfatal:"
     r"|(?i:coverage (?:failure|threshold)|fail-under|not reached)"
 )
 _PIPEFAIL = re.compile(r"\bset\s+([-+])[a-z]*o\s+pipefail\b")
@@ -50,10 +51,11 @@ _ECHOED_EXIT = re.compile(r"\bexit(?:\s+code)?\s*[=:]\s*\d+", re.IGNORECASE)
 _EXIT_CODE = re.compile(r"^Exit code (\d+)")
 # A lone `&` runs the command in the background: not `&&`, and not the `&` of `2>&1`, `<&0`, `|&` or `&>`.
 _BACKGROUND = re.compile(r"(?<![<>&|])&(?![&>])")
-# `bash -c '<script>'` (also sh, zsh, dash, ksh), with whatever separates it from the previous command as group 1.
+# `bash -c '<script>'` (also sh, zsh, dash, ksh): group 1 is what separates it from the previous command,
+# group 2 the shell's own options before `-c` (`-o pipefail`, `--norc`, `-l`).
 _SHELL_C = re.compile(
     r"(^|[;&|(\n])\s*(?:(?:sudo(?:\s+-\S+)*|env|nohup|time|timeout\s+\S+)\s+)*"
-    r"(?:ba|z|da|k)?sh(?:\.exe)?\s+(?:-[A-Za-z]*\s+)*-[A-Za-z]*c\s+"
+    r"(?:ba|z|da|k)?sh(?:\.exe)?\s+((?:-o\s+\S+\s+|--[a-z-]+\s+|-[A-Za-z]*\s+)*)-[A-Za-z]*c\s+"
 )
 _COMMAND_START = r"(?:^|[;&|(\n])\s*(?:sudo\s+)?"
 # Shell commands whose text shows a file write. Only the operator or program is recognised, never the file.
@@ -224,7 +226,7 @@ def _unwrap_shell_c(command: str) -> str:
     """`bash -c '<script>'` becomes a marked group `( <script> )`: the test inside is seen, an operator after the
     closing quote applies to the whole script, and the mark records where a new shell started (see _governs)."""
     command = command.replace(_NEW_SHELL, "")
-    for _ in range(5):
+    for _ in range(100):  # each pass unwraps one `bash -c`; the bound only stops a pathological command
         m = _SHELL_C.search(command)
         if not m:
             break
@@ -235,13 +237,15 @@ def _unwrap_shell_c(command: str) -> str:
                 inner = re.sub(r'\\(["\\$`])', r"\1", inner)
             end = quoted.end()
         else:
-            word = re.match(r"\S+", command[m.end():])
+            word = re.match(r"[^\s;&|()]+", command[m.end():])
             if not word:
                 break
             inner, end = word.group(0), m.end() + word.end()
         # Nested shells are unwrapped first; then the script's own quotes and comments end with the script.
-        inner = _shell_code(_unwrap_shell_c(inner))
-        command = f"{command[:m.end(1)]} {_NEW_SHELL}( {inner} ) {command[end:]}"
+        inner = _unwrap_shell_c(inner)
+        if re.search(r"-o\s+pipefail\b", m.group(2)):
+            inner = "set -o pipefail; " + inner
+        command = f"{command[:m.end(1)]} {_NEW_SHELL}( {_shell_code(inner)} ) {command[end:]}"
     return command
 
 
@@ -384,8 +388,9 @@ def _cell(text: str, limit: int = 120) -> str:
     text = re.sub(r"\s+", " ", _CONTROL.sub("", str(text))).strip()
     if len(text) > limit:
         text = text[: limit - 1] + "…"
-    # A pipe already behind a backslash stays as it is: `\\|` would read as an escaped backslash and a bare pipe.
-    return re.sub(r"(?<!\\)\|", r"\\|", text)
+    # Every pipe, even one already behind a backslash: cmark-gfm reads `\\|` as an escaped pipe too, and it is
+    # the only way `\|` in a command renders as it ran.
+    return text.replace("|", "\\|")
 
 
 def _code(text: str, limit: int = 120) -> str:
