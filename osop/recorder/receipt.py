@@ -21,13 +21,14 @@ _TEST_RUNNER = (
 # heredocs removed.
 _TEST_COMMAND = re.compile(
     r"(?:^|[;&|(\n])\s*"
-    r"(?:(?:sudo(?:\s+-\S+)*|time|nice|env|timeout\s+\S+)\s+)*"
+    r"(?:(?:sudo(?:\s+-\S+)*|time|nice|env|nohup|timeout\s+\S+)\s+)*"
     r"(?:[A-Za-z_]\w*=\S*\s+)*"
     r"(?:(?:php|npx|bunx|uv\s+run|poetry\s+run|python[\d.]*(?:\.exe)?|py)\s+|\S+\s+-m\s+)?"
     r"(?:\S*/)?"
     rf"(?:{_TEST_RUNNER})\b"
 )
-_HEREDOC = re.compile(r"<<-?\s*(['\"]?)(\w+)\1[^\n]*\n.*?\n\s*\2\b", re.DOTALL)
+# The heredoc body is blanked; the rest of its first line stays, so `cat <<EOF > file` keeps its redirect.
+_HEREDOC = re.compile(r"<<-?\s*(['\"]?)(\w+)\1([^\n]*)\n.*?\n\s*\2\b", re.DOTALL)
 _QUOTED = re.compile(r"'[^']*'|\"(?:\\.|[^\"\\])*\"")
 # Runners that can be called as a quoted executable path: "/my venv/bin/pytest".
 _RUNNER_EXECUTABLE = re.compile(r"[\\/](pytest|py\.test|nosetests|phpunit|pest|tox|prove|vitest|jest|rspec)(?:\.exe)?$")
@@ -40,7 +41,26 @@ _CONTROL = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]|[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]"
 _PASSED_COUNT = re.compile(r"\b\d+\s+passed\b", re.IGNORECASE)
 _ECHOED_EXIT = re.compile(r"\bexit(?:\s+code)?\s*[=:]\s*\d+", re.IGNORECASE)
 _EXIT_CODE = re.compile(r"^Exit code (\d+)")
-_FILE_TOOLS = ("Edit", "Write", "NotebookEdit")
+# A lone `&` runs the command in the background: not `&&`, and not the `&` of `2>&1`, `<&0` or `&>`.
+_BACKGROUND = re.compile(r"(?<![<>&])&(?![&>])")
+# `bash -c '<script>'` (also sh, zsh, dash, ksh), with whatever separates it from the previous command as group 1.
+_SHELL_C = re.compile(
+    r"(^|[;&|(\n])\s*(?:(?:sudo(?:\s+-\S+)*|env|nohup|time)\s+)*"
+    r"(?:ba|z|da|k)?sh(?:\.exe)?\s+(?:-[A-Za-z]*\s+)*-[A-Za-z]*c\s+"
+)
+_COMMAND_START = r"(?:^|[;&|(\n])\s*(?:sudo\s+)?"
+# Shell commands whose text shows a file write. Only the operator or program is recognised, never the file.
+_SHELL_WRITES = (
+    ("`>`", re.compile(r"(?<![<>])>{1,2}(?!&)\s*(?!/dev/null\b)\S")),
+    ("`tee`", re.compile(_COMMAND_START + r"tee\b")),
+    ("`sed -i`", re.compile(r"\bsed\b[^|;&\n]*\s-(?:[A-Za-z]*i\S*|-in-place)")),
+    ("`mv`/`cp`/`rm`/`touch`", re.compile(_COMMAND_START + r"(?:mv|cp|rm|touch)\b")),
+    ("`patch`", re.compile(_COMMAND_START + r"patch\b")),
+    ("`git` changing the working tree", re.compile(
+        r"\bgit\s+(?:apply|restore|rm|mv|clean|stash(?!\s+list))\b"
+        r"|\bgit\s+checkout\b[^|;&\n]*\s--(?:ours|theirs)?(?:\s|$)")),
+)
+_FILE_TOOLS = ("Edit", "MultiEdit", "Write", "NotebookEdit")
 _MAIN = "main"
 
 
@@ -49,7 +69,7 @@ def render_receipt(parsed: dict, source: Path | str) -> str:
     calls = [(_owner(node.node_id, labels), tc) for node in _walk(parsed["nodes"]) for tc in node.tool_calls]
     tests = [
         (by, tc, code, m) for by, tc in calls if tc.tool == "Bash"
-        and (m := _TEST_COMMAND.search(code := _shell_code(_command(tc))))
+        and (m := _TEST_COMMAND.search(code := _shell_code(_unwrap_shell_c(_command(tc)))))
     ]
     goal = next((n.user_prompt for n in parsed["nodes"] if n.user_prompt), "") or ""
 
@@ -95,7 +115,8 @@ def _tests_summary(tests: list) -> str:
     verdicts = [_test_verdict(tc, code, m) for _, tc, code, m in tests]
     counts = [
         (sum(1 for v in verdicts if v.startswith(mark)), label)
-        for mark, label in (("✅", "passed"), ("❌", "failed"), ("⚠️", "unclear ⚠️"), ("⏳", "no result"))
+        for mark, label in (("✅", "passed"), ("🟡", "probably passed"), ("❌", "failed"),
+                            ("⚠️", "unclear ⚠️"), ("⏳", "no result"))
     ]
     return f"{len(verdicts)} runs: " + ", ".join(f"{n} {label}" for n, label in counts if n)
 
@@ -111,7 +132,7 @@ def _tests_table(tests: list) -> str:
 
 
 def _test_verdict(tc: ToolCall, code: str, match: re.Match) -> str:
-    out = tc.output_summary
+    out = tc.output  # the whole output: a failure in the middle of a long run must not be lost
     if tc.status == "PENDING":
         return "⏳ no result recorded"
     if tc.is_error:
@@ -120,27 +141,56 @@ def _test_verdict(tc: ToolCall, code: str, match: re.Match) -> str:
         return _failed(tc)
     if tc.input.get("run_in_background"):
         return "⏳ started in background; no exit status in the transcript"
-    if _masked(code, match.end()):
-        # The reported exit status belongs to whatever ran last, and the output mixes commands.
-        echoed = _ECHOED_EXIT.findall(out)
-        hint = (f"; output prints {echoed[-1]}" if echoed
-                else "; output mentions failures" if _FAILURE.search(out)
-                else "; output shows tests passing" if _PASSED_COUNT.search(out) else "")
-        return "⚠️ unclear: a pipe, `;` or `\\|\\|` after the test hides its exit status" + hint
-    if _FAILURE.search(out):
-        return "❌ exit 0 but output reports failures"
-    return "✅ passed" if _PASSED_COUNT.search(out) else "✅ exit 0, no pass/fail summary seen"
+    hidden = _hidden_status(code, match.end())
+    if hidden is None:
+        if _FAILURE.search(out):
+            return "❌ exit 0 but output reports failures"
+        return "✅ passed" if _PASSED_COUNT.search(out) else "✅ exit 0, no pass/fail summary seen"
+    # The reported exit status belongs to whatever ran last, so only the output is left to read.
+    echoed = _ECHOED_EXIT.findall(out)
+    failing = bool(_FAILURE.search(out)) or any(int(re.search(r"\d+$", e).group()) for e in echoed)
+    if _PASSED_COUNT.search(out) and not failing:
+        return (f"🟡 probably passed: {hidden} after the test hid its exit status; "
+                "output shows tests passing, no failure")
+    hint = (f"; output prints {echoed[-1]}" if echoed
+            else "; output mentions failures" if _FAILURE.search(out) else "")
+    return f"⚠️ unclear: {hidden} after the test hides its exit status{hint}"
 
 
-def _masked(code: str, test_end: int) -> bool:
-    """Whether what follows the test command can hide its exit status."""
+def _hidden_status(code: str, test_end: int) -> str | None:
+    """What follows the test command and can hide its exit status, or None when nothing does.
+
+    The result is shown inside a markdown table cell, so `|` is escaped.
+    """
     rest = code[test_end:].rstrip()
     # `|| anything` runs the fallback when the test fails, and its exit status wins.
-    if "||" in rest or ";" in rest or "\n" in rest:
-        return True
+    if "||" in rest:
+        return "`\\|\\|`"
+    if ";" in rest:
+        return "`;`"
+    if "\n" in rest:
+        return "a later line"
+    if _BACKGROUND.search(rest):
+        return "`&` (run in the background)"
     # Only the last `set -o pipefail` / `set +o pipefail` before the test applies.
     switches = _PIPEFAIL.findall(code[:test_end])
-    return bool(re.search(r"(?<!\|)\|(?!\|)", rest)) and not (switches and switches[-1] == "-")
+    if re.search(r"(?<!\|)\|(?!\|)", rest) and not (switches and switches[-1] == "-"):
+        return "a pipe"
+    return None
+
+
+def _unwrap_shell_c(command: str) -> str:
+    """`bash -c '<script>'` is analysed as the script it runs, so a test inside it is seen."""
+    for _ in range(3):
+        m = _SHELL_C.search(command)
+        quoted = _QUOTED.match(command, m.end()) if m else None
+        if not quoted:
+            return command
+        inner = quoted.group(0)[1:-1]
+        if quoted.group(0)[0] == '"':
+            inner = re.sub(r'\\(["\\$`])', r"\1", inner)
+        command = command[:m.end(1)] + " " + inner + command[quoted.end():]
+    return command
 
 
 def _shell_code(command: str) -> str:
@@ -149,7 +199,7 @@ def _shell_code(command: str) -> str:
         runner = _RUNNER_EXECUTABLE.search(m.group(0)[1:-1])
         return f"/{runner.group(1)}" if runner else '""'
 
-    code = _QUOTED.sub(blank, _HEREDOC.sub("<<heredoc", command))
+    code = _QUOTED.sub(blank, _HEREDOC.sub(lambda m: "<<heredoc" + m.group(3), command))
     return re.sub(r"(?m)(^|[\s;&|(])#[^\n]*", r"\1", code)
 
 
@@ -166,21 +216,47 @@ def _commands_table(calls: list) -> str:
 
 def _files_table(calls: list) -> str:
     files: dict[str, dict[str, set[str] | dict[str, int]]] = {}
+    pending: list[tuple[str, ToolCall, str]] = []
     for by, tc in calls:
         path = tc.input.get("file_path") or tc.input.get("notebook_path")
         if tc.tool not in _FILE_TOOLS or tc.is_error or not isinstance(path, str) or not path:
             continue
+        if tc.status == "PENDING":
+            pending.append((by, tc, path))  # no result: whether the edit was applied is unknown
+            continue
         entry = files.setdefault(path, {"tools": {}, "by": set()})
         entry["tools"][tc.tool] = entry["tools"].get(tc.tool, 0) + 1
         entry["by"].add(by)
-    note = "\n\nShell commands can also change files; those are not listed here."
-    if not files:
-        return "**No files edited with Edit / Write.**" + note
-    rows = [
-        f"| {_code(_tail(path, 120))} | {', '.join(f'{t} ×{n}' for t, n in e['tools'].items())} | {_cell(', '.join(sorted(e['by'])))} |"
-        for path, e in files.items()
-    ]
-    return "| File | How | By |\n|---|---|---|\n" + "\n".join(rows) + note
+    parts = []
+    if files:
+        rows = [
+            f"| {_code(_tail(path, 120))} | {', '.join(f'{t} ×{n}' for t, n in e['tools'].items())} | {_cell(', '.join(sorted(e['by'])))} |"
+            for path, e in files.items()
+        ]
+        parts.append("| File | How | By |\n|---|---|---|\n" + "\n".join(rows))
+    else:
+        parts.append("**No files edited with Edit / Write.**")
+    if pending:
+        parts.append("⏳ Not counted, no result recorded: " + ", ".join(
+            f"{_code(_tail(path, 120))} ({tc.tool}, {_cell(by)})" for by, tc, path in pending))
+    parts.append(_shell_writes(calls))
+    return "\n\n".join(parts)
+
+
+def _shell_writes(calls: list) -> str:
+    """Shell commands whose text shows a file write. What they changed is not known, only that they could."""
+    rows = []
+    for by, tc in calls:
+        if tc.tool != "Bash" or tc.status == "PENDING":
+            continue
+        code = _shell_code(_unwrap_shell_c(_command(tc)))
+        reasons = [name for name, pattern in _SHELL_WRITES if pattern.search(code)]
+        if reasons:
+            rows.append(f"- **{_cell(by)}** · {_code(_command(tc), 160)} ({', '.join(reasons)})"
+                        + (" ❌ failed" if tc.is_error else ""))
+    if not rows:
+        return "No shell command that writes files (`>`, `tee`, `sed -i`, `mv`, `cp`, `rm`…) was seen."
+    return "Shell commands that may have changed files (not verified):\n" + "\n".join(rows)
 
 
 def _errors_list(calls: list) -> str:

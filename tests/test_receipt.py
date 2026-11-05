@@ -60,8 +60,8 @@ def test_failure_in_output_beats_exit_zero(tmp_path):
 
 def test_piped_test_command_is_flagged_as_masked(tmp_path):
     tests = _section(_receipt(_session(tmp_path, [
-        ("Bash", {"command": "python -m pytest -q | tail -3"}, "5 passed in 1.0s", False)])), "Tests")
-    assert "⚠️" in tests
+        ("Bash", {"command": "python -m pytest -q | tail -3"}, "collected 5 items", False)])), "Tests")
+    assert "⚠️" in tests and "✅" not in tests
 
 
 def test_no_test_command(tmp_path):
@@ -225,7 +225,8 @@ def test_pipefail_switched_off_again_still_masks(tmp_path):
 
 
 def test_commented_out_pipefail_does_not_count(tmp_path):
-    assert "⚠️" in _verdicts(tmp_path, "# set -o pipefail\npytest -q | grep passed", "2 passed")
+    row = _verdicts(tmp_path, "# set -o pipefail\npytest -q | grep passed", "2 passed").splitlines()[2]
+    assert "✅" not in row and "🟡" in row
 
 
 def test_background_launch_failure_is_a_failure(tmp_path):
@@ -295,3 +296,88 @@ def test_log_command_writes_the_receipt(tmp_path):
     result = CliRunner().invoke(cli, ["log", str(MINIMAL_SESSION), "-o", str(tmp_path), "-d", "demo"])
     assert result.exit_code == 0
     assert [p.name for p in tmp_path.iterdir()] == ["2026-10-23-demo.receipt.md"]
+
+
+# --- Verdicts that must not overstate the evidence ---------------------------------------------
+
+
+def test_background_ampersand_hides_the_exit_status(tmp_path):
+    for command in ["pytest -q &", "python -m pytest > log 2>&1 &", "nohup npm test &\nsleep 1"]:
+        row = _verdicts(tmp_path, command, "").splitlines()[2]
+        assert "⚠️" in row and "✅" not in row, command
+
+
+def test_stderr_redirect_is_not_a_background_run(tmp_path):
+    assert "✅" in _verdicts(tmp_path, "python -m pytest -q 2>&1", "3 passed")
+    assert "✅" in _verdicts(tmp_path, "pytest &> log", "")
+
+
+def test_probably_passed_when_a_pipe_hides_a_clean_run(tmp_path):
+    row = _verdicts(tmp_path, "python -m pytest -q 2>&1 | tail -3", "5 passed in 1.0s").splitlines()[2]
+    assert "🟡 probably passed" in row and "✅" not in row and "⚠️" not in row
+
+
+def test_probably_passed_is_counted_apart_from_passed(tmp_path):
+    receipt = _receipt(_session(tmp_path, [
+        ("Bash", {"command": "pytest -q | tail -3"}, "5 passed in 1.0s", False),
+        ("Bash", {"command": "pytest -q"}, "5 passed in 1.0s", False)]))
+    assert "2 runs: 1 passed, 1 probably passed" in receipt
+
+
+def test_failure_marker_or_echoed_exit_keeps_a_piped_run_unclear(tmp_path):
+    for output in ["1 failed, 4 passed in 1.0s", "5 passed in 1.0s\npytest exit=1"]:
+        row = _verdicts(tmp_path, "pytest -q | tail -3; echo pytest exit=$?", output).splitlines()[2]
+        assert "⚠️" in row and "🟡" not in row, output
+
+
+def test_verdict_reads_the_whole_output_not_a_summary(tmp_path):
+    # Two packages: the first fails in the middle of a long output, the last one passes, exit 0.
+    output = "." * 300 + "\nTests: 1 failed, 5 total\n" + "." * 300 + "\nTests: 10 passed, 10 total"
+    row = _verdicts(tmp_path, "npm test", output).splitlines()[2]
+    assert "❌" in row and "✅" not in row
+
+
+def test_pending_edit_is_not_a_changed_file(tmp_path):
+    path = tmp_path / "s.jsonl"
+    path.write_text("\n".join(json.dumps(e) for e in [
+        {"type": "user", "timestamp": "2026-10-23T10:00:00Z", "sessionId": "s",
+         "message": {"role": "user", "content": "do the task"}},
+        {"type": "assistant", "timestamp": "2026-10-23T10:00:01Z", "message": {"content": [
+            {"type": "tool_use", "id": "t0", "name": "Edit",
+             "input": {"file_path": "src/app.py", "old_string": "a", "new_string": "b"}}]}},
+    ]) + "\n", encoding="utf-8")
+    files = _section(_receipt(path), "Files changed")
+    assert "Edit ×1" not in files
+    assert "no result recorded" in files and "src/app.py" in files
+
+
+def test_multiedit_is_a_changed_file(tmp_path):
+    files = _section(_receipt(_session(tmp_path, [
+        ("MultiEdit", {"file_path": "src/app.py", "edits": [{"old_string": "a", "new_string": "b"}]}, "ok", False),
+    ])), "Files changed")
+    assert "src/app.py" in files and "MultiEdit ×1" in files
+
+
+def test_shell_commands_that_may_change_files_are_listed(tmp_path):
+    files = _section(_receipt(_session(tmp_path, [
+        ("Bash", {"command": "sed -i 's/a/b/' src/app.py"}, "", False),
+        ("Bash", {"command": "echo hi > notes.txt"}, "", False),
+        ("Bash", {"command": "cat a.log | tee -a b.log"}, "", False),
+        ("Bash", {"command": "mv old.py new.py"}, "", False),
+        ("Bash", {"command": "git status"}, "clean", False),
+        ("Bash", {"command": "python -m pytest -q 2>&1"}, "3 passed", False),
+        ("Bash", {"command": "cat big.log > /dev/null"}, "", False),
+        ("Bash", {"command": 'git commit -m "a > b"'}, "", False),
+    ])), "Files changed")
+    may = files.split("may have changed", 1)[1]
+    for command in ["sed -i", "echo hi > notes.txt", "tee -a b.log", "mv old.py new.py"]:
+        assert command in may, command
+    for command in ["git status", "pytest", "/dev/null", "git commit"]:
+        assert command not in may, command
+
+
+def test_test_inside_bash_c_is_detected(tmp_path):
+    assert "✅" in _verdicts(tmp_path, "bash -lc 'cd /repo && python -m pytest -q'", "3 passed")
+    assert "✅" in _verdicts(tmp_path, 'sh -c "npm test"', "Tests: 3 passed")
+    assert "🟡" in _verdicts(tmp_path, "bash -c 'pytest -q | tail -3'", "3 passed").splitlines()[2]
+    assert "🟡" in _verdicts(tmp_path, "bash -c 'pytest -q' | tail -3", "3 passed").splitlines()[2]
