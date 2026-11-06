@@ -437,13 +437,19 @@ def _judge(tc: ToolCall, code: str, m: re.Match, verb: str | None = None) -> tup
     if tc.is_error:
         if fail:
             return "failed", f"{_failed(tc)}, output says {_code(fail.group(0), 60)}"
-        if done and verb in _GIT_PAST and not cleared:
-            # `git commit -m x && git push` at exit 1 with `[main abc1234]` printed: the commit happened, the
-            # push did not; `gh pr merge --delete-branch` merged, then failed to delete the branch.
+        # `git commit -m x && ./deploy.sh` at exit 1 with `[main abc1234]` printed and nothing failing in the
+        # output: the commit happened, the deploy did not. With a failure marker anywhere in the output, which
+        # step it belongs to is unknown (`npm run build && npm test` whose build script ends in `tsc`).
+        failed_somewhere = any(p.search(out) for p in (_GIT_FAIL.get(verb), _SHARED_FAIL.get(verb)) if p)
+        if done and verb in _GIT_PAST and not cleared and not failed_somewhere:
             return "probably", (f"🟡 probably {_GIT_PAST[verb]}: {_exit_text(tc)} came from another step; "
                                 f"output shows {_code(done.group(0).strip(), 60)}")
         if chained:
-            return "unclear", f"⚠️ {_exit_text(tc)}: this command or {chained} step in the chain failed"
+            shown = f"; output shows {_code(done.group(0).strip(), 60)}" if done else ""
+            return "unclear", f"⚠️ {_exit_text(tc)}: this command or {chained} step in the chain failed{shown}"
+        if done and verb in _GIT_PAST and not cleared:
+            # `gh pr merge --delete-branch`: "Squashed and merged", then "fatal:" about the branch, exit 1.
+            return "unclear", f"⚠️ {_exit_text(tc)}, but output shows {_code(done.group(0).strip(), 60)}"
         return "failed", _failed(tc)
     if tc.input.get("run_in_background"):
         return "pending", _status(tc)

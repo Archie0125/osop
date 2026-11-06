@@ -76,7 +76,8 @@ _GIT_CONTEXT = re.compile(
 
 _PATTERNS = {
     "tests": re.compile(
-        rf"(?:測試|全套|\b(?:tests?|testing|spec|phpunit|pytest|vitest|jest|unit|e2e|smoke)\b|[A-Z]\w*Tests?\b){_SPAN}"
+        rf"(?:測試|全套|\b(?:tests?|testing|spec|phpunit|pytest|vitest|jest|unit|e2e|smoke)\b"
+        rf"|(?-i:\b[A-Z][A-Za-z0-9]*Tests?\b)){_SPAN}"
         r"(?:全部通過|都通過|全通過|全過|都過|通過(?!\s*(?:stdin|stdout|stderr|api|http|socket|pipe|env|cli|url|參數|管道|介面))"
         r"|全綠|綠(?!色)|過了|\bpass(?:ed|es|ing)?\b|0\s*個?\s*失敗|0\s+fail(?:ed|ures?)\b)"
         r"|\b\d[\d,]*\s*passed\b|\b\d+\s*/\s*\d+\s*(?:通過|都過|全過|綠|pass(?:ed)?\b)"
@@ -131,8 +132,8 @@ _CLAUSE_END = re.compile(r"[，,;；]|\s[—–-]\s|—")
 _QUESTION_CLAUSE = re.compile(r"嗎|要我|要不要|是不是|\bshould i\b|\bdo you want\b|\bwant me\b|\bshall i\b", re.I)
 _AUX_QUESTION = re.compile(r"^(?:do|does|did|is|are|was|were|can|could|will|would|should|have|has)\b", re.I)
 # "測試全綠後，再 push", "等測試全綠，再 push", "測試全綠，然後 push": the claim's clause is a condition or a step.
-_PLAN_CLAUSE = re.compile(r"^(?:等|確認|待|先|請)|(?:後|前|之後|以後|時)$")
-_NEXT_PLAN = re.compile(r"^\s*(?:再|我會|然後|接著|就|才)")
+_PLAN_CLAUSE = re.compile(r"^(?:等|確認|待|先|請)(?!了|過)|(?:後|前|之後|以後|時)$")
+_NEXT_PLAN = re.compile(r"^\s*(?:再|我會|然後|接著|就|才)(?!\s*(?:已|都|也|剛))")
 # "1 failed, 2 passed" reports a failure, whatever else it says.
 _FAILING = re.compile(r"\b[1-9]\d*\s*(?:failed|failures?|errors?)\b|[1-9]\d*\s*(?:個|條|項)?\s*失敗", re.I)
 

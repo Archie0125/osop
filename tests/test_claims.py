@@ -354,7 +354,8 @@ def test_a_test_failure_later_in_the_chain_is_not_the_lints(tmp_path):
     claims = _claims(_session(tmp_path, [
         ("Bash", {"command": "ruff check . && npm test"},
          "Exit code 1\nAll checks passed!\nFAIL src/app.test.ts\nTests: 1 failed", True)], "Lint passes."))
-    assert "✅ backed" in claims and "🟡 probably clean" in claims and "came from another step" in claims
+    assert "⚠️ cannot tell" in claims and "a later step in the chain failed" in claims
+    assert "All checks passed!" in claims
     claims = _claims(_session(tmp_path, [
         ("Bash", {"command": "ruff check . && npm test"}, "Exit code 1\nFound 2 errors.", True)], "Lint passes."))
     assert "❌ contradicted" in claims
@@ -447,7 +448,7 @@ def test_ts_diagnostics_and_pass_lines_of_a_test_runner_in_the_chain_are_not_the
         ("Bash", {"command": "npm run lint && npm test"},
          "Exit code 1\nAll checks passed!\nFAIL src/app.test.ts\n  src/app.test.ts:3:7 - error TS2322: Type 'string'",
          True)], "Lint passes."))
-    assert "✅ backed" in claims and "🟡 probably clean" in claims
+    assert "⚠️ cannot tell" in claims and "All checks passed!" in claims
     claims = _claims(_session(tmp_path, [
         ("Bash", {"command": "npx tsc --noEmit"}, "Exit code 1\nsrc/app.ts:3:7 - error TS2322: Type 'string'", True)],
         "Lint passes."))
@@ -792,13 +793,14 @@ def test_a_push_error_in_the_same_call_is_not_the_commits_failure(tmp_path):
         ("Bash", {"command": 'git add a.py && git commit -m "fix: parser" && git push'}, out, True),
         ("Bash", {"command": "git pull --rebase && git push"},
          "Successfully rebased\n   abc1234..def5678  main -> main", False)], "Committed and pushed to main."))
-    assert "| committed:" in claims and "✅ backed" in claims.split("| committed:")[1].split("\n")[0]
+    committed = claims.split("| committed:")[1].split("\n")[0]
+    assert "⚠️ cannot tell" in committed and "[m2 abc1234]" in committed and "❌" not in committed
     assert "| pushed:" in claims and "✅ backed" in claims.split("| pushed:")[1].split("\n")[0]
     claims = _claims(_session(tmp_path, [
         ("Bash", {"command": "gh pr merge 13 --squash --delete-branch"},
          "Exit code 1\n✓ Squashed and merged pull request #13\nfailed to run git: fatal: 'main' is already checked out",
          True)], "PR #13 is merged."))
-    assert "✅ backed" in claims and "🟡 probably merged" in claims
+    assert "⚠️ cannot tell" in claims and "Squashed and merged" in claims and "❌" not in claims
     claims = _claims(_session(tmp_path, [
         ("Bash", {"command": "git commit -m x && git push"}, "Exit code 1\nnothing to commit, working tree clean",
          True)], "Committed and pushed."))
@@ -879,7 +881,7 @@ def test_a_build_line_printed_mid_run_does_not_back_a_failed_build(tmp_path):
     claims = _claims(_session(tmp_path, [
         ("Bash", {"command": "npm run build && npm test"}, "Exit code 1\n✓ built in 2.1s\nFAIL src/app.test.ts", True)],
         "Build succeeds."))
-    assert "✅ backed" in claims and "🟡 probably built" in claims
+    assert "✅ backed" in claims and "🟡 probably built" in claims  # jest's FAIL is no build marker
 
 
 def test_two_lint_runs_with_errors_then_an_all_clear_at_exit_nonzero_cannot_tell(tmp_path):
@@ -887,3 +889,28 @@ def test_two_lint_runs_with_errors_then_an_all_clear_at_exit_nonzero_cannot_tell
         ("Bash", {"command": "ruff check src/; ruff check tests/ && pytest -q"},
          "Exit code 1\nFound 2 errors.\nAll checks passed!\n1 failed", True)], "Lint passes."))
     assert "⚠️ cannot tell" in claims
+
+
+# --- after Codex's sixteenth round (head bc578209) --------------------------------------------------
+
+
+def test_a_success_line_at_exit_nonzero_vouches_only_when_nothing_failed_in_the_output(tmp_path):
+    out = "Exit code 2\n> vite build && tsc --noEmit\n✓ built in 2.1s\nsrc/app.ts(3,7): error TS2322: Type 'string'"
+    claims = _claims(_session(tmp_path, [("Bash", {"command": "npm run build && npm test"}, out, True)],
+                              "Build succeeds."))
+    assert "⚠️ cannot tell" in claims and "✅" not in claims
+    claims = _claims(_session(tmp_path, [
+        ("Bash", {"command": "git commit -m x && ./deploy.sh"},
+         "Exit code 1\n[main abc1234] x\ndeploy: connection refused", True)], "Committed."))
+    assert "✅ backed" in claims and "🟡 probably committed" in claims
+
+
+@pytest.mark.parametrize("text, kinds", [
+    ("The latest version passes the correct URL to the API.", []),
+    ("測試已經全部通過，接著已 push 到 main。", ["tests", "push"]),
+    ("確認了所有測試都通過。", ["tests"]),
+    ("LoopRegistryMatchesSchedulerTest 綠", ["tests"]),
+    ("測試全綠後，再 push", []),
+])
+def test_class_names_are_case_sensitive_and_completed_next_clauses_are_not_plans(text, kinds):
+    assert _kinds(text) == kinds, text
