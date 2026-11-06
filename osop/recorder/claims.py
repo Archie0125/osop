@@ -120,9 +120,7 @@ def find_claims(message: str) -> list[Claim]:
                 continue
             if _NEGATED_ZH_BEFORE.search(sentence[max(0, m.start() - 8):m.start()]):
                 continue
-            if _PLAN_AHEAD.search(sentence[:m.start()]) and (
-                    not _PAST.search(m.group(0))
-                    or _PRESENT_PASSIVE.search(sentence[max(0, m.start() - 48):m.end()])):
+            if _PLAN_AHEAD.search(sentence[:m.start()]) and (not _PAST.search(m.group(0)) or _passive_at(sentence, m)):
                 continue
             if re.search(r"[A-Za-z]", m.group(0)) and (
                     _NEGATED_EN_BEFORE.search(sentence[:m.start()]) or _NEGATED_EN_AFTER.search(sentence[m.end():])):
@@ -135,6 +133,13 @@ def find_claims(message: str) -> list[Claim]:
                 continue
             claims.append(Claim(kind, sentence))
     return claims
+
+
+def _passive_at(sentence: str, m: re.Match) -> bool:
+    """Whether the claim's own participle sits in a present passive ("is reviewed and merged into main"); one
+    in an earlier clause ("after confirming the PR is merged, I also committed …") does not count."""
+    start = max(0, m.start() - 48)
+    return any(p.end() > m.start() - start for p in _PRESENT_PASSIVE.finditer(sentence[start:m.end()]))
 
 
 def sentences(message: str) -> list[str]:

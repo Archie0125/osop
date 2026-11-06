@@ -712,3 +712,21 @@ def test_coordinated_present_passives_behind_after_are_a_plan():
     assert _kinds("After the PR is reviewed and merged into main, delete the branch.") == []
     assert _kinds("After the changes are tested, committed and pushed, close the issue.") == []
     assert _kinds("After the PR was reviewed and merged into main, I deleted the branch.") == ["merge"]
+
+
+# --- after Codex's ninth round (head 151c42c1) ------------------------------------------------------
+
+
+def test_an_earlier_passive_clause_does_not_hide_a_later_deed():
+    assert _kinds("After confirming the PR is merged into main, I also committed the follow-up fix.") == ["commit"]
+    assert _kinds("After the PR is reviewed and merged into main, delete the branch.") == []
+    assert _kinds("After the changes are tested, committed and pushed, close the issue.") == []
+
+
+def test_ruffs_capital_failed_to_format_is_a_failure_too(tmp_path):
+    claims = _claims(_session(tmp_path, [
+        ("Bash", {"command": "ruff format --check .; echo done"},
+         "error: Failed to format app.py: source contains syntax errors\n1 file already formatted\ndone", False)],
+        "Lint passes."))
+    assert "❌ contradicted" in claims and "Failed to format" in claims
+    assert _kinds("After everything is tested and committed, I pushed to main.") == ["push"]

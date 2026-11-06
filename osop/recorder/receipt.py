@@ -408,8 +408,11 @@ def _judge(tc: ToolCall, code: str, m: re.Match, verb: str | None = None) -> tup
     done = _last(_GIT_DONE[verb], out) if readable and verb in _GIT_DONE else None
     if done is None and alone and verb in _SHARED_DONE:
         done = _last(_SHARED_DONE[verb], out)
-    if fail and done and done.start() > fail.start():
-        fail = None  # the last word wins: `! [rejected]`, a rebase, then `main -> main` is a push
+    # The later of a failure and a success marker decides only when the tool ran more than once in the call
+    # (`git push; git pull --rebase; git push`, `ruff format --check .; ruff format .; ruff format --check .`).
+    # A single run that printed both ("error: Failed to format app.py", then "1 file already formatted") failed.
+    if fail and done and done.start() > fail.start() and _ran_again(code, m, verb, mine, others):
+        fail = None
     chained = _chained(code, m)
     if tc.is_error:
         if fail:
@@ -433,6 +436,13 @@ def _judge(tc: ToolCall, code: str, m: re.Match, verb: str | None = None) -> tup
     if done:
         return "probably", f"🟡 probably {_GIT_PAST[verb]}: {why}; output shows {_code(done.group(0).strip(), 60)}"
     return "unclear", f"⚠️ exit 0, but {why}"
+
+
+def _ran_again(code: str, m: re.Match, verb: str, mine: str, others: set[tuple[str, str]]) -> bool:
+    """Whether the same tool (or the same git verb) runs again elsewhere in the call."""
+    if verb in ("lint", "build"):
+        return any(tool == mine for _, tool in others)
+    return sum(1 for g in _GIT_STATE.finditer(code) if _verb(g) == verb) > 1
 
 
 def _last(pattern: re.Pattern, text: str) -> re.Match | None:
@@ -493,7 +503,7 @@ _GIT_FAIL = {
     # (ruff format --check, black --check, prettier --check) failed, whatever a `ruff check` before it said.
     "lint": re.compile(r"Found \d+ errors?\b(?! \(\d+ fixed, 0 remaining\))|\d+ problems? \((?!0 errors?\b)"
                        r"|too many warnings|would (?:be )?reformat(?:ted)?\b|Code style issues found"
-                       r"|(?:would )?fail(?:ed)? to (?:re)?format|cannot format"),
+                       r"|(?:would )?[Ff]ail(?:ed)? to (?:re)?format|cannot format"),
 }
 # Markers another runner in the same call could have printed just as well (`ruff check . && npm test`: jest's
 # FAIL and PASS, ts-jest's `error TS…`; `cargo clippy && cargo build`: rustc's `error[E…]`): read only when
