@@ -171,11 +171,27 @@ def test_an_exit_code_echoed_right_after_the_test_is_the_tests_own(tmp_path):
     assert "❌ failed" in row and "exit=1" in row.split(" | ")[2]
 
 
+def test_pipestatus_echoed_after_the_pipeline_is_the_tests_own(tmp_path):
+    command = 'python -m pytest -q 2>&1 | tail -3; echo "pytest exit=${PIPESTATUS[0]}"'
+    row = _section(_receipt(_session(tmp_path, [
+        ("Bash", {"command": command}, "1 failed, 2 passed\npytest exit=1", False)])), "Tests").splitlines()[2]
+    assert "❌ failed" in row and "${PIPESTATUS[0]}" in row and "exit=1" in row
+    row = _section(_receipt(_session(tmp_path, [
+        ("Bash", {"command": command}, "3 passed\npytest exit=0", False)])), "Tests").splitlines()[2]
+    assert "✅ passed" in row and "exit=0" in row
+    # A test that does not open the pipeline, and `$?` after a pipe (the last command's): both stay unclear.
+    for command in ('echo tests | python -m pytest -q | tail -3; echo "exit=${PIPESTATUS[0]}"',
+                    'python -m pytest -q | tail -3; echo "exit=$?"'):
+        row = _section(_receipt(_session(tmp_path, [
+            ("Bash", {"command": command}, "collected 3 items\nexit=0", False)])), "Tests").splitlines()[2]
+        assert "⚠️" in row, command
+
+
 def test_an_exit_code_echoed_after_a_pipe_is_only_shown(tmp_path):
     # `$?` here is `tee`'s, so the run stays unclear; the echoed value is still worth showing.
-    tests = _section(_receipt(_session(tmp_path, [
-        ("Bash", {"command": 'python -m pytest -q 2>&1 | tee log; echo "exit=$?"'}, "collected 3 items\nexit=0", False)])),
-        "Tests")
+    command = 'python -m pytest -q 2>&1 | tee log; echo "exit=$?"'
+    tests = _section(_receipt(_session(tmp_path, [("Bash", {"command": command}, "collected 3 items\nexit=0", False)])),
+                     "Tests")
     row = tests.splitlines()[2]
     assert "⚠️" in row and "exit=0" in row.split(" | ")[2]
 

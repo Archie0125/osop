@@ -502,14 +502,15 @@ def _test_verdict(tc: ToolCall, code: str, match: re.Match) -> str:
     echoed = _ECHOED_EXIT.findall(out)
     runs = sum(1 for _ in _TEST_COMMAND.finditer(code))
     # `pytest; echo exit=$?`: the first `$?` echoed right after the test, with nothing between, is the test's.
+    # `pytest | tail; echo exit=${PIPESTATUS[0]}`: so is the first pipeline status, when the test opens the pipeline.
     # (`code` has quoted strings blanked to "", so `echo "exit=$?"` shows as `echo ""`.)
-    if (hidden == "`;`" and runs == 1 and echoed and "$?" not in code[:match.start()]
-            and re.match(r"(?:[^;|&\n]|>&)*;\s*echo\b[^;&|\n]*(?:\$\?|\"\")", code[match.end():])):
+    var = _echoed_status_var(tc, code, match)
+    if var and runs == 1 and echoed:
         status = int(re.search(r"\d+$", echoed[0]).group())
         if status:
-            return f"❌ failed: `echo $?` right after the test printed {echoed[0]}"
+            return f"❌ failed: `echo {var}` right after the test printed {echoed[0]}"
         if not _FAILURE.search(out):
-            return f"✅ passed: `echo $?` right after the test printed {echoed[0]}"
+            return f"✅ passed: `echo {var}` right after the test printed {echoed[0]}"
     if runs > 1:
         # "3 passed" may belong to any of them; the others may have failed silently.
         return f"⚠️ unclear: {hidden} after the test hides its exit status; {runs} test commands in one call"
@@ -522,6 +523,24 @@ def _test_verdict(tc: ToolCall, code: str, match: re.Match) -> str:
             else "; output mentions failures" if mentions_failure
             else "; output shows tests passing" if clean_pass else "")
     return f"⚠️ unclear: {hidden} after the test hides its exit status{hint}"
+
+
+def _echoed_status_var(tc: ToolCall, code: str, match: re.Match) -> str | None:
+    """'$?' or '${PIPESTATUS[0]}' when an echo of it right after the test reports the test's own status.
+
+    `pytest; echo exit=$?` with nothing between: `$?` is the test's. `pytest | tail; echo ${PIPESTATUS[0]}`
+    with the test opening the pipeline: the first pipeline status is the test's. (`code` has quoted strings
+    blanked to "", so `echo "exit=$?"` shows as `echo ""`; the raw command tells the two apart.)
+    """
+    after = code[match.end():]
+    if "$?" not in code[:match.start()] and re.match(r"(?:[^;|&\n]|>&)*;\s*echo\b[^;&|\n]*(?:\$\?|\"\")", after):
+        return "$?"
+    # The match starts at the separator before the runner: a `|` there means the test is not first.
+    opens = "|" not in re.split(r"[;&\n]|&&|\|\|", code[:match.start() + 1])[-1]
+    if (opens and "${PIPESTATUS[0]}" in _command(tc) and "PIPESTATUS" not in code[:match.start()]
+            and re.match(r"(?:[^;&\n]|>&)*\|(?:[^;&\n]|>&)*;\s*echo\b[^;&|\n]*(?:\$\{PIPESTATUS\[0\]\}|\"\")", after)):
+        return "${PIPESTATUS[0]}"
+    return None
 
 
 def _hidden_status(code: str, test_end: int) -> str | None:
