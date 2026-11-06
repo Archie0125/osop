@@ -114,3 +114,9 @@ class TestReceiptsDir:
         for cwd in (r"C:\work\demo", "C:\\work\\demo\\", "/work/demo", "/work/demo/"):
             assert _receipts_dir({"cwd": cwd}, Path("x/s.jsonl")).name == "demo", cwd
         assert _receipts_dir({"cwd": ""}, Path("slug-dir/s.jsonl")).name == "slug-dir"
+
+    def test_a_drive_root_cwd_falls_back_to_the_transcript_directory(self, tmp_path, monkeypatch):
+        from osop.cli.main import _receipts_dir
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        for cwd in ("D:\\", "D:", "C:\\", "/"):
+            assert _receipts_dir({"cwd": cwd}, Path("slug-dir/s.jsonl")).name == "slug-dir", cwd

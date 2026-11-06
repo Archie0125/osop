@@ -80,10 +80,12 @@ _SHELL_WRITES = (
 # `git --no-pager`) may sit between `git` and the verb; `merge-base` and `tag-something` are not `merge` / `tag`.
 _GIT_VERB = (
     r"(?:git\s+(?:-[cC]\s+\S+\s+|--(?:git-dir|work-tree|namespace|exec-path|config-env)\s+\S+\s+"
-    r"|--[\w-]+(?:=\S*)?\s+)*(?:commit|push|merge|rebase|cherry-pick|tag)(?![\w-])"
+    r"|--[\w-]+(?:=\S*)?\s+)*(?:commit|push|merge|rebase|cherry-pick|tag(?!\s+(?:-l|--list|-n\d*)(?!\S)))(?![\w-])"
     r"|gh\s+pr\s+(?:create|merge|close)(?![\w-]))")
-_GIT_STATE = re.compile(_COMMAND_START + _GIT_VERB)
-_GIT_SEGMENT = re.compile(_COMMAND_START + "(" + _GIT_VERB + r"[^;&|\n)]*)")
+# `timeout 900 git push`, `GIT_EDITOR=true git cherry-pick`, `env X=1 git push`: wrappers seen in real sessions.
+_GIT_START = _COMMAND_START + r"(?:(?:timeout(?:\s+-\S+)*\s+\S+|nohup|env(?:\s+-\S+)*)\s+)*(?:[A-Za-z_]\w*=\S*\s+)*"
+_GIT_STATE = re.compile(_GIT_START + _GIT_VERB)
+_GIT_SEGMENT = re.compile(_GIT_START + "(" + _GIT_VERB + r"[^;&|\n)]*)")
 _FILE_TOOLS = ("Edit", "MultiEdit", "Write", "NotebookEdit")
 _MAIN = "main"
 
@@ -348,12 +350,13 @@ def _commands_details(calls: list) -> str:
 def _unfinished(calls: list, tests: list) -> list:
     """Calls with nothing to judge: no result arrived, or they were started in the background.
 
-    Test runs and file edits already show their ⏳ in their own sections.
+    Test runs and file edits already show their ⏳ in their own sections; a call that failed to start has a
+    result (its failure) and is listed under Errors.
     """
     test_calls = {id(tc) for _, tc, _, _ in tests}
     return [
         (by, tc) for by, tc in calls
-        if (tc.status == "PENDING" or tc.input.get("run_in_background"))
+        if (tc.status == "PENDING" or (tc.input.get("run_in_background") and not tc.is_error))
         and id(tc) not in test_calls and tc.tool not in _FILE_TOOLS
     ]
 
@@ -393,12 +396,12 @@ def _git_segments(command: str) -> list[str]:
     """The git commands as written, each cut at the next separator or redirection, found where a command starts
     and outside quotes and heredoc bodies.
 
-    Quotes and heredoc bodies are blanked with same-length filler that keeps newlines (and the `<<`), so every
-    position still holds and the text shown is sliced from the command itself.
+    Quotes and heredoc bodies are blanked with same-length filler (a heredoc keeps its `<<`, where the segment is
+    cut), so every position still holds and the text shown is sliced from the command itself. A quoted string that
+    spans lines, like `-m "$(cat <<'EOF' … EOF)"`, stays one segment.
     """
-    fill = lambda text: re.sub(r"[^\n]", "x", text)  # noqa: E731
-    blanked = _QUOTED.sub(lambda m: fill(m.group(0)),
-                          _HEREDOC.sub(lambda m: "<<" + fill(m.group(0)[2:]), command))
+    fill = lambda m, keep=0: m.group(0)[:keep] + "x" * (len(m.group(0)) - keep)  # noqa: E731
+    blanked = _QUOTED.sub(fill, _HEREDOC.sub(lambda m: fill(m, 2), command))
     segments = []
     for m in _GIT_SEGMENT.finditer(blanked):
         start = m.start(1)

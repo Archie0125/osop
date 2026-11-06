@@ -759,3 +759,30 @@ def test_git_status_hidden_by_what_follows_is_not_exit_0(tmp_path):
     assert result("git commit -m x; git log -1") == "⚠️ exit 0, but `;` after it hides its exit status"
     assert result("git commit -m x && git push") == "exit 0"
     assert result("set -o pipefail; git push 2>&1 | tail -3") == "exit 0"
+
+
+# --- independent verification of PR #12 -----------------------------------------------------------
+
+
+def test_git_behind_timeout_or_an_env_assignment_is_seen(tmp_path):
+    assert _git_cell(tmp_path, "timeout 900 git push origin main") == "`git push origin main`"
+    assert _git_cell(tmp_path, "GIT_EDITOR=true git cherry-pick abc1234") == "`git cherry-pick abc1234`"
+    assert _git_cell(tmp_path, "env GIT_SSH_COMMAND=ssh git push") == "`git push`"
+
+
+def test_listing_tags_is_not_tagging(tmp_path):
+    receipt = _receipt(_session(tmp_path, [("Bash", {"command": "git tag -l 'v*'"}, "v1", False)]))
+    assert "## Git" not in receipt
+    assert _git_cell(tmp_path, "git tag v2") == "`git tag v2`"
+
+
+def test_a_quoted_multiline_commit_message_stays_one_segment(tmp_path):
+    command = 'git commit -m "$(cat <<\'EOF\'\nfix: x\n\nwhy\nEOF\n)" && git push'
+    assert _git_cell(tmp_path, command) == '`git commit -m "$(cat <<\'EOF\' fix: x why EOF )"; git push`'
+
+
+def test_a_background_start_that_failed_is_an_error_not_an_unfinished_call(tmp_path):
+    receipt = _receipt(_session(tmp_path, [
+        ("Bash", {"command": "npm run dev", "run_in_background": True}, "Exit code 127\nnpm: not found", True)]))
+    assert "## No result recorded" not in receipt and "without result" not in receipt
+    assert "npm run dev" in _section(receipt, "Errors")

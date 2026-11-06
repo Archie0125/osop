@@ -169,5 +169,7 @@ def _receipts_dir(parsed: dict, transcript: Path) -> Path:
     """~/.osop/receipts/<project>, named after the session's working directory: receipts never land in the
     repo the agent worked on, where they would be one more file the agent can touch."""
     # Split on both separators: a transcript from a Windows session may be read on POSIX, and vice versa.
-    project = re.split(r"[\\/]", (parsed.get("cwd") or "").rstrip("\\/"))[-1] or transcript.parent.name or "unknown"
+    project = re.split(r"[\\/]", (parsed.get("cwd") or "").rstrip("\\/"))[-1]
+    if not project or project.endswith(":"):  # a drive root: "D:" would be a drive-relative path, not a name
+        project = transcript.parent.name or "unknown"
     return Path.home() / ".osop" / "receipts" / project

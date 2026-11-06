@@ -19,6 +19,7 @@ blocks, so there is no loop to guard against.
 """
 
 import json
+import os
 import subprocess
 import sys
 
@@ -38,8 +39,9 @@ def main() -> int:
         return 0
 
     try:
+        # A wide console: an error message that wraps at 80 columns would lose the path it names.
         run = subprocess.run([sys.executable, "-m", "osop", "log", str(transcript), "--brief"],
-                             capture_output=True, timeout=150)
+                             capture_output=True, timeout=150, env={**os.environ, "COLUMNS": "4000"})
     except subprocess.TimeoutExpired:
         _say("OSOP · no receipt: osop log timed out")
         return 0
@@ -50,7 +52,9 @@ def main() -> int:
         return 0
     reason = next((ln.strip() for ln in (run.stdout + run.stderr).decode("utf-8", "replace").splitlines()
                    if ln.strip()), f"osop log exited {run.returncode}")
-    _say(f"OSOP · no receipt: {reason[:200]}")
+    if len(reason) > 300:
+        reason = reason[:100] + " … " + reason[-180:]  # keep the end: that is where a path's file name is
+    _say(f"OSOP · no receipt: {reason}")
     return 0
 
 

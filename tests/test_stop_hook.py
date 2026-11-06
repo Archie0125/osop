@@ -51,8 +51,10 @@ def test_stop_hook_reads_utf8_input_whatever_the_console_codec(tmp_path):
 
 
 def test_stop_hook_reports_a_failed_receipt_instead_of_staying_silent(tmp_path):
+    missing = tmp_path / ("a-directory-name-long-enough-to-wrap-an-80-column-console" * 2) / "missing.jsonl"
     result = _run_hook({"hook_event_name": "Stop", "stop_hook_active": False,
-                        "transcript_path": str(tmp_path / "missing.jsonl")}, tmp_path)
+                        "transcript_path": str(missing)}, tmp_path)
     assert result.returncode == 0
     message = json.loads(result.stdout.decode("utf-8"))["systemMessage"]
     assert message.startswith("OSOP") and "no receipt" in message
+    assert "missing.jsonl" in message  # the path is not lost to console wrapping
