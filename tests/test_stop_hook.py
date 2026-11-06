@@ -11,6 +11,7 @@ from pathlib import Path
 
 HOOK = Path(__file__).parent.parent / "hooks" / "osop-stop.py"
 MINIMAL_SESSION = Path(__file__).parent / "fixtures" / "minimal_session.jsonl"
+CONTRADICTED = Path(__file__).parent / "fixtures" / "claims_contradicted.jsonl"
 
 
 def _run_hook(payload: dict, home: Path) -> subprocess.CompletedProcess:
@@ -58,3 +59,43 @@ def test_stop_hook_reports_a_failed_receipt_instead_of_staying_silent(tmp_path):
     message = json.loads(result.stdout.decode("utf-8"))["systemMessage"]
     assert message.startswith("OSOP") and "no receipt" in message
     assert "missing.jsonl" in message  # the path is not lost to console wrapping
+
+
+def test_stop_hook_checks_the_claims_in_the_message_claude_code_hands_it(tmp_path):
+    # The transcript's own final text says the fix is done; the hook's copy is what the user actually saw.
+    payload = {"hook_event_name": "Stop", "stop_hook_active": False, "transcript_path": str(CONTRADICTED),
+               "last_assistant_message": "全套測試綠，已 push 到 origin/main。"}
+    result = _run_hook(payload, tmp_path)
+    assert result.returncode == 0, result.stderr
+    message = json.loads(result.stdout.decode("utf-8"))["systemMessage"]
+    assert "claims: 1 contradicted ❌ (tests pass), 1 without evidence ❓ (pushed)" in message
+    receipt = next((tmp_path / ".osop" / "receipts" / "demo").glob("*.receipt.md")).read_text(encoding="utf-8")
+    assert "全套測試綠，已 push 到 origin/main" in receipt and "committed" not in receipt.split("## Goal")[0]
+
+
+def test_stop_hook_without_the_message_falls_back_to_the_transcript(tmp_path):
+    result = _run_hook({"hook_event_name": "Stop", "stop_hook_active": False, "transcript_path": str(CONTRADICTED)}, tmp_path)
+    message = json.loads(result.stdout.decode("utf-8"))["systemMessage"]
+    assert "claims: 1 contradicted ❌ (tests pass), 1 without evidence ❓ (committed)" in message
+
+
+def test_stop_hook_skips_a_transcript_over_the_size_limit(tmp_path):
+    env = dict(os.environ, HOME=str(tmp_path), USERPROFILE=str(tmp_path), OSOP_MAX_TRANSCRIPT_MB="0.0001")
+    payload = json.dumps({"hook_event_name": "Stop", "transcript_path": str(MINIMAL_SESSION)}).encode("utf-8")
+    result = subprocess.run([sys.executable, str(HOOK)], input=payload, capture_output=True, env=env, timeout=120)
+    assert result.returncode == 0
+    message = json.loads(result.stdout.decode("utf-8"))["systemMessage"]
+    assert message.startswith("OSOP · receipt skipped") and "osop log" in message and "minimal_session.jsonl" in message
+    assert not (tmp_path / ".osop").exists()
+
+
+def test_stop_hook_survives_a_lone_surrogate_in_the_message_and_a_bad_size_limit(tmp_path):
+    result = _run_hook({"hook_event_name": "Stop", "transcript_path": str(MINIMAL_SESSION),
+                        "last_assistant_message": "All tests pass \ud83d"}, tmp_path)
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout.decode("utf-8"))["systemMessage"].startswith("OSOP · claims:")
+    env = dict(os.environ, HOME=str(tmp_path), USERPROFILE=str(tmp_path), OSOP_MAX_TRANSCRIPT_MB="abc")
+    payload = json.dumps({"hook_event_name": "Stop", "transcript_path": str(MINIMAL_SESSION)}).encode("utf-8")
+    result = subprocess.run([sys.executable, str(HOOK)], input=payload, capture_output=True, env=env, timeout=120)
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout.decode("utf-8"))["systemMessage"].startswith("OSOP ·")

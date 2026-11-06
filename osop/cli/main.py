@@ -35,6 +35,8 @@ straight from the Claude Code transcript (not the agent's own report).
 
 - `osop log [session-id]` — write `~/.osop/receipts/<project>/<date>-<desc>.receipt.md` from a session transcript
 - `osop log --brief` — the same, plus a one-line summary (what a Stop hook shows)
+- The receipt checks the final message's claims (tests pass, lint, build, committed, pushed, merged)
+  against the transcript: backed, contradicted, cannot tell, or no evidence
 
 Run `osop log` after a multi-step task.
 """
@@ -85,7 +87,10 @@ def init_cmd():
               help="Print the receipt to stdout instead of writing a file")
 @click.option("--brief", is_flag=True, default=False,
               help="Write the receipt, then print a one-line summary (for a Stop hook)")
-def log_cmd(source, short_desc, out_dir, stdout, brief):
+@click.option("--last-message", "last_message", type=click.Path(allow_dash=True), default=None,
+              help="File holding the agent's final message (- for stdin), as a Stop hook receives it; "
+                   "default: the transcript's last assistant text")
+def log_cmd(source, short_desc, out_dir, stdout, brief, last_message):
     """Write a receipt of what the agent actually did in a Claude Code session.
 
     Reads the canonical JSONL transcript, sub-agents included, and builds the
@@ -132,6 +137,12 @@ def log_cmd(source, short_desc, out_dir, stdout, brief):
     if not parsed["nodes"]:
         console.print(f"[yellow]Skipped:[/yellow] transcript has no usable events: {path}")
         return
+
+    if last_message is not None:
+        # The Stop hook's copy is authoritative: Claude Code writes the transcript asynchronously, so the
+        # turn that just ended may not be in the file yet.
+        raw = sys.stdin.buffer.read() if last_message == "-" else Path(last_message).read_bytes()
+        parsed["last_assistant_message"] = raw.decode("utf-8", "replace").strip()
 
     date_str = (parsed["started_at"] or _dt.utcnow().isoformat())[:10]
     if not short_desc:

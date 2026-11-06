@@ -28,6 +28,7 @@ Receipts live under `~/.osop/receipts/`, never in the repo the agent worked on.
 
 `receipt.md` is one page per session, sub-agents included. Facts first, the full command table collapsed at the end:
 
+- **Claims**: what the agent's final message says it did, checked against the transcript. Only claims the transcript can judge are looked for: tests pass, lint passes, build succeeds, committed, pushed, merged (English and 繁體中文). Each gets `✅ backed`, `❌ contradicted`, `⚠️ cannot tell` or `❓ no evidence`, with the command that decided it. Rules only, no model: a question, an instruction or a negated sentence is not a claim
 - **Goal**: the first prompt you typed
 - **Tests**: every test run and its result, read from the exit status the tool reported and the whole output. `🟡 probably passed` means the output shows tests passing and no failure, but a pipe, `;` or `&` after the test command hid its exit status (`pytest | tail` reports `tail`'s exit code). `⚠️ unclear` means the status was hidden and the output does not settle it
 - **Files changed**: files edited with Edit / MultiEdit / Write, plus shell commands that may have changed files (`>`, `tee`, `sed -i`, `mv`…). An edit with no result recorded is not counted
@@ -38,19 +39,19 @@ Receipts live under `~/.osop/receipts/`, never in the repo the agent worked on.
 
 ## Stop hook (optional)
 
-`hooks/osop-stop.py` writes the receipt when a Claude Code turn ends and shows the one-line summary. It is not installed for you: add it to `settings.json` under `hooks` → `Stop` with a python that has osop installed (see the file's docstring).
+`hooks/osop-stop.py` writes the receipt when a Claude Code turn ends and shows the one-line summary, claims first: `OSOP · claims: 1 contradicted ❌ (tests pass) · tests: 3 runs: … · receipt: …`. It checks the final message Claude Code hands the hook (`last_assistant_message`), so a transcript file that has not caught up yet does not matter. It is not installed for you: add it to `settings.json` under `hooks` → `Stop` with a python that has osop installed (see the file's docstring). Transcripts over 200 MB are skipped, and the summary says so (`OSOP_MAX_TRANSCRIPT_MB` changes the limit).
 
 ## Commands
 
 | Command | What |
 |---------|------|
-| `osop log [session-id \| path]` | Write `receipt.md` from a Claude Code transcript (latest session for the current directory by default) |
+| `osop log [session-id \| path]` | Write `receipt.md` from a Claude Code transcript (latest session for the current directory by default). `--brief` adds the one-line summary; `--last-message FILE` (or `-` for stdin) checks that text instead of the transcript's last assistant text |
 | `osop init` | Add an OSOP section to the project's CLAUDE.md |
 
 ## What's next
 
-Check the agent's final "done / passed / verified" claims against the
-receipt, and flag the ones with no evidence behind them.
+A two-week trial by the owner: does the one-line summary ever change a decision?
+Then parsers for other agents' transcripts (Codex CLI first).
 
 ## License
 

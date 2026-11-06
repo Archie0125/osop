@@ -163,12 +163,37 @@ def test_binary_garbage_in_output_does_not_reach_the_receipt(tmp_path):
     assert not [ch for ch in receipt if ord(ch) < 32 and ch not in "\n\t"]
 
 
-def test_echoed_exit_code_is_shown_for_unclear_runs(tmp_path):
+def test_an_exit_code_echoed_right_after_the_test_is_the_tests_own(tmp_path):
     tests = _section(_receipt(_session(tmp_path, [
         ("Bash", {"command": 'python -m pytest -q > log 2>&1; echo "pytest exit=$?"'}, "pytest exit=1", False)])),
         "Tests")
     row = tests.splitlines()[2]
-    assert "⚠️" in row and "exit=1" in row.split(" | ")[2]
+    assert "❌ failed" in row and "exit=1" in row.split(" | ")[2]
+
+
+def test_pipestatus_echoed_after_the_pipeline_is_the_tests_own(tmp_path):
+    command = 'python -m pytest -q 2>&1 | tail -3; echo "pytest exit=${PIPESTATUS[0]}"'
+    row = _section(_receipt(_session(tmp_path, [
+        ("Bash", {"command": command}, "1 failed, 2 passed\npytest exit=1", False)])), "Tests").splitlines()[2]
+    assert "❌ failed" in row and "${PIPESTATUS[0]}" in row and "exit=1" in row
+    row = _section(_receipt(_session(tmp_path, [
+        ("Bash", {"command": command}, "3 passed\npytest exit=0", False)])), "Tests").splitlines()[2]
+    assert "✅ passed" in row and "exit=0" in row
+    # A test that does not open the pipeline, and `$?` after a pipe (the last command's): both stay unclear.
+    for command in ('echo tests | python -m pytest -q | tail -3; echo "exit=${PIPESTATUS[0]}"',
+                    'python -m pytest -q | tail -3; echo "exit=$?"'):
+        row = _section(_receipt(_session(tmp_path, [
+            ("Bash", {"command": command}, "collected 3 items\nexit=0", False)])), "Tests").splitlines()[2]
+        assert "⚠️" in row, command
+
+
+def test_an_exit_code_echoed_after_a_pipe_is_only_shown(tmp_path):
+    # `$?` here is `tee`'s, so the run stays unclear; the echoed value is still worth showing.
+    command = 'python -m pytest -q 2>&1 | tee log; echo "exit=$?"'
+    tests = _section(_receipt(_session(tmp_path, [("Bash", {"command": command}, "collected 3 items\nexit=0", False)])),
+                     "Tests")
+    row = tests.splitlines()[2]
+    assert "⚠️" in row and "exit=0" in row.split(" | ")[2]
 
 
 def _verdicts(tmp_path, command, output="5 passed", is_error=False) -> str:
@@ -647,7 +672,7 @@ def test_brief_is_one_line_with_the_counts_that_matter():
     from osop.recorder.receipt import render_brief
     line = render_brief(parse_transcript(MINIMAL_SESSION), receipt_path="/r/x.receipt.md")
     assert "\n" not in line and line.startswith("OSOP")
-    assert "tests: 1 runs: 1 passed" in line
+    assert "tests: 1 run: 1 passed" in line
     assert "receipt: /r/x.receipt.md" in line
 
 
@@ -660,7 +685,7 @@ def test_brief_counts_failures_edits_and_shell_writes(tmp_path):
         ("Bash", {"command": "cat a.py > b.py"}, "", False),
     ])
     line = render_brief(parse_transcript(path), receipt_path=Path("r.md"))
-    assert "1 runs: 1 failed" in line
+    assert "1 run: 1 failed" in line
     assert "files: 1 edited, 1 shell write" in line
     assert "tool calls: 4, 1 failed" in line
 
