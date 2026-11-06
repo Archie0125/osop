@@ -41,6 +41,11 @@ _CONDITIONAL = re.compile(
     r"必須|需要|應該|才會|就會|將會|才能|之後再|然後再|之前先|等你|請你|如果|若是|就好|就可以|就能|我就|(?:了|完|後)就"
     r"|要(?:先|再|重新|用|全綠|通過|全過|都過|綠)|會(?:跑|做|先|再|觸發|一起)|再\s*(?:commit|push|merge|推|提交|合併|跑)"
     r"|\b(?:if|once|when|unless|until|will|would|should|must|need(?:s)? to|to be|going to)\b", re.I)
+# "Verify that all tests pass before merging", "make sure the tests pass before you push": an instruction, not a
+# claim. A sentence that opens with such a verb, or says "before <doing>", asks for something.
+_INSTRUCTION = re.compile(
+    r"^(?:please\s+)?(?:verify|make sure|ensure|check|confirm|remember|re-?run|run)\b"
+    r"|\bbefore\s+(?:you\s+)?\w+ing\b", re.I)
 # "After the tests pass, push it" is a plan; "all tests passed after the fix" and "after the fix, all tests
 # passed" are what happened. "After the changes are committed, push" is a plan again: a present passive.
 _PLAN_AHEAD = re.compile(r"\b(?:before|after)\b", re.I)
@@ -112,7 +117,7 @@ def find_claims(message: str) -> list[Claim]:
     """Every checkable claim in the message, one per kind per sentence, in the order they appear."""
     claims: list[Claim] = []
     for sentence in sentences(message):
-        if _QUESTION.search(sentence) or _CONDITIONAL.search(sentence):
+        if _QUESTION.search(sentence) or _CONDITIONAL.search(sentence) or _INSTRUCTION.search(sentence):
             continue
         for kind in KINDS:
             m = _PATTERNS[kind].search(sentence)

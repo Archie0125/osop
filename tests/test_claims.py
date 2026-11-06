@@ -749,3 +749,14 @@ def test_a_later_test_failure_does_not_pin_an_earlier_lint_error_on_a_fixed_reru
         ("Bash", {"command": "ruff check --fix .; ruff check src/ && pytest -q"},
          "Exit code 1\nFound 1 error (1 fixed, 0 remaining).\nFound 1 error.", True)], "Lint passes."))
     assert "❌ contradicted" in claims
+
+
+# --- after Codex's twelfth round (head b116a9ec) ----------------------------------------------------
+
+
+def test_an_instruction_to_verify_is_not_a_claim():
+    assert _kinds("Verify that all tests pass before merging.") == []
+    assert _kinds("Make sure the tests pass before you push.") == []
+    assert _kinds("Please confirm the build succeeds.") == []
+    assert _kinds("Checked: all tests pass.") == ["tests"]
+    assert _kinds("Confirmed, all 12 tests pass and the branch is pushed.") == ["tests", "push"]
