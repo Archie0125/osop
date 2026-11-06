@@ -786,3 +786,12 @@ def test_a_background_start_that_failed_is_an_error_not_an_unfinished_call(tmp_p
         ("Bash", {"command": "npm run dev", "run_in_background": True}, "Exit code 127\nnpm: not found", True)]))
     assert "## No result recorded" not in receipt and "without result" not in receipt
     assert "npm run dev" in _section(receipt, "Errors")
+
+
+def test_a_git_command_behind_an_or_may_not_have_run(tmp_path):
+    receipt = _receipt(_session(tmp_path, [
+        ("Bash", {"command": 'git diff --cached --quiet || git commit -m "fix: docs"'}, "", False)]))
+    row = _table(_section(receipt, "Git"))[2].split(" | ")
+    assert row[1] == '`git commit -m "fix: docs"`'
+    # In a table the pipes of `||` are escaped, as in every other cell.
+    assert row[2] == "⚠️ exit 0, but `" + chr(92) + "|" + chr(92) + "|` before it: it ran only if the command before failed"

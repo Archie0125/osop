@@ -384,7 +384,13 @@ def _git_table(calls: list) -> str:
         # The call's exit status is only this command's when nothing after it can replace it (same rule as tests).
         judged = tc.status == "COMPLETED" and not tc.is_error and not tc.input.get("run_in_background")
         hidden = _hidden_status(code, m.end()) if judged else None
-        result = f"⚠️ exit 0, but {hidden} after it hides its exit status" if hidden else _status(tc)
+        if judged and code[:m.start() + 1].rstrip().endswith("||"):
+            # `git diff --quiet || git commit`: exit 0 may be the first command's, with the commit never run.
+            result = "⚠️ exit 0, but `||` before it: it ran only if the command before failed"
+        elif hidden:
+            result = f"⚠️ exit 0, but {hidden} after it hides its exit status"
+        else:
+            result = _status(tc)
         rows.append(f"| {_cell(by)} | {_code('; '.join(segments) or _command(tc))} | {_cell(result, 200)} "
                     f"| {_cell(_tail(_EXIT_CODE.sub('', tc.output_summary).strip(), 90), 90)} |")
     if not rows:
