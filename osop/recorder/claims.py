@@ -42,8 +42,9 @@ _CONDITIONAL = re.compile(
     r"|要(?:先|再|重新|用|全綠|通過|全過|都過|綠)|會(?:跑|做|先|再|觸發|一起)|再\s*(?:commit|push|merge|推|提交|合併|跑)"
     r"|\b(?:if|once|when|unless|until|will|would|should|must|need(?:s)? to|to be|going to)\b", re.I)
 # "Verify that all tests pass before merging", "make sure the tests pass before you push": an instruction, not a
-# claim. A sentence that opens with such a verb asks for something; so does "the tests pass before merging",
-# unless the claim is past tense ("all tests passed before merging").
+# claim. A clause that opens with such a verb ahead of the claim asks for something ("all tests passed, please
+# check the diff" keeps its claim); so does "the tests pass before merging", unless the claim is past tense
+# ("all tests passed before merging").
 _INSTRUCTION = re.compile(
     r"(?:^|[,，]\s*)(?:please\s+)?(?:verify|make sure|ensure|check|confirm|remember|re-?run|run)\b", re.I)
 _BEFORE_DOING = re.compile(r"\bbefore\s+(?:you\s+)?\w+ing\b", re.I)
@@ -118,7 +119,7 @@ def find_claims(message: str) -> list[Claim]:
     """Every checkable claim in the message, one per kind per sentence, in the order they appear."""
     claims: list[Claim] = []
     for sentence in sentences(message):
-        if _QUESTION.search(sentence) or _CONDITIONAL.search(sentence) or _INSTRUCTION.search(sentence):
+        if _QUESTION.search(sentence) or _CONDITIONAL.search(sentence):
             continue
         for kind in KINDS:
             m = _PATTERNS[kind].search(sentence)
@@ -127,6 +128,8 @@ def find_claims(message: str) -> list[Claim]:
             if _NEGATED_ZH_BEFORE.search(sentence[max(0, m.start() - 8):m.start()]):
                 continue
             if _PLAN_AHEAD.search(sentence[:m.start()]) and (not _PAST.search(m.group(0)) or _passive_at(sentence, m)):
+                continue
+            if _INSTRUCTION.search(sentence[:m.start()]):
                 continue
             if _BEFORE_DOING.search(sentence) and not _PAST.search(m.group(0)):
                 continue

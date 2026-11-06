@@ -773,3 +773,10 @@ def test_an_instruction_verb_after_a_leading_clause_is_still_an_instruction():
     assert _kinds("Before merging, verify that all tests passed.") == []
     assert _kinds("Once CI is green, please confirm the build succeeds.") == []
     assert _kinds("Done: all tests passed, and I pushed.") == ["tests", "push"]
+
+
+def test_an_instruction_after_the_claim_does_not_erase_it():
+    assert _kinds("All tests passed, please check the diff before merging.") == ["tests"]
+    assert _kinds("All tests passed, run completed in 0.42 seconds.") == ["tests"]
+    assert _kinds("Before merging, verify that all tests passed.") == []
+    assert _kinds("Verify that all tests pass before merging.") == []
