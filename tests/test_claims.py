@@ -1041,3 +1041,9 @@ def test_and_joins_two_clauses():
     assert _kinds("All tests pass and PR #13 can now be squash-merged.") == ["tests"]
     assert _kinds("Committed and pushed.") == ["commit", "push"]
     assert _kinds("All tests pass and the branch is pushed.") == ["tests", "push"]
+
+
+def test_a_modal_before_and_covers_both_verbs():
+    assert _kinds("The changes still need to be committed and pushed to origin.") == []
+    assert _kinds("I will commit and push after the review.") == []
+    assert _kinds("Committed and pushed to origin.") == ["commit", "push"]

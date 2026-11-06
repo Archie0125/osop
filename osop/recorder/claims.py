@@ -159,12 +159,16 @@ def find_claims(message: str) -> list[Claim]:
             m = _PATTERNS[kind].search(sentence)
             if m is None:
                 continue
-            own_start = max((sep.end() for sep in _CLAUSE_END.finditer(sentence, 0, m.start())), default=0)
+            seps = list(_CLAUSE_END.finditer(sentence, 0, m.start()))
+            own_start = seps[-1].end() if seps else 0
             nxt = _CLAUSE_END.search(sentence, m.end())
             own = sentence[own_start:nxt.start() if nxt else len(sentence)].strip()
             after = sentence[nxt.end():] if nxt else ""
+            # "need to be committed and pushed": a modal before "and" covers both verbs.
+            coordinated = bool(seps) and "and" in seps[-1].group(0).lower()
+            modal_scope = sentence[:nxt.start() if nxt else len(sentence)] if coordinated else own
             asks = sentence.rstrip().endswith(("?", "？"))
-            if _QUESTION.search(own) or _CONDITIONAL.search(own) or (asks and _AUX_QUESTION.match(sentence)):
+            if _QUESTION.search(own) or _CONDITIONAL.search(modal_scope) or (asks and _AUX_QUESTION.match(sentence)):
                 continue
             if asks and not _QUESTION_CLAUSE.search(after):
                 continue
