@@ -744,7 +744,8 @@ def test_git_cell_stops_before_a_heredoc_body(tmp_path):
 
 
 def test_git_cell_inside_bash_c_keeps_its_quotes(tmp_path):
-    assert _git_cell(tmp_path, """bash -c 'git -C "my repo" push origin main'""") == '`git -C "my repo" push origin main`'
+    cell = _git_cell(tmp_path, """bash -c 'git -C "my repo" push origin main'""")
+    assert cell == '`git -C "my repo" push origin main`'
 
 
 def test_git_cell_inside_a_substitution_has_no_closing_paren(tmp_path):
@@ -794,4 +795,5 @@ def test_a_git_command_behind_an_or_may_not_have_run(tmp_path):
     row = _table(_section(receipt, "Git"))[2].split(" | ")
     assert row[1] == '`git commit -m "fix: docs"`'
     # In a table the pipes of `||` are escaped, as in every other cell.
-    assert row[2] == "⚠️ exit 0, but `" + chr(92) + "|" + chr(92) + "|` before it: it ran only if the command before failed"
+    escaped_or = "`" + chr(92) + "|" + chr(92) + "|`"
+    assert row[2] == f"⚠️ exit 0, but {escaped_or} before it: it ran only if the command before failed"
