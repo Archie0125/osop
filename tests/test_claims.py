@@ -1025,3 +1025,19 @@ def test_a_pipe_is_not_a_later_step_that_could_have_failed(tmp_path):
 ])
 def test_a_possibility_is_not_a_claim(text):
     assert _kinds(text) == [], text
+
+
+# --- after Codex's nineteenth round (head 8c91fa8a) -------------------------------------------------
+
+
+def test_a_pipe_continued_on_the_next_line_is_still_a_pipe(tmp_path):
+    out = "> vite build && tsc --noEmit\n✓ built in 2.1s\nsrc/app.ts(3,7): error TS2322: Type 'string'"
+    claims = _claims(_session(tmp_path, [("Bash", {"command": "npm run build 2>&1 |\n  tail -n 40"}, out, False)],
+                              "Build succeeds."))
+    assert "❌ contradicted" in claims
+
+
+def test_and_joins_two_clauses():
+    assert _kinds("All tests pass and PR #13 can now be squash-merged.") == ["tests"]
+    assert _kinds("Committed and pushed.") == ["commit", "push"]
+    assert _kinds("All tests pass and the branch is pushed.") == ["tests", "push"]

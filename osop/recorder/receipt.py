@@ -480,7 +480,7 @@ def _judge(tc: ToolCall, code: str, m: re.Match, verb: str | None = None) -> tup
 def _later_command(code: str, m: re.Match) -> bool:
     """Whether another command follows this one in the call (`;`, `&&`, `||` or a new line), one that could
     have printed a marker; `| tail` only filters."""
-    return re.search(r"(?:;|&&|\|\||\n)\s*[^\s;&|]", code[m.end():]) is not None
+    return re.search(r"(?:;|&&|\|\||(?<![|\\])\n)\s*[^\s;&|]", code[m.end():]) is not None
 
 
 def _ran_again(code: str, m: re.Match, verb: str, mine: str, others: set[tuple[str, str]]) -> bool:

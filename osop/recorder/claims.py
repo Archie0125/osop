@@ -134,7 +134,7 @@ _PASSES_OBJECT = re.compile(
 # A question or a condition counts in the claim's own clause: "測試全綠，要我 push 嗎" keeps its claim, "測試過了就
 # push" does not. A sentence that ends with "?" is a question unless the question is its own later clause;
 # "Do all tests pass …?" is one from its first word.
-_CLAUSE_END = re.compile(r"[，,;；]|\s[—–-]\s|—")
+_CLAUSE_END = re.compile(r"[，,;；]|\s[—–-]\s|—|\s+and\s+", re.I)
 _QUESTION_CLAUSE = re.compile(
     r"嗎|要我|要不要|是不是|\bshould i\b|\bdo you want\b|\bwant me\b|\bshall i\b|\bcan i\b|\bmay i\b|\bok\b|\bokay\b",
     re.I)
