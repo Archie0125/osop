@@ -120,3 +120,11 @@ class TestReceiptsDir:
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
         for cwd in ("D:\\", "D:", "C:\\", "/"):
             assert _receipts_dir({"cwd": cwd}, Path("slug-dir/s.jsonl")).name == "slug-dir", cwd
+
+    def test_the_fallback_name_is_never_a_dotdot(self, tmp_path, monkeypatch):
+        from osop.cli.main import _receipts_dir
+        monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
+        (tmp_path / "home" / "x").mkdir(parents=True)
+        monkeypatch.chdir(tmp_path / "home" / "x")
+        target = _receipts_dir({"cwd": "D:\\"}, Path("../s.jsonl"))
+        assert target.name == "home" and target.parent == tmp_path / "home" / ".osop" / "receipts"

@@ -171,5 +171,5 @@ def _receipts_dir(parsed: dict, transcript: Path) -> Path:
     # Split on both separators: a transcript from a Windows session may be read on POSIX, and vice versa.
     project = re.split(r"[\\/]", (parsed.get("cwd") or "").rstrip("\\/"))[-1]
     if not project or project.endswith(":"):  # a drive root: "D:" would be a drive-relative path, not a name
-        project = transcript.parent.name or "unknown"
+        project = transcript.resolve().parent.name or "unknown"  # resolved: "../s.jsonl" must not give ".."
     return Path.home() / ".osop" / "receipts" / project
