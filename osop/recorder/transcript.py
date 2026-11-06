@@ -316,6 +316,9 @@ def parse_transcript(path: Path, subagent_root: Path | None = None, _state: _Par
     pending: dict[str, ToolCall] = {}
     phase_counter = 0
     agent_counter = 0
+    # The agent's final message: its text since the last user event (a prompt or a tool result).
+    # Claims are checked against it. An API error event is not something the agent said.
+    final_parts: list[str] = []
 
     def _close(node: PhaseNode | None, end_ts: str) -> None:
         if node is None:
@@ -329,6 +332,7 @@ def parse_transcript(path: Path, subagent_root: Path | None = None, _state: _Par
         ts = ev.get("timestamp", "")
 
         if ev_type == "user":
+            final_parts = []
             prompt = _extract_user_prompt(ev)
             if prompt is not None:
                 # Real user message — close prior phase, open human phase
@@ -394,6 +398,8 @@ def parse_transcript(path: Path, subagent_root: Path | None = None, _state: _Par
                 if current.assistant_summary:
                     current.assistant_summary += "\n"
                 current.assistant_summary += text
+                if not ev.get("isApiErrorMessage"):
+                    final_parts.append(text)
             # Record tool calls
             for tu in _extract_tool_uses(ev):
                 tid = _id(tu.get("id"))
@@ -454,6 +460,7 @@ def parse_transcript(path: Path, subagent_root: Path | None = None, _state: _Par
         "duration_ms": _ms_between(started, ended),
         "nodes": phases,
         "skipped": state.skipped,
+        "last_assistant_message": "\n".join(final_parts).strip(),
     }
 
 

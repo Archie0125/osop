@@ -9,24 +9,38 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from osop.recorder.claims import Claim, find_claims
 from osop.recorder.transcript import ToolCall, _walk
 
 _TEST_RUNNER = (
     r"pytest|py\.test|unittest|nosetests|phpunit|pest|artisan\s+test|manage\.py\s+test|tox|prove"
     r"|(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?test|make\s+test|go\s+test|cargo\s+test"
     r"|vitest|jest|rspec|mvn\s+test|gradlew?\s+test|dotnet\s+test"
+    r"|playwright\s+test|cypress\s+run|mocha|ava\b|ctest|bats|flutter\s+test|mix\s+test|sbt\s+test"
 )
 # A runner only counts at the start of a shell command, optionally behind wrappers (sudo, timeout N),
 # VAR=x, a launcher (php, npx, python, `<interpreter> -m`) and a path. Run on code with quotes and
 # heredocs removed.
-_TEST_COMMAND = re.compile(
+_RUN_PREFIX = (
     r"(?:^|[;&|(\n])\s*"
     r"(?:(?:sudo(?:\s+-\S+)*|time|nice|env|nohup|timeout\s+\S+)\s+)*"
     r"(?:[A-Za-z_]\w*=\S*\s+)*"
     r"(?:(?:php|npx|bunx|uv\s+run|poetry\s+run|python[\d.]*(?:\.exe)?|py)\s+|\S+\s+-m\s+)?"
     r"(?:\S*/)?"
-    rf"(?:{_TEST_RUNNER})\b"
 )
+_TEST_COMMAND = re.compile(_RUN_PREFIX + rf"(?:{_TEST_RUNNER})\b")
+# Commands whose exit status backs a "lint / typecheck passes" or "build succeeds" claim.
+_LINT_RUNNER = (
+    r"ruff|flake8|pylint|mypy|pyright|eslint|tsc|phpstan|larastan|pint|psalm|phpcs|rubocop|golangci-lint"
+    r"|cargo\s+clippy|black\s+--check|prettier\s+--check|stylelint|(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?(?:lint|typecheck)"
+)
+_BUILD_RUNNER = (
+    r"(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?build|cargo\s+build|go\s+build|dotnet\s+build|docker\s+(?:compose\s+)?build"
+    r"|mvn\s+(?:package|compile|install|verify)|gradlew?\s+(?:build|assemble)|(?:vite|astro|next|nuxt|webpack|esbuild)\s+build"
+    r"|tsc\s+(?:-b|--build)|make(?!\s+(?:test|check|lint|clean))"
+)
+_LINT_COMMAND = re.compile(_RUN_PREFIX + rf"(?:{_LINT_RUNNER})\b")
+_BUILD_COMMAND = re.compile(_RUN_PREFIX + rf"(?:{_BUILD_RUNNER})\b")
 # The heredoc body is blanked; the rest of its first line stays, so `cat <<EOF > file` keeps its redirect.
 _HEREDOC = re.compile(r"<<-?\s*(['\"]?)(\w+)\1([^\n]*)\n.*?\n\s*\2\b", re.DOTALL)
 _QUOTED = re.compile(r"'[^']*'|\"(?:\\.|[^\"\\])*\"")
@@ -46,7 +60,11 @@ _DOUBT = re.compile(
 )
 _PIPEFAIL = re.compile(r"\bset\s+([-+])[a-z]*o\s+pipefail\b")
 _CONTROL = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]|[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
-_PASSED_COUNT = re.compile(r"\b\d+\s+passed\b", re.IGNORECASE)
+# A pass summary: pytest / jest / vitest "N passed", mocha "N passing", PHPUnit "OK (N tests, …)" and
+# "OK, but incomplete, skipped, or risky tests!", cargo "test result: ok", rspec "N examples, 0 failures", go "ok  pkg".
+_PASSED_COUNT = re.compile(
+    r"\b\d+\s+pass(?:ed|ing)\b|^OK \(\d+ tests?\b|^OK, but |test result: ok\b|\b\d+ examples?, 0 failures\b|^ok\s+\S+",
+    re.IGNORECASE | re.MULTILINE)
 _ECHOED_EXIT = re.compile(r"\bexit(?:\s+code)?\s*[=:]\s*\d+", re.IGNORECASE)
 _EXIT_CODE = re.compile(r"^Exit code (\d+)")
 # A lone `&` runs the command in the background: not `&&`, and not the `&` of `2>&1`, `<&0`, `|&` or `&>`.
@@ -88,16 +106,21 @@ _GIT_STATE = re.compile(_GIT_START + _GIT_VERB)
 _GIT_SEGMENT = re.compile(_GIT_START + "(" + _GIT_VERB + r"[^;&|\n)]*)")
 _FILE_TOOLS = ("Edit", "MultiEdit", "Write", "NotebookEdit")
 _MAIN = "main"
+_CLAIM_LABEL = {"tests": "tests pass", "lint": "lint passes", "build": "build succeeds",
+                "commit": "committed", "push": "pushed", "merge": "merged"}
+_BACKED, _CONTRADICTED, _UNCLEAR, _NO_EVIDENCE = "✅ backed", "❌ contradicted", "⚠️ cannot tell", "❓ no evidence"
 
 
 def render_receipt(parsed: dict, source: Path | str) -> str:
     labels, calls, tests, goal = _collect(parsed)
     unfinished = _unfinished(calls, tests)
     git = _git_table(calls)
+    claims = _claim_rows(parsed, calls, tests)
 
     # What a person needs before trusting "done" comes first; the full command table is collapsed at the end.
     sections = [
-        _overview(parsed, goal, calls, tests, unfinished),
+        _overview(parsed, goal, calls, tests, unfinished, claims),
+        "## Claims\n" + _claims_section(parsed, claims),
         "## Goal\n" + _quote(goal),
         "## Tests\n" + _tests_table(tests),
         "## Files changed\n" + _files_table(calls),
@@ -133,7 +156,8 @@ def render_brief(parsed: dict, receipt_path: Path | str) -> str:
     calls_part = f"tool calls: {len(calls)}, {failed} failed"
     if unfinished:
         calls_part += f", {len(unfinished)} without result"
-    parts = [f"tests: {_tests_summary(tests)}", files_part, calls_part]
+    claims = _claim_rows(parsed, calls, tests)
+    parts = [f"claims: {_claims_summary(parsed, claims)}", f"tests: {_tests_summary(tests)}", files_part, calls_part]
     skipped = parsed.get("skipped") or []
     if skipped:
         parts.append(f"⚠️ {_count(len(skipped), 'sub-agent transcript')} could not be read")
@@ -157,7 +181,7 @@ def _count(n: int, noun: str) -> str:
     return f"{n} {noun}" if n == 1 else f"{n} {noun}s"
 
 
-def _overview(parsed: dict, goal: str, calls: list, tests: list, unfinished: list) -> str:
+def _overview(parsed: dict, goal: str, calls: list, tests: list, unfinished: list, claims: list) -> str:
     failed = sum(1 for _, tc in calls if tc.is_error)
     by_subagents = sum(1 for by, _ in calls if by != _MAIN)
     title = _cell(goal.splitlines()[0] if goal else "session", 70, in_table=False)
@@ -168,6 +192,7 @@ def _overview(parsed: dict, goal: str, calls: list, tests: list, unfinished: lis
         ("Session", f"`{parsed.get('session_id') or '?'}`"),
         ("Model", parsed.get("model") or "unknown"),
         ("When", f"{parsed['started_at']} → {parsed['ended_at']} ({_duration(parsed['duration_ms'])})"),
+        ("Claims", _claims_summary(parsed, claims)),
         ("Tool calls", tool_calls),
         ("Tests", _tests_summary(tests)),
     ]
@@ -188,7 +213,255 @@ def _tests_summary(tests: list) -> str:
         for mark, label in (("✅", "passed"), ("🟡", "probably passed"), ("❌", "failed"),
                             ("⚠️", "unclear ⚠️"), ("⏳", "no result"))
     ]
-    return f"{len(verdicts)} runs: " + ", ".join(f"{n} {label}" for n, label in counts if n)
+    return f"{_count(len(verdicts), 'run')}: " + ", ".join(f"{n} {label}" for n, label in counts if n)
+
+
+# ---------------------------------------------------------------------------
+# Claims: what the final message says, against what the transcript shows
+# ---------------------------------------------------------------------------
+
+
+def _claim_rows(parsed: dict, calls: list, tests: list) -> list[tuple[Claim, str, str]]:
+    """(claim, verdict, evidence) for each kind of claim in the final message, first sentence per kind.
+
+    The evidence is the last relevant command: its result backs or contradicts the claim, or cannot
+    tell (its exit status is hidden, no result came back), or there is none. For tests, a passing run
+    that was followed by edits to the project cannot back the claim either.
+    """
+    rows: list[tuple[Claim, str, str]] = []
+    seen: set[str] = set()
+    for claim in find_claims(parsed.get("last_assistant_message") or ""):
+        if claim.kind in seen:
+            continue
+        seen.add(claim.kind)
+        if claim.kind == "tests":
+            verdict, evidence = _tests_evidence(parsed, calls, tests)
+        elif claim.kind in ("lint", "build"):
+            pattern = _LINT_COMMAND if claim.kind == "lint" else _BUILD_COMMAND
+            verdict, evidence = _command_evidence(_matching_calls(calls, pattern), claim.kind)
+        else:
+            verdict, evidence = _command_evidence(_git_calls(calls, claim.kind), claim.kind)
+        rows.append((claim, verdict, evidence))
+    return rows
+
+
+def _tests_evidence(parsed: dict, calls: list, tests: list) -> tuple[str, str]:
+    if not tests:
+        return _NO_EVIDENCE, "no test command ran"
+    by, tc, code, m = max(tests, key=lambda t: t[1].started_at)
+    verdict = _test_verdict(tc, code, m)
+    where = f"last test run {_code(_command(tc), 80)} at {_clock(tc.started_at)}"
+    if verdict.startswith("❌"):
+        return _CONTRADICTED, f"{where} → {verdict}"
+    if not verdict.startswith(("✅", "🟡")):
+        return _UNCLEAR, f"{where} → {verdict}"
+    later = _edits_after(parsed, calls, tc.started_at)
+    if later:
+        return _UNCLEAR, f"{where} → {verdict}, but the project changed after it: {later}"
+    return _BACKED, f"{where} → {verdict}"
+
+
+def _edits_after(parsed: dict, calls: list, started_at: str) -> str:
+    """Source files under the session's working directory edited (Edit / Write) after a moment.
+
+    Docs, screenshots and shell writes are left out: in real sessions agents edit notes and save
+    screenshots after the tests all the time, and that does not make a passing run stale.
+    """
+    root = _norm_path(parsed.get("cwd") or "").rstrip("/") + "/"
+    files = sorted({
+        _norm_path(path).rsplit("/", 1)[-1]
+        for _, tc in calls if tc.tool in _FILE_TOOLS and tc.status == "COMPLETED" and tc.started_at > started_at
+        for path in [str(tc.input.get("file_path") or tc.input.get("notebook_path") or "")]
+        if _SOURCE_FILE.search(path) and (_norm_path(path).startswith(root) or not _norm_path(path).startswith("/"))
+    })
+    if not files:
+        return ""
+    return f"{_count(len(files), 'source file')} edited ({', '.join(files[:5])}{', …' if len(files) > 5 else ''})"
+
+
+_SOURCE_FILE = re.compile(
+    r"\.(?:py|php|js|mjs|cjs|ts|tsx|jsx|vue|svelte|css|scss|sass|less|go|rs|java|kt|rb|c|cc|cpp|h|hpp|cs|swift"
+    r"|dart|ex|exs|sql|html|twig|json|ya?ml|toml|ini|env)$", re.I)
+
+
+def _norm_path(path: str) -> str:
+    path = path.replace("\\", "/")
+    return path.lower() if re.match(r"[A-Za-z]:/", path) else path
+
+
+def _matching_calls(calls: list, pattern: re.Pattern) -> list[tuple[ToolCall, str, re.Match]]:
+    found = []
+    for _, tc in calls:
+        if tc.tool == "Bash":
+            code = _shell_code(_unwrap_shell_c(_command(tc)))
+            m = pattern.search(code)
+            if m:
+                found.append((tc, code, m))
+    return found
+
+
+def _git_calls(calls: list, verb: str) -> list[tuple[ToolCall, str, re.Match]]:
+    """Calls that run `git <verb>` (or `gh pr merge` for merge), with the match of that verb."""
+    found = []
+    for _, tc in calls:
+        if tc.tool != "Bash":
+            continue
+        code = _shell_code(_unwrap_shell_c(_command(tc)))
+        for m in _GIT_STATE.finditer(code):
+            if _verb(m) == verb:
+                found.append((tc, code, m))
+                break
+    return found
+
+
+def _verb(m: re.Match) -> str:
+    return re.search(r"\S+$", m.group(0)).group(0)
+
+
+def _command_evidence(found: list, kind: str) -> tuple[str, str]:
+    if not found:
+        what = {"lint": "lint", "build": "build", "commit": "`git commit`", "push": "`git push`",
+                "merge": "`git merge` / `gh pr merge`"}[kind]
+        return _NO_EVIDENCE, f"no {what} command ran"
+    tc, code, m = max(found, key=lambda f: f[0].started_at)
+    verb = _verb(m) if kind in ("commit", "push", "merge") else kind
+    outcome, text = _judge(tc, code, m, verb)
+    where = f"last {_code(_shown_segment(tc, kind, verb), 80)} at {_clock(tc.started_at)} → {text}"
+    if outcome in ("ok", "probably"):
+        return _BACKED, where
+    if outcome == "failed":
+        return _CONTRADICTED, where
+    return _UNCLEAR, where
+
+
+def _shown_segment(tc: ToolCall, kind: str, verb: str | None) -> str:
+    """The part of the command that is the evidence, not the start of a long script."""
+    command = _unwrap_shell_c(_command(tc), blank=False)
+    if verb in _GIT_PAST and kind not in ("lint", "build"):
+        segments = _git_segments(command)
+        return next((s for s in segments if re.search(rf"\b{verb}\b", s)), segments[0] if segments else command)
+    m = (_LINT_COMMAND if kind == "lint" else _BUILD_COMMAND).search(command)
+    if not m:
+        return command
+    start = m.start() + len(re.match(r"[\s;&|(]*", m.group(0)).group(0))
+    return re.split(r"\s*(?:;|&&|\|\||\n|\|)\s*", command[start:], maxsplit=1)[0]
+
+
+def _judge(tc: ToolCall, code: str, m: re.Match, verb: str | None = None) -> tuple[str, str]:
+    """('ok' | 'probably' | 'failed' | 'unclear' | 'pending', shown text) for a command whose exit status
+    may be hidden.
+
+    The call's exit status is only this command's when nothing after it can replace it (same rule as
+    tests), and `x || git commit` may have run the first command only. When the status is hidden, what
+    git printed can still settle it: `main -> main` is a push, `! [rejected]` is not.
+    """
+    if tc.status == "PENDING":
+        return "pending", _status(tc)
+    out = _CONTROL.sub("", tc.output)
+    fail = _GIT_FAIL[verb].search(out) if verb in _GIT_FAIL else None
+    done = _GIT_DONE[verb].search(out) if verb in _GIT_DONE else None
+    chained = _chained(code, m)
+    if tc.is_error:
+        if fail:
+            return "failed", f"{_failed(tc)}, output says {_code(fail.group(0), 60)}"
+        if chained:
+            return "unclear", f"⚠️ {_exit_text(tc)}: this command or {chained} step in the chain failed"
+        return "failed", _failed(tc)
+    if tc.input.get("run_in_background"):
+        return "pending", _status(tc)
+    # A `\`-continued line and an opening `(` between the `||` and the command do not change that.
+    before = re.sub(r"[\s(]+$", "", re.sub(r"\\\n", " ", code[:m.start() + 1]))
+    hidden = _hidden_status(code, m.end())
+    if before.endswith("||"):
+        why = "`||` before it: it ran only if the command before failed"
+    elif hidden:
+        why = f"{hidden} after it hides its exit status"
+    else:
+        return "ok", "exit 0"
+    if fail:
+        return "failed", f"❌ exit 0, but output says {_code(fail.group(0), 60)} ({why})"
+    if done:
+        return "probably", f"🟡 probably {_GIT_PAST[verb]}: {why}; output shows {_code(done.group(0).strip(), 60)}"
+    return "unclear", f"⚠️ exit 0, but {why}"
+
+
+def _chained(code: str, m: re.Match) -> str | None:
+    """Which other steps in the call could own a failure: 'an earlier', 'a later', 'an earlier or later', None."""
+    before = bool(re.sub(rf"[\s;&|(){_NEW_SHELL}]+", "", _PIPEFAIL.sub("", code[:m.start()])))
+    after = _hidden_status(code, m.end()) is not None or "&&" in code[m.end():]
+    if before and after:
+        return "an earlier or later"
+    return "an earlier" if before else "a later" if after else None
+
+
+# What git prints when a verb worked, and when it did not. Read only when the exit status is hidden or shared.
+_GIT_DONE = {
+    "push": re.compile(r"^\s*(?:[0-9a-f]+\.\.+[0-9a-f]+|\* \[new (?:branch|tag)\]|\+ [0-9a-f]+\.\.\.[0-9a-f]+)"
+                       r"\s+\S+\s+->\s+\S+|Everything up-to-date", re.M),
+    "commit": re.compile(r"^\s*\[[^\]\n]+ (?:\(root-commit\) )?[0-9a-f]{7,}\]", re.M),
+    "merge": re.compile(r"Merge made by|Fast-forward|Already up to date|✓ Merged|Merged pull request"
+                        r"|Squashed and merged"),
+    "rebase": re.compile(r"Successfully rebased"),
+    "cherry-pick": re.compile(r"^\s*\[[^\]\n]+ [0-9a-f]{7,}\]", re.M),
+}
+_GIT_FAIL = {
+    "push": re.compile(r"! \[(?:remote )?rejected\]|failed to push|error: src refspec|fatal:"),
+    "commit": re.compile(r"nothing to commit|nothing added to commit|no changes added to commit|Aborting commit"
+                         r"|hook failed|fatal:|error:"),
+    "merge": re.compile(r"CONFLICT|Automatic merge failed|not something we can merge|not mergeable|fatal:|error:"),
+    "rebase": re.compile(r"CONFLICT|could not apply|fatal:|error:"),
+    "cherry-pick": re.compile(r"CONFLICT|could not apply|fatal:|error:"),
+    # Build and lint tools print little on success and a lot on failure; both are read the same way.
+    "build": re.compile(r"npm ERR!|ELIFECYCLE|error TS\d+|Build failed|build failed|Failed to compile|failed to compile"
+                        r"|✘ \[ERROR\]|\berror\[E\d+\]|BUILD FAILURE|compilation failed|Error: ", re.I),
+    "lint": re.compile(r"Found \d+ errors?|\d+ problems? \(|error TS\d+|\[ERROR\]|\berror\[E\d+\]|FAIL\b|✖|✘"),
+}
+_GIT_DONE.update({
+    "build": re.compile(r"✓ built in|built in \d|Compiled successfully|compiled successfully|Build complete"
+                        r"|Complete!|BUILD SUCCESS|Finished `?(?:dev|release)|✓ Compiled"),
+    "lint": re.compile(r"All checks passed!|Success: no issues found|\[OK\] No errors|^\s*PASS\b|0 problems"
+                       r"|No lint errors", re.M),
+})
+_GIT_PAST = {"push": "pushed", "commit": "committed", "merge": "merged", "rebase": "rebased", "cherry-pick": "picked",
+             "build": "built", "lint": "clean"}
+
+
+def _claims_section(parsed: dict, rows: list) -> str:
+    message = parsed.get("last_assistant_message") or ""
+    if not message.strip():
+        return ("**No final message to check**: the transcript ends without the agent's text "
+                "(still running, or it ended on a tool call).")
+    if not rows:
+        return ("**No checkable claim in the final message.** "
+                "Looked for: tests pass, lint passes, build succeeds, committed, pushed, merged.")
+    lines = [
+        f"| {_cell(_CLAIM_LABEL[claim.kind])}: {_quote_cell(claim.quote)} | {verdict} | {_cell(evidence, 240)} |"
+        for claim, verdict, evidence in rows
+    ]
+    header = "| Claim (from the final message) | Verdict | Evidence (from the transcript) |\n|---|---|---|\n"
+    return header + "\n".join(lines)
+
+
+def _quote_cell(text: str) -> str:
+    return "“" + _cell(text, 140) + "”"
+
+
+def _claims_summary(parsed: dict, rows: list) -> str:
+    if not (parsed.get("last_assistant_message") or "").strip():
+        return "no final message"
+    if not rows:
+        return "none found"
+    parts = []
+    for verdict, word in ((_CONTRADICTED, "contradicted ❌"), (_NO_EVIDENCE, "without evidence ❓"),
+                          (_UNCLEAR, "unclear ⚠️"), (_BACKED, "backed")):
+        kinds = [_CLAIM_LABEL[claim.kind] for claim, v, _ in rows if v == verdict]
+        if kinds:
+            parts.append(f"{len(kinds)} {word}" + (f" ({', '.join(kinds)})" if verdict != _BACKED else ""))
+    return ", ".join(parts)
+
+
+def _clock(ts: str) -> str:
+    return ts[11:16] if len(ts) >= 16 and ts[10] == "T" else ts
 
 
 def _tests_table(tests: list) -> str:
@@ -228,6 +501,15 @@ def _test_verdict(tc: ToolCall, code: str, match: re.Match) -> str:
     # The reported exit status belongs to whatever ran last, so only the output is left to read.
     echoed = _ECHOED_EXIT.findall(out)
     runs = sum(1 for _ in _TEST_COMMAND.finditer(code))
+    # `pytest; echo exit=$?`: the first `$?` echoed right after the test, with nothing between, is the test's.
+    # (`code` has quoted strings blanked to "", so `echo "exit=$?"` shows as `echo ""`.)
+    if (hidden == "`;`" and runs == 1 and echoed and "$?" not in code[:match.start()]
+            and re.match(r"(?:[^;|&\n]|>&)*;\s*echo\b[^;&|\n]*(?:\$\?|\"\")", code[match.end():])):
+        status = int(re.search(r"\d+$", echoed[0]).group())
+        if status:
+            return f"❌ failed: `echo $?` right after the test printed {echoed[0]}"
+        if not _FAILURE.search(out):
+            return f"✅ passed: `echo $?` right after the test printed {echoed[0]}"
     if runs > 1:
         # "3 passed" may belong to any of them; the others may have failed silently.
         return f"⚠️ unclear: {hidden} after the test hides its exit status; {runs} test commands in one call"
@@ -381,18 +663,7 @@ def _git_table(calls: list) -> str:
         # Show the git part, not the start of a long script. Unwrapped as written, so a push inside
         # `bash -c '…'` is shown with its quotes (the marker is a control char, stripped by _cell).
         segments = _git_segments(_unwrap_shell_c(_command(tc), blank=False))
-        # The call's exit status is only this command's when nothing after it can replace it (same rule as tests).
-        judged = tc.status == "COMPLETED" and not tc.is_error and not tc.input.get("run_in_background")
-        hidden = _hidden_status(code, m.end()) if judged else None
-        # `git diff --quiet || git commit`: exit 0 may be the first command's, with the commit never run.
-        # A `\`-continued line and an opening `(` between the `||` and the command do not change that.
-        before = re.sub(r"[\s(]+$", "", re.sub(r"\\\n", " ", code[:m.start() + 1]))
-        if judged and before.endswith("||"):
-            result = "⚠️ exit 0, but `||` before it: it ran only if the command before failed"
-        elif hidden:
-            result = f"⚠️ exit 0, but {hidden} after it hides its exit status"
-        else:
-            result = _status(tc)
+        _, result = _judge(tc, code, m, _verb(m))
         rows.append(f"| {_cell(by)} | {_code('; '.join(segments) or _command(tc))} | {_cell(result, 200)} "
                     f"| {_cell(_tail(_EXIT_CODE.sub('', tc.output_summary).strip(), 90), 90)} |")
     if not rows:
