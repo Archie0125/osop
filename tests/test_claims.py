@@ -691,3 +691,24 @@ def test_a_present_passive_with_an_adverb_behind_after_is_still_a_plan():
     assert _kinds("After the branch is successfully merged into main, delete it.") == []
     assert _kinds("After the PR gets merged into main, delete the branch.") == []
     assert _kinds("After the branch was merged into main, I deleted it.") == ["merge"]
+
+
+# --- after Codex's eighth round (head 4469f4a1) -----------------------------------------------------
+
+
+def test_a_formatter_that_could_not_format_a_file_failed(tmp_path):
+    claims = _claims(_session(tmp_path, [
+        ("Bash", {"command": "black --check .; echo done"},
+         "error: cannot format broken.py: Cannot parse: 1:4: def (\nOh no!\n"
+         "1 file would be left unchanged, 1 file would fail to reformat.\ndone", False)], "Lint passes."))
+    assert "❌ contradicted" in claims and "would fail to reformat" in claims
+    claims = _claims(_session(tmp_path, [
+        ("Bash", {"command": "black --check .; echo done"}, "All done!\n2 files would be left unchanged.\ndone",
+         False)], "Lint passes."))
+    assert "✅ backed" in claims
+
+
+def test_coordinated_present_passives_behind_after_are_a_plan():
+    assert _kinds("After the PR is reviewed and merged into main, delete the branch.") == []
+    assert _kinds("After the changes are tested, committed and pushed, close the issue.") == []
+    assert _kinds("After the PR was reviewed and merged into main, I deleted the branch.") == ["merge"]

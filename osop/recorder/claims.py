@@ -45,8 +45,10 @@ _CONDITIONAL = re.compile(
 # passed" are what happened. "After the changes are committed, push" is a plan again: a present passive.
 _PLAN_AHEAD = re.compile(r"\b(?:before|after)\b", re.I)
 _PAST = re.compile(r"\b(?:passed|committed|pushed|merged|built|succeeded)\b", re.I)
-_PRESENT_PASSIVE = re.compile(r"\b(?:is|are|gets?|being)\s+(?:\w+ly\s+)?(?:passed|committed|pushed|merged|built)\b",
-                              re.I)
+# "is merged", "is successfully merged", "is reviewed and merged", "are tested, committed and pushed".
+_PRESENT_PASSIVE = re.compile(
+    r"\b(?:is|are|gets?|being)\s+(?:\w+ly\s+)?(?:\w+(?:ed|en)\b,?\s+(?:(?:and|or)\s+)?)*(?:passed|committed|pushed|merged|built)\b",
+    re.I)
 # English negation shortly before the claim ("Nothing is committed or pushed yet", "has not been pushed") or
 # right after it ("pushed? not yet"); a "no" later in the sentence ("all tests pass, no regressions") is not one.
 _NEGATED_EN_BEFORE = re.compile(r"(?:\b(?:not|nothing|never|no|without|cannot)\b|n't\b)[^,.;]{0,40}$", re.I)
@@ -120,7 +122,7 @@ def find_claims(message: str) -> list[Claim]:
                 continue
             if _PLAN_AHEAD.search(sentence[:m.start()]) and (
                     not _PAST.search(m.group(0))
-                    or _PRESENT_PASSIVE.search(sentence[max(0, m.start() - 24):m.end()])):
+                    or _PRESENT_PASSIVE.search(sentence[max(0, m.start() - 48):m.end()])):
                 continue
             if re.search(r"[A-Za-z]", m.group(0)) and (
                     _NEGATED_EN_BEFORE.search(sentence[:m.start()]) or _NEGATED_EN_AFTER.search(sentence[m.end():])):
