@@ -797,3 +797,12 @@ def test_a_git_command_behind_an_or_may_not_have_run(tmp_path):
     # In a table the pipes of `||` are escaped, as in every other cell.
     escaped_or = "`" + chr(92) + "|" + chr(92) + "|`"
     assert row[2] == f"⚠️ exit 0, but {escaped_or} before it: it ran only if the command before failed"
+
+
+def test_a_continued_line_or_a_paren_after_the_or_still_counts(tmp_path):
+    escaped_or = "`" + chr(92) + "|" + chr(92) + "|`"
+    for command in ("git diff --cached --quiet || " + chr(92) + "\n  git commit -m x",
+                    "git diff --cached --quiet || (git commit -m x)"):
+        receipt = _receipt(_session(tmp_path, [("Bash", {"command": command}, "", False)]))
+        row = _table(_section(receipt, "Git"))[2].split(" | ")
+        assert row[2] == f"⚠️ exit 0, but {escaped_or} before it: it ran only if the command before failed", command
