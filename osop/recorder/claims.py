@@ -42,9 +42,9 @@ _CONDITIONAL = re.compile(
     r"|要(?:先|再|重新|用|全綠|通過|全過|都過|綠)|會(?:跑|做|先|再|觸發|一起)|再\s*(?:commit|push|merge|推|提交|合併|跑)"
     r"|\b(?:if|once|when|unless|until|will|would|should|must|need(?:s)? to|to be|going to)\b", re.I)
 # "After the tests pass, push it" is a plan; "all tests passed after the fix" and "after the fix, all tests
-# passed" are what happened.
+# passed" are what happened. "After the changes are committed, push" is a plan again: a present passive.
 _PLAN_AHEAD = re.compile(r"\b(?:before|after)\b", re.I)
-_PAST = re.compile(r"\b(?:passed|committed|pushed|merged|built|succeeded)\b", re.I)
+_PAST = re.compile(r"(?<!\bis )(?<!\bare )\b(?:passed|committed|pushed|merged|built|succeeded)\b", re.I)
 # English negation shortly before the claim ("Nothing is committed or pushed yet", "has not been pushed") or
 # right after it ("pushed? not yet"); a "no" later in the sentence ("all tests pass, no regressions") is not one.
 _NEGATED_EN_BEFORE = re.compile(r"(?:\b(?:not|nothing|never|no|without|cannot)\b|n't\b)[^,.;]{0,40}$", re.I)

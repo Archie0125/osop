@@ -398,8 +398,8 @@ def _judge(tc: ToolCall, code: str, m: re.Match, verb: str | None = None) -> tup
     others = _other_runners(code, m)
     alone = not others
     # `ruff check .; npx tsc --noEmit`: two linters in one call, no marker can be told apart; only the exit
-    # status counts.
-    readable = verb not in others
+    # status counts. The same tool twice (`ruff check --fix .; ruff check src/`) still reads its own.
+    readable = not any(kind == verb and tool != _tool(m) for kind, tool in others)
     fail = _last(_GIT_FAIL[verb], out) if readable and verb in _GIT_FAIL else None
     if fail is None and alone and verb in _SHARED_FAIL:
         fail = _last(_SHARED_FAIL[verb], out)
@@ -449,10 +449,17 @@ def _chained(code: str, m: re.Match) -> str | None:
     return "an earlier" if before else "a later" if after else None
 
 
-def _other_runners(code: str, m: re.Match) -> set[str]:
-    """The kinds of the other test, lint or build runners in the same call: they could have printed the markers."""
-    return {kind for kind, pattern in (("tests", _TEST_COMMAND), ("lint", _LINT_COMMAND), ("build", _BUILD_COMMAND))
+def _other_runners(code: str, m: re.Match) -> set[tuple[str, str]]:
+    """(kind, tool) of the other test, lint or build runners in the same call: they could have printed the
+    markers."""
+    return {(kind, _tool(o))
+            for kind, pattern in (("tests", _TEST_COMMAND), ("lint", _LINT_COMMAND), ("build", _BUILD_COMMAND))
             for o in pattern.finditer(code) if o.start() != m.start() and not _version_query(code, o)}
+
+
+def _tool(m: re.Match) -> str:
+    """The runner's last word: `ruff`, `tsc`, `lint` for `npm run lint`."""
+    return re.search(r"[\w.-]+$", m.group(0).rstrip()).group(0).lower()
 
 
 # What git prints when a verb worked, and when it did not. Read only when the exit status is hidden or shared.
@@ -474,17 +481,19 @@ _GIT_FAIL = {
     "cherry-pick": re.compile(r"CONFLICT|could not apply|fatal:|error:"),
     # Build and lint tools print little on success and a lot on failure; both are read the same way.
     "build": re.compile(r"Build failed|build failed|Failed to compile|failed to compile"
-                        r"|✘ \[ERROR\]|\berror\[E\d+\]|BUILD FAILURE|compilation failed", re.I),
+                        r"|✘ \[ERROR\]|BUILD FAILURE|compilation failed", re.I),
     # `ruff check --fix` reports "Found 2 errors (2 fixed, 0 remaining)." and exits 0.
-    # eslint exits 0 with warnings only: "✖ 1 problem (0 errors, 1 warning)" is not a failure.
+    # eslint exits 0 with warnings only: "✖ 1 problem (0 errors, 1 warning)" is not a failure, unless
+    # `--max-warnings` made it one ("ESLint found too many warnings").
     "lint": re.compile(r"Found \d+ errors?\b(?! \(\d+ fixed, 0 remaining\))|\d+ problems? \((?!0 errors?\b)"
-                       r"|\berror\[E\d+\]"),
+                       r"|too many warnings"),
 }
-# Markers a test runner in the same call could have printed just as well (`ruff check . && npm test`: jest's
-# FAIL and PASS, ts-jest's `error TS…`): read only when the build or lint tool is the only runner in the call.
+# Markers another runner in the same call could have printed just as well (`ruff check . && npm test`: jest's
+# FAIL and PASS, ts-jest's `error TS…`; `cargo clippy && cargo build`: rustc's `error[E…]`): read only when
+# the build or lint tool is the only runner in the call.
 _SHARED_FAIL = {
-    "build": re.compile(r"npm ERR!|ELIFECYCLE|error TS\d+|Error: ", re.I),
-    "lint": re.compile(r"error TS\d+|\[ERROR\]|FAIL\b|✘"),
+    "build": re.compile(r"npm ERR!|ELIFECYCLE|error TS\d+|\berror\[E\d+\]|Error: ", re.I),
+    "lint": re.compile(r"error TS\d+|\berror\[E\d+\]|\[ERROR\]|FAIL\b|✘"),
 }
 _SHARED_DONE = {"lint": re.compile(r"^\s*PASS\b", re.M)}
 _GIT_DONE.update({

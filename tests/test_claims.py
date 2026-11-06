@@ -589,3 +589,48 @@ def test_a_past_tense_claim_behind_an_after_clause_is_a_claim():
     assert _kinds("After fixing the bug, all tests passed.") == ["tests"]
     assert _kinds("After the rebase, I pushed to main.") == ["push"]
     assert _kinds("After the tests pass, push it.") == []
+
+
+def test_the_same_linter_twice_in_one_call_still_reads_its_own_markers(tmp_path):
+    claims = _claims(_session(tmp_path, [
+        ("Bash", {"command": "ruff check --fix .; ruff check src/; echo done"},
+         "Found 2 errors (2 fixed, 0 remaining).\nFound 1 error.\ndone", False)], "Lint passes."))
+    assert "❌ contradicted" in claims
+    claims = _claims(_session(tmp_path, [
+        ("Bash", {"command": "ruff check src/; ruff check --fix .; echo done"},
+         "Found 1 error.\nFound 1 error (1 fixed, 0 remaining).\ndone", False)], "Lint passes."))
+    assert "✅ backed" in claims
+    claims = _claims(_session(tmp_path, [
+        ("Bash", {"command": "npm run lint; npm run typecheck; echo done"},
+         "✔ 0 problems\nsrc/app.ts(3,7): error TS2322: Type 'string'\ndone", False)], "Typecheck passes."))
+    assert "⚠️ cannot tell" in claims
+
+
+# --- after Codex's sixth round (head bdee22f9) ------------------------------------------------------
+
+
+def test_eslints_warning_limit_is_a_failure(tmp_path):
+    claims = _claims(_session(tmp_path, [
+        ("Bash", {"command": "npx eslint . --max-warnings 0; echo done"},
+         "✖ 1 problem (0 errors, 1 warning)\nESLint found too many warnings (maximum: 0).\ndone", False)],
+        "Lint passes."))
+    assert "❌ contradicted" in claims and "too many warnings" in claims
+
+
+def test_a_rust_build_error_is_not_clippys(tmp_path):
+    claims = _claims(_session(tmp_path, [
+        ("Bash", {"command": "cargo clippy && cargo build --release"},
+         "Exit code 1\nFinished `dev` profile [unoptimized + debuginfo] target(s)\nCompiling demo v0.1.0\n"
+         "error[E0425]: cannot find value `DEBUG_ONLY` in this scope", True)], "Clippy passes."))
+    assert "⚠️ cannot tell" in claims
+    claims = _claims(_session(tmp_path, [
+        ("Bash", {"command": "cargo clippy"}, "Exit code 1\nerror[E0425]: cannot find value `X`", True)],
+        "Clippy passes."))
+    assert "❌ contradicted" in claims and "error[E0425]" in claims
+
+
+def test_a_present_passive_behind_after_is_still_a_plan():
+    assert _kinds("After the changes are committed, push to main.") == []
+    assert _kinds("After the PR is merged, delete the branch.") == []
+    assert _kinds("The changes are committed.") == ["commit"]
+    assert _kinds("After the tests passed, I pushed to main.") == ["tests", "push"]
