@@ -524,3 +524,29 @@ def test_the_evidence_names_the_real_run_not_the_version_query(tmp_path):
         ("Bash", {"command": "ruff --version && ruff check ."}, "Exit code 1\nruff 0.8.0\nFound 1 error.", True)],
         "Lint passes."))
     assert "last `ruff check .`" in claims
+
+
+# --- after Codex's fourth round (head 1a1b87fe) -----------------------------------------------------
+
+
+def test_dash_v_is_a_version_flag_except_for_ctest(tmp_path):
+    claims = _claims(_session(tmp_path, [
+        ("Bash", {"command": "ruff check ."}, "Exit code 1\nFound 1 error.", True),
+        ("Bash", {"command": "ruff -V"}, "ruff 0.8.0", False),
+    ], "Lint passes."))
+    assert "❌ contradicted" in claims
+    path = _session(tmp_path, [("Bash", {"command": "ctest -V"}, "100% tests passed, 0 tests failed out of 3", False)],
+                    "ok")
+    assert "tests: 1 run" in render_brief(parse_transcript(path), "r.md")
+
+
+def test_a_runner_name_in_a_quoted_string_does_not_shift_the_echoed_status(tmp_path):
+    out = ("pytest --version\npytest 8.0\nexit=0\nERROR: file or directory not found: tests/test_api.py\n"
+           "no tests ran in 0.00s\nexit=4")
+    command = 'echo "pytest --version"; pytest --version; echo exit=$?; pytest tests/test_api.py; echo exit=$?'
+    claims = _claims(_session(tmp_path, [("Bash", {"command": command}, out, False)], "Tests pass."))
+    assert "⚠️ cannot tell" in claims
+    claims = _claims(_session(tmp_path, [
+        ("Bash", {"command": 'echo "Running pytest..."; pytest -q; echo exit=$?'},
+         "Running pytest...\n3 passed\nexit=0", False)], "Tests pass."))
+    assert "✅ backed" in claims

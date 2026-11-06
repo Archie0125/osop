@@ -315,10 +315,11 @@ def _real_run(pattern: re.Pattern, code: str) -> re.Match | None:
 
 
 def _version_query(code: str, m: re.Match) -> bool:
-    """`ruff --version`, `ruff check --help`, `(pytest -q -h)`: the tool ran, but checked nothing. (`-V` is
-    left out: `ctest -V` is verbose.)"""
+    """`ruff --version`, `ruff -V`, `ruff check --help`, `(pytest -q -h)`: the tool ran, but checked nothing.
+    (`ctest -V` is verbose.)"""
     segment = re.split(r"[;&|\n]", code[m.end():], maxsplit=1)[0]
-    return re.search(r"(?<=\s)(?:--version|--help|-h)(?=[\s)]|$)", segment) is not None
+    flags = r"--version|--help|-h" + ("" if m.group(0).endswith("ctest") else r"|-V")
+    return re.search(rf"(?<=\s)(?:{flags})(?=[\s)]|$)", segment) is not None
 
 
 def _git_calls(calls: list, verb: str) -> list[tuple[ToolCall, str, re.Match]]:
@@ -598,11 +599,12 @@ def _echoed_status_var(tc: ToolCall, code: str, match: re.Match) -> str | None:
     """
     # Read the command as written: `echo "exit=$?"` and `echo "done"` are both `echo ""` once blanked.
     raw = _unwrap_shell_c(_command(tc), blank=False)
-    # The same occurrence of the runner as the match: `pytest --version; echo $?; pytest tests/; echo $?`
-    # echoes the version query's status first.
+    # The same occurrence of the runner as the match, found in a mask of the raw command where quoted
+    # strings are spaces (`echo "Running pytest…"` holds no runner) and positions are those of `raw`:
+    # `pytest --version; echo $?; pytest tests/; echo $?` echoes the version query's status first.
     runners = re.compile(rf"(?:{_TEST_RUNNER})\b")
     nth = len(runners.findall(code[:match.end()]))
-    found = [r for r, _ in zip(runners.finditer(raw), range(nth), strict=False)]
+    found = [r for r, _ in zip(runners.finditer(_mask(raw)), range(nth), strict=False)]
     if len(found) < nth:
         return None
     runner = found[-1]
@@ -695,6 +697,26 @@ def _unwrap_shell_c(command: str, blank: bool = True) -> str:
         command = head + command[end:]
         pos = len(head)
     return command
+
+
+def _mask(command: str) -> str:
+    """The command with heredoc bodies, quoted strings and comments turned into spaces of the same length, so
+    that the rest sits where it does in the command as written (a quoted runner path keeps its name, as
+    _shell_code does)."""
+    def quoted(m: re.Match) -> str:
+        text = m.group(0)
+        runner = _RUNNER_EXECUTABLE.search(text[1:-1])
+        if runner:
+            return " " * (len(text) - 1 - len(runner.group(1))) + runner.group(1) + " "
+        return " " * len(text)
+
+    def heredoc(m: re.Match) -> str:
+        first_line = m.group(0).index("\n") + 1
+        return m.group(0)[:first_line] + " " * (len(m.group(0)) - first_line)
+
+    masked = _QUOTED.sub(quoted, _HEREDOC.sub(heredoc, command))
+    return re.sub(r"(?m)(^|[\s;&|(])#[^\n]*", lambda m: m.group(1) + " " * (len(m.group(0)) - len(m.group(1))),
+                  masked)
 
 
 def _shell_code(command: str) -> str:
