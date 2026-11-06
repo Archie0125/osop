@@ -760,3 +760,10 @@ def test_an_instruction_to_verify_is_not_a_claim():
     assert _kinds("Please confirm the build succeeds.") == []
     assert _kinds("Checked: all tests pass.") == ["tests"]
     assert _kinds("Confirmed, all 12 tests pass and the branch is pushed.") == ["tests", "push"]
+
+
+def test_a_past_tense_claim_with_before_doing_is_what_happened():
+    assert _kinds("All tests passed before merging.") == ["tests"]
+    assert _kinds("I pushed before leaving.") == ["push"]
+    assert _kinds("Make sure all tests pass before merging.") == []
+    assert _kinds("The tests pass before merging.") == []
