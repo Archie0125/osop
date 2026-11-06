@@ -17,7 +17,7 @@ def cli():
     agent's own report.
 
       osop log    Write a receipt of what the agent ran, from a session transcript
-      osop init   One-step project setup (sessions/ + CLAUDE.md)
+      osop init   Add an OSOP section to the project's CLAUDE.md
     """
     pass
 
@@ -32,8 +32,8 @@ _CLAUDE_MD_OSOP_SECTION = """\
 This project uses OSOP to record what AI agent sessions actually did, read
 straight from the Claude Code transcript (not the agent's own report).
 
-- `osop log [session-id]` — write `sessions/<date>-<desc>.receipt.md` from a session transcript
-- `osop init` — this setup
+- `osop log [session-id]` — write `~/.osop/receipts/<project>/<date>-<desc>.receipt.md` from a session transcript
+- `osop log --brief` — the same, plus a one-line summary (what a Stop hook shows)
 
 Run `osop log` after a multi-step task.
 """
@@ -41,20 +41,13 @@ Run `osop log` after a multi-step task.
 
 @cli.command("init")
 def init_cmd():
-    """Initialize OSOP in the current project.
+    """Add an OSOP section to the current project's CLAUDE.md.
 
-    Creates sessions/ directory and adds OSOP section to CLAUDE.md.
+    Receipts are written under ~/.osop/receipts/, never into the project.
     Run once per project.
     """
     cwd = Path.cwd()
-    sessions_dir = cwd / "sessions"
     claude_md = cwd / "CLAUDE.md"
-
-    if sessions_dir.exists():
-        sessions_status = "already exists"
-    else:
-        sessions_dir.mkdir(exist_ok=True)
-        sessions_status = "created"
 
     if claude_md.exists():
         content = claude_md.read_text(encoding="utf-8")
@@ -69,7 +62,6 @@ def init_cmd():
 
     console.print(Panel(
         f"[green]OSOP initialized[/green] in {cwd}\n"
-        f"  sessions/  {sessions_status}\n"
         f"  CLAUDE.md  {claude_md_status}\n\n"
         f"Next: run a task, then [cyan]osop log[/cyan] to record it.",
         title="osop init",
@@ -87,14 +79,19 @@ def init_cmd():
 @click.option("-d", "--desc", "short_desc", default=None,
               help="Short description for filenames (default: derived from date+session)")
 @click.option("-o", "--out-dir", "out_dir", type=click.Path(), default=None,
-              help="Output directory (default: ./sessions)")
+              help="Output directory (default: ~/.osop/receipts/<project>)")
 @click.option("--stdout", is_flag=True, default=False,
               help="Print the receipt to stdout instead of writing a file")
-def log_cmd(source, short_desc, out_dir, stdout):
+@click.option("--brief", is_flag=True, default=False,
+              help="Write the receipt, then print a one-line summary (for a Stop hook)")
+def log_cmd(source, short_desc, out_dir, stdout, brief):
     """Write a receipt of what the agent actually did in a Claude Code session.
 
     Reads the canonical JSONL transcript, sub-agents included, and builds the
     receipt from real tool calls and their results: no LLM self-report.
+
+    The receipt goes to ~/.osop/receipts/<project>/<date>-<desc>.receipt.md,
+    never into the project's own repo (-o changes the directory).
 
     SOURCE may be:
       - A path to a transcript .jsonl
@@ -106,11 +103,15 @@ def log_cmd(source, short_desc, out_dir, stdout):
       osop log 130fbd5c-b7d8-47bb-88b3-3eb9f91fba27
       osop log -d fix-auth-bug
       osop log /path/to/session.jsonl --stdout
+      osop log /path/to/session.jsonl --brief
     """
     from datetime import datetime as _dt
 
-    from osop.recorder.receipt import render_receipt
+    from osop.recorder.receipt import render_brief, render_receipt
     from osop.recorder.transcript import parse_transcript, resolve_transcript_path
+
+    if stdout and brief:
+        raise click.UsageError("--stdout prints the receipt and --brief prints a summary: pick one")
 
     try:
         path = resolve_transcript_path(source, cwd=Path.cwd())
@@ -146,13 +147,25 @@ def log_cmd(source, short_desc, out_dir, stdout):
         sys.stdout.buffer.flush()
         return
 
-    target_dir = Path(out_dir) if out_dir else (Path.cwd() / "sessions")
+    target_dir = Path(out_dir) if out_dir else _receipts_dir(parsed, path)
     target_dir.mkdir(parents=True, exist_ok=True)
     receipt_path = target_dir / f"{short_desc}.receipt.md"
     receipt_path.write_text(receipt, encoding="utf-8", newline="\n")
+
+    if brief:
+        sys.stdout.buffer.write((render_brief(parsed, receipt_path) + "\n").encode("utf-8"))
+        sys.stdout.buffer.flush()
+        return
 
     console.print(Panel(
         f"[dim]source:[/dim] {path}\n[green]{receipt_path}[/green]",
         title="osop log",
         border_style="green",
     ))
+
+
+def _receipts_dir(parsed: dict, transcript: Path) -> Path:
+    """~/.osop/receipts/<project>, named after the session's working directory: receipts never land in the
+    repo the agent worked on, where they would be one more file the agent can touch."""
+    project = Path(parsed.get("cwd") or "").name or transcript.parent.name or "unknown"
+    return Path.home() / ".osop" / "receipts" / project

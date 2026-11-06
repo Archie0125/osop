@@ -76,29 +76,38 @@ _SHELL_WRITES = (
         r"\bgit\s+(?:apply|restore|rm|mv|clean|stash(?!\s+list)|reset\s+--hard)\b"
         r"|\bgit\s+checkout\b[^|;&\n]*\s(?:--(?:ours|theirs)?|\.(?:/\S*)?)(?:\s|$)")),
 )
+# Commands whose result backs a "committed / pushed / merged" claim.
+_GIT_STATE = re.compile(
+    _COMMAND_START + r"(?:git\s+(?:-C\s+\S+\s+)?(?:commit|push|merge|rebase|cherry-pick|tag)\b"
+    r"|gh\s+pr\s+(?:create|merge|close)\b)")
+# The same commands as written, up to the next separator: for display only, so quotes are not parsed.
+_GIT_SEGMENT = re.compile(
+    r"\b(?:git\s+(?:-C\s+\S+\s+)?(?:commit|push|merge|rebase|cherry-pick|tag)|gh\s+pr\s+(?:create|merge|close))\b"
+    r"[^;&|\n]*")
 _FILE_TOOLS = ("Edit", "MultiEdit", "Write", "NotebookEdit")
 _MAIN = "main"
 
 
 def render_receipt(parsed: dict, source: Path | str) -> str:
-    labels = _subagent_labels(parsed["nodes"])
-    calls = [(_owner(node.node_id, labels), tc) for node in _walk(parsed["nodes"]) for tc in node.tool_calls]
-    tests = [
-        (by, tc, code, m) for by, tc in calls if tc.tool == "Bash"
-        and (m := _TEST_COMMAND.search(code := _shell_code(_unwrap_shell_c(_command(tc)))))
-    ]
-    goal = next((n.user_prompt for n in parsed["nodes"] if n.user_prompt), "") or ""
+    labels, calls, tests, goal = _collect(parsed)
+    unfinished = _unfinished(calls, tests)
+    git = _git_table(calls)
 
+    # What a person needs before trusting "done" comes first; the full command table is collapsed at the end.
     sections = [
-        _overview(parsed, goal, calls, tests),
+        _overview(parsed, goal, calls, tests, unfinished),
         "## Goal\n" + _quote(goal),
         "## Tests\n" + _tests_table(tests),
-        "## Commands\n" + _commands_table(calls),
         "## Files changed\n" + _files_table(calls),
         "## Errors\n" + _errors_list(calls),
     ]
+    if unfinished:
+        sections.append("## No result recorded\n" + _unfinished_list(unfinished))
+    if git:
+        sections.append("## Git\n" + git)
     if labels:
         sections.append("## Sub-agents\n" + _subagents_table(calls, labels))
+    sections.append("## Commands\n" + _commands_details(calls))
     sections.append(
         f"---\nBuilt by `osop log` from `{source}`: read from the transcript, not written by the agent. "
         "Results are the exit status each tool reported."
@@ -106,15 +115,58 @@ def render_receipt(parsed: dict, source: Path | str) -> str:
     return "\n\n".join(sections) + "\n"
 
 
-def _overview(parsed: dict, goal: str, calls: list, tests: list) -> str:
+def render_brief(parsed: dict, receipt_path: Path | str) -> str:
+    """One line for a Stop hook: the counts a person needs before trusting "done", and where the receipt is."""
+    _, calls, tests, _ = _collect(parsed)
+    files, pending_edits = _edited_files(calls)
+    writes = _shell_write_rows(calls)
+    unfinished = _unfinished(calls, tests)
+    failed = sum(1 for _, tc in calls if tc.is_error)
+
+    files_part = f"files: {len(files)} edited"
+    if writes:
+        files_part += f", {_count(len(writes), 'shell write')} (not verified)"
+    if pending_edits:
+        files_part += f", {_count(len(pending_edits), 'edit')} without result"
+    calls_part = f"tool calls: {len(calls)}, {failed} failed"
+    if unfinished:
+        calls_part += f", {len(unfinished)} without result"
+    parts = [f"tests: {_tests_summary(tests)}", files_part, calls_part]
+    skipped = parsed.get("skipped") or []
+    if skipped:
+        parts.append(f"⚠️ {_count(len(skipped), 'sub-agent transcript')} could not be read")
+    parts.append(f"receipt: {receipt_path}")
+    return "OSOP · " + " · ".join(parts)
+
+
+def _collect(parsed: dict) -> tuple[dict[str, str], list, list, str]:
+    """Every tool call with who made it, the test runs among them, and the first prompt."""
+    labels = _subagent_labels(parsed["nodes"])
+    calls = [(_owner(node.node_id, labels), tc) for node in _walk(parsed["nodes"]) for tc in node.tool_calls]
+    tests = [
+        (by, tc, code, m) for by, tc in calls if tc.tool == "Bash"
+        and (m := _TEST_COMMAND.search(code := _shell_code(_unwrap_shell_c(_command(tc)))))
+    ]
+    goal = next((n.user_prompt for n in parsed["nodes"] if n.user_prompt), "") or ""
+    return labels, calls, tests, goal
+
+
+def _count(n: int, noun: str) -> str:
+    return f"{n} {noun}" if n == 1 else f"{n} {noun}s"
+
+
+def _overview(parsed: dict, goal: str, calls: list, tests: list, unfinished: list) -> str:
     failed = sum(1 for _, tc in calls if tc.is_error)
     by_subagents = sum(1 for by, _ in calls if by != _MAIN)
     title = _cell(goal.splitlines()[0] if goal else "session", 70)
+    tool_calls = f"{len(calls)} total, {failed} failed, {by_subagents} by sub-agents"
+    if unfinished:
+        tool_calls += f", {len(unfinished)} without result"
     rows = [
         ("Session", f"`{parsed.get('session_id') or '?'}`"),
         ("Model", parsed.get("model") or "unknown"),
         ("When", f"{parsed['started_at']} → {parsed['ended_at']} ({_duration(parsed['duration_ms'])})"),
-        ("Tool calls", f"{len(calls)} total, {failed} failed, {by_subagents} by sub-agents"),
+        ("Tool calls", tool_calls),
         ("Tests", _tests_summary(tests)),
     ]
     skipped = parsed.get("skipped") or []
@@ -274,19 +326,58 @@ def _shell_code(command: str) -> str:
     return re.sub(r"(?m)(^|[\s;&|(])#[^\n]*", r"\1", code)
 
 
-def _commands_table(calls: list) -> str:
+def _commands_details(calls: list) -> str:
+    """The full command table, collapsed: every test, file, failure and unfinished call is already shown above."""
     shell = [(by, tc) for by, tc in calls if tc.tool == "Bash"]
     if not shell:
         return "**No shell commands ran.**"
+    failed = sum(1 for _, tc in shell if tc.is_error)
     rows = [
         f"| {i} | {_cell(by)} | {_code(_command(tc))} | {_status(tc)} |"
         for i, (by, tc) in enumerate(shell, 1)
     ]
-    return "| # | By | Command | Result |\n|---|---|---|---|\n" + "\n".join(rows)
+    table = "| # | By | Command | Result |\n|---|---|---|---|\n" + "\n".join(rows)
+    summary = f"{_count(len(shell), 'shell command')}, {failed} failed (expand for the full table)"
+    return f"<details>\n<summary>{summary}</summary>\n\n{table}\n\n</details>"
 
 
-def _files_table(calls: list) -> str:
-    files: dict[str, dict[str, set[str] | dict[str, int]]] = {}
+def _unfinished(calls: list, tests: list) -> list:
+    """Calls with nothing to judge: no result arrived, or they were started in the background.
+
+    Test runs and file edits already show their ⏳ in their own sections.
+    """
+    test_calls = {id(tc) for _, tc, _, _ in tests}
+    return [
+        (by, tc) for by, tc in calls
+        if (tc.status == "PENDING" or tc.input.get("run_in_background"))
+        and id(tc) not in test_calls and tc.tool not in _FILE_TOOLS
+    ]
+
+
+def _unfinished_list(unfinished: list) -> str:
+    return "\n".join(
+        f"- **{_cell(by)}** · {tc.tool} {_code(_subject(tc), 120)} → {_status(tc)}" for by, tc in unfinished
+    )
+
+
+def _git_table(calls: list) -> str:
+    """Commands whose result backs or contradicts a "committed / pushed / merged" claim."""
+    rows = []
+    for by, tc in calls:
+        if tc.tool != "Bash" or not _GIT_STATE.search(_shell_code(_unwrap_shell_c(_command(tc)))):
+            continue
+        # Show the git part, not the start of a long script; the result is still that of the whole call.
+        segments = [re.sub(r"\s+\d?[<>].*$", "", s).strip() for s in _GIT_SEGMENT.findall(_command(tc))]
+        rows.append(f"| {_cell(by)} | {_code('; '.join(segments) or _command(tc))} | {_status(tc)} "
+                    f"| {_cell(_tail(_EXIT_CODE.sub('', tc.output_summary).strip(), 90), 90)} |")
+    if not rows:
+        return ""
+    return "| By | Command | Result | Output (end) |\n|---|---|---|---|\n" + "\n".join(rows)
+
+
+def _edited_files(calls: list) -> tuple[dict[str, dict], list[tuple[str, ToolCall, str]]]:
+    """Files edited with Edit / Write tools, and edits whose result never arrived."""
+    files: dict[str, dict] = {}
     pending: list[tuple[str, ToolCall, str]] = []
     for by, tc in calls:
         path = tc.input.get("file_path") or tc.input.get("notebook_path")
@@ -298,6 +389,11 @@ def _files_table(calls: list) -> str:
         entry = files.setdefault(path, {"tools": {}, "by": set()})
         entry["tools"][tc.tool] = entry["tools"].get(tc.tool, 0) + 1
         entry["by"].add(by)
+    return files, pending
+
+
+def _files_table(calls: list) -> str:
+    files, pending = _edited_files(calls)
     parts = []
     if files:
         rows = [
@@ -314,7 +410,7 @@ def _files_table(calls: list) -> str:
     return "\n\n".join(parts)
 
 
-def _shell_writes(calls: list) -> str:
+def _shell_write_rows(calls: list) -> list[tuple[str, ToolCall, list[str]]]:
     """Shell commands whose text shows a file write. What they changed is not known, only that they could."""
     rows = []
     for by, tc in calls:
@@ -323,11 +419,20 @@ def _shell_writes(calls: list) -> str:
         code = _shell_code(_unwrap_shell_c(_command(tc)))
         reasons = [name for name, pattern in _SHELL_WRITES if pattern.search(code)]
         if reasons:
-            rows.append(f"- **{_cell(by)}** · {_code(_command(tc), 160)} ({', '.join(reasons)})"
-                        + (" ❌ failed" if tc.is_error else ""))
+            rows.append((by, tc, reasons))
+    return rows
+
+
+def _shell_writes(calls: list) -> str:
+    rows = [
+        f"- **{_cell(by)}** · {_code(_command(tc), 160)} ({', '.join(reasons)})" + (" ❌ failed" if tc.is_error else "")
+        for by, tc, reasons in _shell_write_rows(calls)
+    ]
     if not rows:
         return "No shell command that writes files (`>`, `tee`, `sed -i`, `mv`, `cp`, `rm`…) was seen."
-    return "Shell commands that may have changed files (not verified):\n" + "\n".join(rows)
+    # Collapsed: the count is the fact; the list is long in big sessions and only says "could have".
+    summary = f"{_count(len(rows), 'shell command')} may have changed files (not verified)"
+    return f"<details>\n<summary>{summary}</summary>\n\n" + "\n".join(rows) + "\n\n</details>"
 
 
 def _errors_list(calls: list) -> str:
