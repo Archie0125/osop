@@ -423,6 +423,10 @@ def _judge(tc: ToolCall, code: str, m: re.Match, verb: str | None = None) -> tup
             fail = generic
     elif fail is None and alone and verb in _SHARED_FAIL:
         fail = _last(_SHARED_FAIL[verb], out)
+        # `npm run build && npm run deploy`: a generic marker after the build's own success line may be the
+        # deploy's; with nothing after the build in the call, it is the build's.
+        if fail and done and done.start() < fail.start() and not ran_again and "later" in (_chained(code, m) or ""):
+            fail = None
     # A single run that printed a failure and then a success marker ("error: Failed to format app.py", then
     # "1 file already formatted") failed. When the tool ran more than once in the call, git prints one block
     # per command, so the later block decides (`! [rejected]`, a rebase, then `main -> main` is a push); a
@@ -441,13 +445,17 @@ def _judge(tc: ToolCall, code: str, m: re.Match, verb: str | None = None) -> tup
         # output: the commit happened, the deploy did not. With a failure marker anywhere in the output, which
         # step it belongs to is unknown (`npm run build && npm test` whose build script ends in `tsc`).
         failed_somewhere = any(p.search(out) for p in (_GIT_FAIL.get(verb), _SHARED_FAIL.get(verb)) if p)
-        if done and verb in _GIT_PAST and not cleared and not failed_somewhere:
+        # A git verb's success line is conclusive; a build tool's "✓ built in" is a phase line, so alone in
+        # the call at exit≠0 the build failed (Next.js prints "✓ Compiled successfully", then a prerender error).
+        later = chained is not None and "later" in chained
+        git_verb = verb not in ("lint", "build")
+        if done and verb in _GIT_PAST and not cleared and not failed_somewhere and (later or git_verb):
             return "probably", (f"🟡 probably {_GIT_PAST[verb]}: {_exit_text(tc)} came from another step; "
                                 f"output shows {_code(done.group(0).strip(), 60)}")
         if chained:
             shown = f"; output shows {_code(done.group(0).strip(), 60)}" if done else ""
             return "unclear", f"⚠️ {_exit_text(tc)}: this command or {chained} step in the chain failed{shown}"
-        if done and verb in _GIT_PAST and not cleared:
+        if done and git_verb and not cleared:
             # `gh pr merge --delete-branch`: "Squashed and merged", then "fatal:" about the branch, exit 1.
             return "unclear", f"⚠️ {_exit_text(tc)}, but output shows {_code(done.group(0).strip(), 60)}"
         return "failed", _failed(tc)
@@ -529,7 +537,7 @@ _GIT_FAIL = {
     # Build and lint tools print little on success and a lot on failure; both are read the same way.
     # vite prints "✓ built in" for the client bundle, then "error during build:" when the SSR bundle fails.
     "build": re.compile(r"Build failed|build failed|Failed to compile|failed to compile|error during build"
-                        r"|RollupError|✘ \[ERROR\]|BUILD FAILURE|compilation failed", re.I),
+                        r"|RollupError|Error occurred|✘ \[ERROR\]|BUILD FAILURE|compilation failed", re.I),
     # `ruff check --fix` reports "Found 2 errors (2 fixed, 0 remaining)." and exits 0.
     # eslint exits 0 with warnings only: "✖ 1 problem (0 errors, 1 warning)" is not a failure, unless
     # `--max-warnings` made it one ("ESLint found too many warnings"). A format check that "would reformat"
@@ -547,7 +555,8 @@ _SHARED_FAIL = {
     "merge": re.compile(r"fatal:|error:"),
     "rebase": re.compile(r"fatal:|error:"),
     "cherry-pick": re.compile(r"fatal:|error:"),
-    "build": re.compile(r"npm ERR!|ELIFECYCLE|error TS\d+|\berror\[E\d+\]|Error: ", re.I),
+    "build": re.compile(r"npm ERR!|npm error|ELIFECYCLE|error TS\d+|\berror\[E\d+\]|Error: |error Command failed",
+                        re.I),
     "lint": re.compile(r"error TS\d+|\berror\[E\d+\]|\[ERROR\]|FAIL\b|✘"),
 }
 _SHARED_DONE = {"lint": re.compile(r"^\s*PASS\b", re.M)}

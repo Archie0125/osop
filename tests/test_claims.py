@@ -914,3 +914,76 @@ def test_a_success_line_at_exit_nonzero_vouches_only_when_nothing_failed_in_the_
 ])
 def test_class_names_are_case_sensitive_and_completed_next_clauses_are_not_plans(text, kinds):
     assert _kinds(text) == kinds, text
+
+
+def test_a_class_name_glued_to_chinese_is_still_a_test_subject():
+    assert _kinds("已重跑LoginTest 並通過。") == ["tests"]
+    assert _kinds("LoginTest通過") == ["tests"]
+    assert _kinds("The latest version passes the correct URL to the API.") == []
+
+
+# --- after the Fable re-check of 0d3aad4f -----------------------------------------------------------
+
+
+def test_a_later_steps_failure_after_the_builds_own_success_line_is_not_the_builds(tmp_path):
+    out = "Exit code 1\n✓ built in 2.03s\nError: HTTP Error: 403\nnpm ERR! Lifecycle script `deploy` failed"
+    claims = _claims(_session(tmp_path, [("Bash", {"command": "npm run build && npm run deploy"}, out, True)],
+                              "Build succeeds."))
+    assert "❌" not in claims and "✓ built in" in claims
+    out = "Exit code 23\n✓ built in 2.03s\nrsync error: some files could not be transferred"
+    claims = _claims(_session(tmp_path, [
+        ("Bash", {"command": "npm run build && rsync -av dist/ web:/var/www/"}, out, True)], "Build succeeds."))
+    assert "❌" not in claims
+    claims = _claims(_session(tmp_path, [
+        ("Bash", {"command": "npm run build; npm run deploy"},
+         "✓ built in 2.03s\nnpm ERR! Lifecycle script `deploy` failed", False)], "Build succeeds."))
+    assert "✅ backed" in claims and "🟡 probably built" in claims
+    out = "Exit code 1\n✓ built in 1.52s\nerror during build:\nRollupError: x\nnpm ERR! code ELIFECYCLE"
+    claims = _claims(_session(tmp_path, [("Bash", {"command": "npm run build"}, out, True)], "Build succeeds."))
+    assert "❌ contradicted" in claims
+
+
+@pytest.mark.parametrize("text, kinds", [
+    ("已 push，就等 CI 了", ["push"]), ("已 commit 並 push，就差 deploy", ["commit", "push"]),
+    ("已 push，再來就是等 CI", ["push"]), ("全套 312 passed，再跑一次還是全綠", ["tests"]),
+    ("先前跑的 312 個測試也都通過", ["tests"]), ("確認：測試全綠，已 push", ["tests", "push"]),
+    ("Can confirm all 12 tests pass.", ["tests"]), ("Has been pushed to origin/main.", ["push"]),
+    ("All tests pass, OK to merge?", ["tests"]), ("All tests pass, can I push?", ["tests"]),
+    ("已經推送到遠端", ["push"]), ("測試全綠，然後 push", []), ("Can all tests pass without the fixture?", []),
+    ("已推上去的 commit 有三個", []),
+])
+def test_completed_clauses_keep_their_claims(text, kinds):
+    assert _kinds(text) == kinds, text
+
+
+# --- after the Opus re-check of 0d3aad4f ------------------------------------------------------------
+
+
+def test_a_build_alone_at_exit_nonzero_failed_whatever_phase_line_it_printed(tmp_path):
+    out = ("Exit code 1\n✓ Compiled successfully\nError occurred prerendering page \"/blog\"\n"
+           "npm error code 1")
+    claims = _claims(_session(tmp_path, [("Bash", {"command": "npm run build"}, out, True)], "Build succeeds."))
+    assert "❌ contradicted" in claims
+    out = "Exit code 1\n✓ built in 1.20s\nsize check failed\nerror Command failed with exit code 1."
+    claims = _claims(_session(tmp_path, [("Bash", {"command": "yarn build"}, out, True)], "Build succeeds."))
+    assert "❌ contradicted" in claims
+    claims = _claims(_session(tmp_path, [
+        ("Bash", {"command": "gh pr merge 13 --squash --delete-branch"},
+         "Exit code 1\n✓ Squashed and merged pull request #13\nfailed to run git: fatal: 'main' is already checked out",
+         True)], "PR #13 is merged."))
+    assert "⚠️ cannot tell" in claims and "Squashed and merged" in claims and "❌" not in claims
+
+
+@pytest.mark.parametrize("text, kinds", [
+    ("When CI passes, the PR is merged into main automatically.", []),
+    ("If CI is green, it gets merged into main.", []), ("Once you approve, the branch is pushed to origin.", []),
+    ("測試全過的話，我就 push", []), ("要是測試全綠，我就 merge", []), ("只要測試全綠，就會自動 push", []),
+    ("已 commit 並 push 失敗", ["commit"]), ("Did a clean install: all 286 tests pass.", ["tests"]),
+    ("Have pushed the fix to origin/m2.", ["push"]), ("Committed (abc1234) and pushed.", ["commit", "push"]),
+    ("Squash-merged PR #13.", ["merge"]), ("The test fixture passes a mock client to the handler.", []),
+    ("Wrote a pytest fixture that passes a temp HOME to the hook.", []),
+    ("測試資料是通過 seeder 建立的", []), ("不需要改 migration，測試全綠", ["tests"]),
+    ("CI 綠了，PR 已經 merge 進 main", ["merge"]),
+])
+def test_subordinate_conditions_cross_the_comma_but_statements_do_not(text, kinds):
+    assert _kinds(text) == kinds, text
