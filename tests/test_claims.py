@@ -354,7 +354,7 @@ def test_a_test_failure_later_in_the_chain_is_not_the_lints(tmp_path):
     claims = _claims(_session(tmp_path, [
         ("Bash", {"command": "ruff check . && npm test"},
          "Exit code 1\nAll checks passed!\nFAIL src/app.test.ts\nTests: 1 failed", True)], "Lint passes."))
-    assert "⚠️ cannot tell" in claims and "a later step in the chain failed" in claims
+    assert "✅ backed" in claims and "🟡 probably clean" in claims and "came from another step" in claims
     claims = _claims(_session(tmp_path, [
         ("Bash", {"command": "ruff check . && npm test"}, "Exit code 1\nFound 2 errors.", True)], "Lint passes."))
     assert "❌ contradicted" in claims
@@ -447,7 +447,7 @@ def test_ts_diagnostics_and_pass_lines_of_a_test_runner_in_the_chain_are_not_the
         ("Bash", {"command": "npm run lint && npm test"},
          "Exit code 1\nAll checks passed!\nFAIL src/app.test.ts\n  src/app.test.ts:3:7 - error TS2322: Type 'string'",
          True)], "Lint passes."))
-    assert "⚠️ cannot tell" in claims
+    assert "✅ backed" in claims and "🟡 probably clean" in claims
     claims = _claims(_session(tmp_path, [
         ("Bash", {"command": "npx tsc --noEmit"}, "Exit code 1\nsrc/app.ts:3:7 - error TS2322: Type 'string'", True)],
         "Lint passes."))
@@ -744,7 +744,7 @@ def test_a_later_test_failure_does_not_pin_an_earlier_lint_error_on_a_fixed_reru
     claims = _claims(_session(tmp_path, [
         ("Bash", {"command": "ruff check .; ruff check --fix . && pytest -q"},
          "Exit code 1\nFound 1 error.\nFound 1 error (1 fixed, 0 remaining).\n1 failed", True)], "Lint passes."))
-    assert "⚠️ cannot tell" in claims and "a later step in the chain failed" in claims
+    assert "✅ backed" in claims and "🟡 probably clean" in claims
     claims = _claims(_session(tmp_path, [
         ("Bash", {"command": "ruff check --fix .; ruff check src/ && pytest -q"},
          "Exit code 1\nFound 1 error (1 fixed, 0 remaining).\nFound 1 error.", True)], "Lint passes."))
@@ -780,3 +780,67 @@ def test_an_instruction_after_the_claim_does_not_erase_it():
     assert _kinds("All tests passed, run completed in 0.42 seconds.") == ["tests"]
     assert _kinds("Before merging, verify that all tests passed.") == []
     assert _kinds("Verify that all tests pass before merging.") == []
+
+
+# --- after the Opus review of 371f0ba6 --------------------------------------------------------------
+
+
+def test_a_push_error_in_the_same_call_is_not_the_commits_failure(tmp_path):
+    out = ("Exit code 1\n[m2 abc1234] fix: parser\n 1 file changed\nTo github.com:x/y.git\n"
+           " ! [rejected]        main -> main (fetch first)\nerror: failed to push some refs to 'x/y.git'")
+    claims = _claims(_session(tmp_path, [
+        ("Bash", {"command": 'git add a.py && git commit -m "fix: parser" && git push'}, out, True),
+        ("Bash", {"command": "git pull --rebase && git push"},
+         "Successfully rebased\n   abc1234..def5678  main -> main", False)], "Committed and pushed to main."))
+    assert "| committed:" in claims and "✅ backed" in claims.split("| committed:")[1].split("\n")[0]
+    assert "| pushed:" in claims and "✅ backed" in claims.split("| pushed:")[1].split("\n")[0]
+    claims = _claims(_session(tmp_path, [
+        ("Bash", {"command": "gh pr merge 13 --squash --delete-branch"},
+         "Exit code 1\n✓ Squashed and merged pull request #13\nfailed to run git: fatal: 'main' is already checked out",
+         True)], "PR #13 is merged."))
+    assert "✅ backed" in claims and "🟡 probably merged" in claims
+    claims = _claims(_session(tmp_path, [
+        ("Bash", {"command": "git commit -m x && git push"}, "Exit code 1\nnothing to commit, working tree clean",
+         True)], "Committed and pushed."))
+    assert "❌ contradicted" in claims.split("| committed:")[1].split("\n")[0]
+
+
+@pytest.mark.parametrize("text", [
+    "Special characters now pass through unescaped.",
+    "The community plugin passes the token to the API.",
+    "Added a test that passes a Windows path to `_norm_path`.",
+    "The new test passes an empty message and expects no claims.",
+    "測試頁的按鈕已改成綠色", "測試改成通過 stdin 傳入訊息",
+    "Each test passes its own tmp_path now, so they no longer share state.",
+    "我也推薦方案 B，因為改動最小", "都推測是 cache 的問題", "剛推論出原因", "已推出 v0.2 的說明頁", "已推算出數字",
+    "兩者都綠就 ff 進 main 並 push，接著把腳本放到 Mac mini", "兩件都完成後，依序：清舊資產與 canary 檢查、push、部署",
+    "另外，a7-sites 的 commit 和 push 還在等 portfolio",
+    "W2 不動模板，CI 綠了我會合進 main 並 push，然後啟動 W3", "減重／疫苗／中藥／推拿／埋線的禁忌與警訊補齊",
+])
+def test_words_that_only_look_like_claims(text):
+    assert _kinds(text) == [], text
+
+
+@pytest.mark.parametrize("text, kinds", [
+    ("Committed and pushed.", ["commit", "push"]), ("Changes committed and pushed.", ["commit", "push"]),
+    ("Everything is committed and pushed.", ["commit", "push"]), ("已 commit 並 push", ["commit", "push"]),
+    ("已 commit、push", ["commit", "push"]), ("已 commit 和 push", ["commit", "push"]),
+    ("已 commit 並推上去", ["commit", "push"]), ("W4b 做完了，已合進 main 並 push（e94b1a959）", ["push"]),
+    ("Merged PR #13 into main.", ["merge"]), ("Merged PR #13 after verification.", ["merge"]),
+    ("測試全綠，要我 push 嗎？", ["tests"]), ("286 個測試全部通過，已 commit，要我開 PR 嗎？", ["tests", "commit"]),
+    ("All 286 tests pass — want me to open the PR?", ["tests"]), ("All tests pass, should I merge?", ["tests"]),
+    ("測試全綠，等你一句要不要 push", ["tests"]), ("The new test passes.", ["tests"]), ("已推上 main", ["push"]),
+    ("LoopRegistryMatchesSchedulerTest、DocsNameOnlyRealCommandsTest 綠", ["tests"]),
+    ("驗證：新增一條（20 passed）、push hook 全套 3,330 綠", ["tests"]),
+    ("重建後全套 3,491 條通過，再 push 就過了", ["tests"]),
+])
+def test_claims_beside_a_question_or_a_second_verb(text, kinds):
+    assert _kinds(text) == kinds, text
+
+
+def test_a_long_single_line_message_is_scanned_quickly():
+    import time
+    start = time.perf_counter()
+    assert _kinds("tests " * 9000) == []
+    assert _kinds("tests, " * 3000) == []
+    assert time.perf_counter() - start < 2.0

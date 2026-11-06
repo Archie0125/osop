@@ -39,7 +39,10 @@ def main() -> int:
         return 0
 
     # Parsing runs at about 12 MB/s and every Stop waits for it: a giant transcript is skipped, and said so.
-    limit_mb = float(os.environ.get("OSOP_MAX_TRANSCRIPT_MB") or 200)
+    try:
+        limit_mb = float(os.environ.get("OSOP_MAX_TRANSCRIPT_MB") or 200)
+    except ValueError:
+        limit_mb = 200.0
     try:
         size_mb = os.path.getsize(transcript) / 1e6
     except OSError:
@@ -55,7 +58,7 @@ def main() -> int:
     if isinstance(message, str):
         # The hook's copy of the final message is complete; the transcript file may still lag behind it.
         args += ["--last-message", "-"]
-        stdin = message.encode("utf-8")
+        stdin = message.encode("utf-8", "surrogatepass")  # a lone surrogate must not crash the hook
     try:
         # A wide console: an error message that wraps at 80 columns would lose the path it names.
         run = subprocess.run(args, input=stdin, capture_output=True, timeout=150,

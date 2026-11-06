@@ -38,7 +38,8 @@ _QUESTION = re.compile(
     r"？|\?(?![a-z0-9_.-]+=)|嗎|要我|要不要|是不是|還不知道|不確定|不清楚"
     r"|\bshould i\b|\bdo you want\b|\bwant me\b|\bsay\s+[\"“']", re.I)
 _CONDITIONAL = re.compile(
-    r"必須|需要|應該|才會|就會|將會|才能|之後再|然後再|之前先|等你|請你|如果|若是|就好|就可以|就能|我就|(?:了|完|後)就"
+    r"必須|需要|應該|才會|就會|將會|才能|之後再|然後再|之前先|等你|請你|如果|若是|若無|就好|就可以|就能|我就|我會"
+    r"|(?:了|完|後|綠|過|好|來)就|依序"
     r"|要(?:先|再|重新|用|全綠|通過|全過|都過|綠)|會(?:跑|做|先|再|觸發|一起)|再\s*(?:commit|push|merge|推|提交|合併|跑)"
     r"|\b(?:if|once|when|unless|until|will|would|should|must|need(?:s)? to|to be|going to)\b", re.I)
 # "Verify that all tests pass before merging", "make sure the tests pass before you push": an instruction, not a
@@ -64,7 +65,7 @@ _NEGATED_EN_AFTER = re.compile(r"^[^,.;]{0,12}\b(?:yet|not)\b", re.I)
 _NEGATED_ZH_BEFORE = re.compile(r"(?:沒有|沒|未|不|非|無|尚未|還沒|並未|無法|別|不是)\s*[「“\"(（『]?\s*$")
 # Inside a claim's own clause nothing may be negated or failing: "測試沒通過" and "tests did not pass" are
 # not "tests pass".
-_SPAN = r"(?:(?!沒|未|不|非|無|失敗|fail|\bnot\b|n't\b|\bnever\b|\bno\b|\bcannot\b)[^，。；])*?"
+_SPAN = r"(?:(?!沒|未|不|非|無|失敗|fail|\bnot\b|n't\b|\bnever\b|\bno\b|\bcannot\b)[^，。；]){0,200}?"
 _DONE = r"(?:已經|已|都已|都|也都|也|剛剛|剛|全部|全都)\s*"
 _SHA = r"`?[0-9a-f]{6,40}`?"
 # "merged" is about git only when the sentence says so: blog posts and data rows get 合併 too.
@@ -73,8 +74,9 @@ _GIT_CONTEXT = re.compile(
 
 _PATTERNS = {
     "tests": re.compile(
-        rf"(?:測試|全套|tests?\b|testing|spec|phpunit|pytest|vitest|jest|unit|e2e|smoke){_SPAN}"
-        r"(?:全部通過|都通過|全通過|全過|都過|通過|全綠|綠|過了|pass(?:ed|es|ing)?\b|0\s*個?\s*失敗|0\s+fail(?:ed|ures?)\b)"
+        rf"(?:測試|全套|\b(?:tests?|testing|spec|phpunit|pytest|vitest|jest|unit|e2e|smoke)\b|[A-Z]\w*Tests?\b){_SPAN}"
+        r"(?:全部通過|都通過|全通過|全過|都過|通過(?!\s*(?:stdin|stdout|stderr|api|http|socket|pipe|env|cli|url|參數|管道|介面))"
+        r"|全綠|綠(?!色)|過了|\bpass(?:ed|es|ing)?\b|0\s*個?\s*失敗|0\s+fail(?:ed|ures?)\b)"
         r"|\b\d[\d,]*\s*passed\b|\b\d+\s*/\s*\d+\s*(?:通過|都過|全過|綠|pass(?:ed)?\b)"
         r"|\b(?:all|every)\s+(?:\d+\s+)?tests?\s+(?:pass|passed|passing|are green)\b|\bthey all pass\b"
         r"|\btest suite (?:passes|passed|is green)\b"
@@ -100,17 +102,27 @@ _PATTERNS = {
         re.I),
     "push": re.compile(
         rf"{_DONE}push(?:ed)?(?!\s*的)|\bpush\s*(?:了|完成|完\b|好了|成功|上去了|到了)"
-        rf"|{_DONE}推(?:上去|上|到)?(?![上去]*\s*的)|推上去了|推上了|推到了|推了(?!\s*的)"
+        rf"|{_DONE}推(?:上去|上|到|了)?(?=\s|$|[，。；、！!）)])|推上去了|推上了|推到了|推了(?!\s*的)"
+        # "已 commit 並 push", "已合進 main、push": the second verb of a done list, never a bare list
+        rf"|{_DONE}[^，。；]{{0,24}}?(?:並|及|和|跟|、)\s*(?:push(?:ed)?\b(?!\s*的)|推(?:上去|上|到|了)?(?=\s|$|[，。；、！!）)]))"
         r"|\b(?:is|are|was|were|has been|have been|got|now|already)\s+pushed\b|\bi(?:'ve| have)?\s+pushed\b"
-        r"|\bpushed\s+(?:to|the|it|them|everything|both)\b",
+        r"|\bpushed\s+(?:to|the|it|them|everything|both)\b|\b(?:and|,)\s*pushed\b(?!\s+(?:to|the|it|them|everything|both)\b)",
         re.I),
     "merge": re.compile(
         rf"{_DONE}merge[d]?(?!\s*的)|\bmerge\s*(?:了|完成|完\b|好了|進|到)|{_DONE}合併(?!\s*的)|合併(?:了|完成|進)"
         r"|\b(?:is|are|was|were|has been|have been|got|now|already)\s+merged\b|\bi(?:'ve| have)?\s+merged\b"
-        r"|\bmerged\s+(?:into|to|as|it|them)\b|\bpr\s*#?\d+\s+(?:is\s+|was\s+)?merged\b",
+        r"|\bmerged\s+(?:into|to|as|it|them)\b|\bpr\s*#?\d+\s+(?:is\s+|was\s+)?merged\b"
+        r"|^merged\s+(?:pr\b|#\d+|the\b|it\b|everything\b|all\b|branch\b)",
         re.I),
 }
 _NOT_GIT_PUSH = re.compile(r"indexnow|notification|通知|推播", re.I)
+# "The test passes a Windows path to _norm_path": the verb takes an object; "the new test passes" does not.
+_PASSES_OBJECT = re.compile(
+    r"\btests?\s+(?:that\s+|which\s+)?pass(?:es)?\s+(?:a|an|the|its|their|our|your|this|these|those|some|every|each|all)\b",
+    re.I)
+# A question or a condition counts up to the end of the claim's own clause: "測試全綠，要我 push 嗎" keeps
+# its claim, "測試過了就 push" does not.
+_CLAUSE_END = re.compile(r"[，,;；]|\s[—–-]\s|—")
 # "1 failed, 2 passed" reports a failure, whatever else it says.
 _FAILING = re.compile(r"\b[1-9]\d*\s*(?:failed|failures?|errors?)\b|[1-9]\d*\s*(?:個|條|項)?\s*失敗", re.I)
 
@@ -119,11 +131,13 @@ def find_claims(message: str) -> list[Claim]:
     """Every checkable claim in the message, one per kind per sentence, in the order they appear."""
     claims: list[Claim] = []
     for sentence in sentences(message):
-        if _QUESTION.search(sentence) or _CONDITIONAL.search(sentence):
-            continue
         for kind in KINDS:
             m = _PATTERNS[kind].search(sentence)
             if m is None:
+                continue
+            clause = _CLAUSE_END.search(sentence, m.end())
+            scope = sentence[:clause.start()] if clause else sentence
+            if _QUESTION.search(scope) or _CONDITIONAL.search(scope):
                 continue
             if _NEGATED_ZH_BEFORE.search(sentence[max(0, m.start() - 8):m.start()]):
                 continue
@@ -136,7 +150,7 @@ def find_claims(message: str) -> list[Claim]:
             if re.search(r"[A-Za-z]", m.group(0)) and (
                     _NEGATED_EN_BEFORE.search(sentence[:m.start()]) or _NEGATED_EN_AFTER.search(sentence[m.end():])):
                 continue
-            if kind == "tests" and _FAILING.search(sentence):
+            if kind == "tests" and (_FAILING.search(sentence) or _PASSES_OBJECT.match(sentence, m.start())):
                 continue
             if kind == "merge" and not _GIT_CONTEXT.search(sentence):
                 continue

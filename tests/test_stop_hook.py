@@ -87,3 +87,15 @@ def test_stop_hook_skips_a_transcript_over_the_size_limit(tmp_path):
     message = json.loads(result.stdout.decode("utf-8"))["systemMessage"]
     assert message.startswith("OSOP · receipt skipped") and "osop log" in message and "minimal_session.jsonl" in message
     assert not (tmp_path / ".osop").exists()
+
+
+def test_stop_hook_survives_a_lone_surrogate_in_the_message_and_a_bad_size_limit(tmp_path):
+    result = _run_hook({"hook_event_name": "Stop", "transcript_path": str(MINIMAL_SESSION),
+                        "last_assistant_message": "All tests pass \ud83d"}, tmp_path)
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout.decode("utf-8"))["systemMessage"].startswith("OSOP · claims:")
+    env = dict(os.environ, HOME=str(tmp_path), USERPROFILE=str(tmp_path), OSOP_MAX_TRANSCRIPT_MB="abc")
+    payload = json.dumps({"hook_event_name": "Stop", "transcript_path": str(MINIMAL_SESSION)}).encode("utf-8")
+    result = subprocess.run([sys.executable, str(HOOK)], input=payload, capture_output=True, env=env, timeout=120)
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout.decode("utf-8"))["systemMessage"].startswith("OSOP ·")

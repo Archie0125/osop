@@ -397,22 +397,40 @@ def _judge(tc: ToolCall, code: str, m: re.Match, verb: str | None = None) -> tup
     out = _CONTROL.sub("", tc.output)
     others = _other_runners(code, m)
     mine = _tool(m)
-    # Another tool in the call could have printed the shared markers; the same tool twice could not.
+    # Another tool in the call could have printed the shared markers; the same tool twice could not. For git,
+    # another git command in the call (`git commit … && git push`) could have printed the `error:`.
     alone = all(tool == mine for _, tool in others)
+    if verb in _GIT_PAST and verb not in ("lint", "build"):
+        alone = sum(1 for _ in _GIT_STATE.finditer(code)) == 1
     # `ruff check .; npx tsc --noEmit`: two linters in one call, no marker can be told apart; only the exit
     # status counts. The same tool twice (`ruff check --fix .; ruff check src/`) still reads its own.
     readable = not any(kind == verb and tool != mine for kind, tool in others)
     fail = _last(_GIT_FAIL[verb], out) if readable and verb in _GIT_FAIL else None
-    if fail is None and alone and verb in _SHARED_FAIL:
-        fail = _last(_SHARED_FAIL[verb], out)
     done = _last(_GIT_DONE[verb], out) if readable and verb in _GIT_DONE else None
     if done is None and alone and verb in _SHARED_DONE:
         done = _last(_SHARED_DONE[verb], out)
+    ran_again = _ran_again(code, m, verb, mine, others)
+    if verb in _SHARED_FAIL and verb not in ("lint", "build"):
+        # git prints one block per command: a generic `error:` / `fatal:` belongs to the last git command in
+        # the call (`git commit … && git push`: the push's error is not the commit's). One that follows the
+        # command's own success line, when the verb ran once, is its cleanup (`gh pr merge --delete-branch`
+        # says "Squashed and merged", then "fatal:" about the branch).
+        segments = list(_GIT_STATE.finditer(code))
+        generic = _last(_SHARED_FAIL[verb], out) if segments and segments[-1].start() == m.start() else None
+        if generic and done and done.start() < generic.start() and not ran_again:
+            generic = None
+        if generic and (fail is None or generic.start() > fail.start()):
+            fail = generic
+    elif fail is None and alone and verb in _SHARED_FAIL:
+        fail = _last(_SHARED_FAIL[verb], out)
+        # `npm run build` printed "✓ built in 2s", then a postbuild step "npm ERR!": the build is done.
+        if fail and done and done.start() < fail.start() and not ran_again:
+            fail = None
     # A single run that printed a failure and then a success marker ("error: Failed to format app.py", then
     # "1 file already formatted") failed. When the tool ran more than once in the call, git prints one block
     # per command, so the later block decides (`! [rejected]`, a rebase, then `main -> main` is a push); a
     # linter or build tool prints its errors before its summary, so which run printed what is unknown.
-    if fail and done and done.start() > fail.start() and _ran_again(code, m, verb, mine, others):
+    if fail and done and done.start() > fail.start() and ran_again:
         if verb in ("lint", "build") and not tc.is_error:
             return "unclear", (f"⚠️ exit 0, but the tool ran more than once and the output shows both "
                                f"{_code(fail.group(0), 40)} and {_code(done.group(0).strip(), 40)}")
@@ -421,6 +439,11 @@ def _judge(tc: ToolCall, code: str, m: re.Match, verb: str | None = None) -> tup
     if tc.is_error:
         if fail:
             return "failed", f"{_failed(tc)}, output says {_code(fail.group(0), 60)}"
+        if done and verb in _GIT_PAST:
+            # `git commit -m x && git push` at exit 1 with `[main abc1234]` printed: the commit happened, the
+            # push did not; `gh pr merge --delete-branch` merged, then failed to delete the branch.
+            return "probably", (f"🟡 probably {_GIT_PAST[verb]}: {_exit_text(tc)} came from another step; "
+                                f"output shows {_code(done.group(0).strip(), 60)}")
         if chained:
             return "unclear", f"⚠️ {_exit_text(tc)}: this command or {chained} step in the chain failed"
         return "failed", _failed(tc)
@@ -492,12 +515,13 @@ _GIT_DONE = {
     "cherry-pick": re.compile(r"^\s*\[[^\]\n]+ [0-9a-f]{7,}\]", re.M),
 }
 _GIT_FAIL = {
-    "push": re.compile(r"! \[(?:remote )?rejected\]|failed to push|error: src refspec|fatal:"),
+    # What the verb itself prints when it fails; the generic `fatal:` / `error:` are in _SHARED_FAIL.
+    "push": re.compile(r"! \[(?:remote )?rejected\]|failed to push|error: src refspec"),
     "commit": re.compile(r"nothing to commit|nothing added to commit|no changes added to commit|Aborting commit"
-                         r"|hook failed|fatal:|error:"),
-    "merge": re.compile(r"CONFLICT|Automatic merge failed|not something we can merge|not mergeable|fatal:|error:"),
-    "rebase": re.compile(r"CONFLICT|could not apply|fatal:|error:"),
-    "cherry-pick": re.compile(r"CONFLICT|could not apply|fatal:|error:"),
+                         r"|hook failed"),
+    "merge": re.compile(r"CONFLICT|Automatic merge failed|not something we can merge|not mergeable"),
+    "rebase": re.compile(r"CONFLICT|could not apply"),
+    "cherry-pick": re.compile(r"CONFLICT|could not apply"),
     # Build and lint tools print little on success and a lot on failure; both are read the same way.
     "build": re.compile(r"Build failed|build failed|Failed to compile|failed to compile"
                         r"|✘ \[ERROR\]|BUILD FAILURE|compilation failed", re.I),
@@ -513,6 +537,11 @@ _GIT_FAIL = {
 # FAIL and PASS, ts-jest's `error TS…`; `cargo clippy && cargo build`: rustc's `error[E…]`): read only when
 # the build or lint tool is the only runner in the call.
 _SHARED_FAIL = {
+    "push": re.compile(r"fatal:|error:"),
+    "commit": re.compile(r"fatal:|error:"),
+    "merge": re.compile(r"fatal:|error:"),
+    "rebase": re.compile(r"fatal:|error:"),
+    "cherry-pick": re.compile(r"fatal:|error:"),
     "build": re.compile(r"npm ERR!|ELIFECYCLE|error TS\d+|\berror\[E\d+\]|Error: ", re.I),
     "lint": re.compile(r"error TS\d+|\berror\[E\d+\]|\[ERROR\]|FAIL\b|✘"),
 }
