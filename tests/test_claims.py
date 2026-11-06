@@ -987,3 +987,41 @@ def test_a_build_alone_at_exit_nonzero_failed_whatever_phase_line_it_printed(tmp
 ])
 def test_subordinate_conditions_cross_the_comma_but_statements_do_not(text, kinds):
     assert _kinds(text) == kinds, text
+
+
+def test_npms_own_line_naming_the_build_script_is_the_builds_failure(tmp_path):
+    out = ("✓ built in 2.03s\nsrc/a.ts:3:7 - error TS2322: Type 'string'\nnpm error Lifecycle script `build` failed "
+           "with error\n✔ Deploy complete!")
+    claims = _claims(_session(tmp_path, [("Bash", {"command": "npm run build; npm run deploy"}, out, False)],
+                              "Build succeeds."))
+    assert "❌ contradicted" in claims and "build" in claims.split("output says")[1]
+    out = "✓ built in 2.03s\nnpm ERR! Failed at the app@1.0.0 build script.\n✔ Deploy complete!"
+    claims = _claims(_session(tmp_path, [("Bash", {"command": "npm run build; npm run deploy"}, out, False)],
+                              "Build succeeds."))
+    assert "❌ contradicted" in claims
+    out = "Exit code 1\n✓ built in 2.03s\nnpm ERR! Lifecycle script `deploy` failed with error"
+    claims = _claims(_session(tmp_path, [("Bash", {"command": "npm run build && npm run deploy"}, out, True)],
+                              "Build succeeds."))
+    assert "⚠️ cannot tell" in claims and "❌" not in claims
+
+
+# --- after Codex's eighteenth round (head 0156352e) -------------------------------------------------
+
+
+def test_a_pipe_is_not_a_later_step_that_could_have_failed(tmp_path):
+    out = "> vite build && tsc --noEmit\n✓ built in 2.1s\nsrc/app.ts(3,7): error TS2322: Type 'string'"
+    claims = _claims(_session(tmp_path, [("Bash", {"command": "npm run build 2>&1 | tail -n 40"}, out, False)],
+                              "Build succeeds."))
+    assert "❌ contradicted" in claims and "error TS2322" in claims
+    claims = _claims(_session(tmp_path, [
+        ("Bash", {"command": "npm run build 2>&1 | tail -n 40; npm run deploy"},
+         "✓ built in 2.1s\nnpm ERR! Lifecycle script `deploy` failed", False)], "Build succeeds."))
+    assert "✅ backed" in claims and "🟡 probably built" in claims
+
+
+@pytest.mark.parametrize("text", [
+    "PR #13 can now be squash-merged.", "The branch could be merged into main once CI is green.",
+    "These changes may be pushed later.",
+])
+def test_a_possibility_is_not_a_claim(text):
+    assert _kinds(text) == [], text

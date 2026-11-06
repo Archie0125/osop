@@ -424,8 +424,8 @@ def _judge(tc: ToolCall, code: str, m: re.Match, verb: str | None = None) -> tup
     elif fail is None and alone and verb in _SHARED_FAIL:
         fail = _last(_SHARED_FAIL[verb], out)
         # `npm run build && npm run deploy`: a generic marker after the build's own success line may be the
-        # deploy's; with nothing after the build in the call, it is the build's.
-        if fail and done and done.start() < fail.start() and not ran_again and "later" in (_chained(code, m) or ""):
+        # deploy's; with no later command in the call (a pipe is not one), it is the build's.
+        if fail and done and done.start() < fail.start() and not ran_again and _later_command(code, m):
             fail = None
     # A single run that printed a failure and then a success marker ("error: Failed to format app.py", then
     # "1 file already formatted") failed. When the tool ran more than once in the call, git prints one block
@@ -475,6 +475,12 @@ def _judge(tc: ToolCall, code: str, m: re.Match, verb: str | None = None) -> tup
     if done:
         return "probably", f"🟡 probably {_GIT_PAST[verb]}: {why}; output shows {_code(done.group(0).strip(), 60)}"
     return "unclear", f"⚠️ exit 0, but {why}"
+
+
+def _later_command(code: str, m: re.Match) -> bool:
+    """Whether another command follows this one in the call (`;`, `&&`, `||` or a new line), one that could
+    have printed a marker; `| tail` only filters."""
+    return re.search(r"(?:;|&&|\|\||\n)\s*[^\s;&|]", code[m.end():]) is not None
 
 
 def _ran_again(code: str, m: re.Match, verb: str, mine: str, others: set[tuple[str, str]]) -> bool:
@@ -536,8 +542,10 @@ _GIT_FAIL = {
     "cherry-pick": re.compile(r"CONFLICT|could not apply"),
     # Build and lint tools print little on success and a lot on failure; both are read the same way.
     # vite prints "✓ built in" for the client bundle, then "error during build:" when the SSR bundle fails.
+    # npm names the script that failed: "Lifecycle script `build` failed", "Failed at the app@1.0.0 build script".
     "build": re.compile(r"Build failed|build failed|Failed to compile|failed to compile|error during build"
-                        r"|RollupError|Error occurred|✘ \[ERROR\]|BUILD FAILURE|compilation failed", re.I),
+                        r"|RollupError|Error occurred|✘ \[ERROR\]|BUILD FAILURE|compilation failed"
+                        r"|Lifecycle script [`'\"]?build[`'\"]? failed|Failed at the \S+ build script", re.I),
     # `ruff check --fix` reports "Found 2 errors (2 fixed, 0 remaining)." and exits 0.
     # eslint exits 0 with warnings only: "✖ 1 problem (0 errors, 1 warning)" is not a failure, unless
     # `--max-warnings` made it one ("ESLint found too many warnings"). A format check that "would reformat"

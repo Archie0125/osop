@@ -42,7 +42,8 @@ _CONDITIONAL = re.compile(
     r"|就好|就可以|就能|我就|我會"
     r"|(?:了|完|後|綠|過|好)就|依序"
     r"|要(?:先|再|重新|用|全綠|通過|全過|都過|綠)|會(?:跑|做|先|再|觸發|一起)|再\s*(?:commit|push|merge|推|提交|合併|跑)"
-    r"|\b(?:if|once|when|unless|until|will|would|should|must|need(?:s)? to|to be|going to)\b", re.I)
+    r"|\b(?:if|once|when|unless|until|will|would|should|must|need(?:s)? to|to be|going to)\b"
+    r"|\b(?:can|could|may|might)(?:not)?\s+(?:now\s+|then\s+|also\s+)?be\b", re.I)
 # "Verify that all tests pass before merging", "make sure the tests pass before you push": an instruction, not a
 # claim. A clause that opens with such a verb ahead of the claim asks for something ("all tests passed, please
 # check the diff" keeps its claim); so does "the tests pass before merging", unless the claim is past tense
