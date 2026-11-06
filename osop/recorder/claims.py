@@ -44,7 +44,8 @@ _CONDITIONAL = re.compile(
 # "Verify that all tests pass before merging", "make sure the tests pass before you push": an instruction, not a
 # claim. A sentence that opens with such a verb asks for something; so does "the tests pass before merging",
 # unless the claim is past tense ("all tests passed before merging").
-_INSTRUCTION = re.compile(r"^(?:please\s+)?(?:verify|make sure|ensure|check|confirm|remember|re-?run|run)\b", re.I)
+_INSTRUCTION = re.compile(
+    r"(?:^|[,，]\s*)(?:please\s+)?(?:verify|make sure|ensure|check|confirm|remember|re-?run|run)\b", re.I)
 _BEFORE_DOING = re.compile(r"\bbefore\s+(?:you\s+)?\w+ing\b", re.I)
 # "After the tests pass, push it" is a plan; "all tests passed after the fix" and "after the fix, all tests
 # passed" are what happened. "After the changes are committed, push" is a plan again: a present passive.

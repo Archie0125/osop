@@ -767,3 +767,9 @@ def test_a_past_tense_claim_with_before_doing_is_what_happened():
     assert _kinds("I pushed before leaving.") == ["push"]
     assert _kinds("Make sure all tests pass before merging.") == []
     assert _kinds("The tests pass before merging.") == []
+
+
+def test_an_instruction_verb_after_a_leading_clause_is_still_an_instruction():
+    assert _kinds("Before merging, verify that all tests passed.") == []
+    assert _kinds("Once CI is green, please confirm the build succeeds.") == []
+    assert _kinds("Done: all tests passed, and I pushed.") == ["tests", "push"]
