@@ -257,7 +257,8 @@ def _tests_evidence(parsed: dict, calls: list, tests: list) -> tuple[str, str]:
         return _UNCLEAR, f"{where} → {verdict}"
     later = _edits_after(parsed, calls, tc.started_at)
     if later:
-        return _UNCLEAR, f"{where} → {verdict}, but the project changed after it: {later}"
+        what = "the project changed after it" if parsed.get("cwd") else "files changed after it"
+        return _UNCLEAR, f"{where} → {verdict}, but {what}: {later}"
     return _BACKED, f"{where} → {verdict}"
 
 
@@ -267,12 +268,19 @@ def _edits_after(parsed: dict, calls: list, started_at: str) -> str:
     Docs, screenshots and shell writes are left out: in real sessions agents edit notes and save
     screenshots after the tests all the time, and that does not make a passing run stale.
     """
-    root = _norm_path(parsed.get("cwd") or "").rstrip("/") + "/"
+    cwd = _norm_path(parsed.get("cwd") or "").rstrip("/")
+    root = cwd + "/"
+
+    def in_project(path: str) -> bool:
+        norm = _norm_path(path)
+        # Without a working directory every edit counts; a relative path is under it; `C:/…` is absolute too.
+        return not cwd or norm.startswith(root) or not re.match(r"/|[a-z]:/", norm)
+
     files = sorted({
         _norm_path(path).rsplit("/", 1)[-1]
         for _, tc in calls if tc.tool in _FILE_TOOLS and tc.status == "COMPLETED" and tc.started_at > started_at
         for path in [str(tc.input.get("file_path") or tc.input.get("notebook_path") or "")]
-        if _SOURCE_FILE.search(path) and (_norm_path(path).startswith(root) or not _norm_path(path).startswith("/"))
+        if _SOURCE_FILE.search(path) and in_project(path)
     })
     if not files:
         return ""
@@ -308,10 +316,20 @@ def _git_calls(calls: list, verb: str) -> list[tuple[ToolCall, str, re.Match]]:
             continue
         code = _shell_code(_unwrap_shell_c(_command(tc)))
         for m in _GIT_STATE.finditer(code):
-            if _verb(m) == verb:
+            if _verb(m) == verb and not _only_pretends(m, code):
                 found.append((tc, code, m))
                 break
     return found
+
+
+def _only_pretends(m: re.Match, code: str) -> bool:
+    """`git push --dry-run` / `-n` pushes nothing; `gh pr merge --auto` asks for a merge later. Neither is the deed."""
+    options = re.split(r"[;&|\n]", code[m.end():], maxsplit=1)[0]
+    if re.search(r"(?<=\s)--dry-run\b", options):
+        return True
+    if _verb(m) == "push" and re.search(r"(?<=\s)-[A-Za-z]*n[A-Za-z]*\b", options):
+        return True
+    return m.group(0).lstrip("\n;&|( \t").startswith("gh") and bool(re.search(r"(?<=\s)--auto\b", options))
 
 
 def _verb(m: re.Match) -> str:
@@ -429,8 +447,8 @@ _GIT_PAST = {"push": "pushed", "commit": "committed", "merge": "merged", "rebase
 def _claims_section(parsed: dict, rows: list) -> str:
     message = parsed.get("last_assistant_message") or ""
     if not message.strip():
-        return ("**No final message to check**: the transcript ends without the agent's text "
-                "(still running, or it ended on a tool call).")
+        return ("**No final message to check**: nothing is recorded as the agent's final text for this turn "
+                "(still running, ended on a tool call, or the hook passed none).")
     if not rows:
         return ("**No checkable claim in the final message.** "
                 "Looked for: tests pass, lint passes, build succeeds, committed, pushed, merged.")
@@ -532,13 +550,19 @@ def _echoed_status_var(tc: ToolCall, code: str, match: re.Match) -> str | None:
     with the test opening the pipeline: the first pipeline status is the test's. (`code` has quoted strings
     blanked to "", so `echo "exit=$?"` shows as `echo ""`; the raw command tells the two apart.)
     """
-    after = code[match.end():]
-    if "$?" not in code[:match.start()] and re.match(r"(?:[^;|&\n]|>&)*;\s*echo\b[^;&|\n]*(?:\$\?|\"\")", after):
+    # Read the command as written: `echo "exit=$?"` and `echo "done"` are both `echo ""` once blanked.
+    raw = _unwrap_shell_c(_command(tc), blank=False)
+    runner = re.search(rf"(?:{_TEST_RUNNER})\b", match.group(0))
+    pos = raw.find(runner.group(0)) if runner else -1
+    if pos < 0:
+        return None
+    before, after = raw[:pos], raw[pos + len(runner.group(0)):]
+    if "$?" in before or "PIPESTATUS" in before:
+        return None  # an earlier status was echoed too, and the first `exit=` in the output is that one
+    if re.match(r"(?:[^;|&\n]|>&)*;\s*echo\b[^;&|\n]*\$\?", after):
         return "$?"
-    # The match starts at the separator before the runner: a `|` there means the test is not first.
-    opens = "|" not in re.split(r"[;&\n]|&&|\|\|", code[:match.start() + 1])[-1]
-    if (opens and "${PIPESTATUS[0]}" in _command(tc) and "PIPESTATUS" not in code[:match.start()]
-            and re.match(r"(?:[^;&\n]|>&)*\|(?:[^;&\n]|>&)*;\s*echo\b[^;&|\n]*(?:\$\{PIPESTATUS\[0\]\}|\"\")", after)):
+    opens = "|" not in re.split(r"[;&\n]|&&|\|\|", before)[-1]
+    if opens and re.match(r"(?:[^;&\n]|>&)*\|(?:[^;&\n]|>&)*;\s*echo\b[^;&|\n]*\$\{PIPESTATUS\[0\]\}", after):
         return "${PIPESTATUS[0]}"
     return None
 

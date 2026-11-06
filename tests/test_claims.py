@@ -256,3 +256,70 @@ def test_last_message_from_a_file_and_an_empty_one(tmp_path):
                                       "--last-message", str(tmp_path / "m.txt")])
     assert result.exit_code == 0, result.output
     assert "claims: no final message" in result.stdout_bytes.decode("utf-8")
+
+
+# --- found by the independent verifier of PR #13 ----------------------------------------------------
+
+
+def _tests_row(tmp_path, command, output):
+    path = _session(tmp_path, [("Bash", {"command": command}, output, False)], None)
+    receipt = render_receipt(parse_transcript(path), source="s")
+    return receipt.split("## Tests\n", 1)[1].split("\n## ", 1)[0].splitlines()[2]
+
+
+def test_an_earlier_echoed_status_in_the_same_call_is_not_the_tests(tmp_path):
+    command = 'ruff check .; echo "exit=$?"; python -m pytest -q | tail -3; echo "exit=${PIPESTATUS[0]}"'
+    row = _tests_row(tmp_path, command, "E501 line too long\nexit=1\n3 passed\nexit=0")
+    assert "⚠️" in row and "❌" not in row
+
+
+def test_an_echo_between_the_test_and_the_status_echo_breaks_the_link(tmp_path):
+    row = _tests_row(tmp_path, 'python -m pytest -q; echo "--- lint ---"; ruff check .; echo "exit=$?"',
+                     "3 passed\n--- lint ---\nE501\nexit=1")
+    assert "⚠️" in row and "❌" not in row
+    row = _tests_row(tmp_path, 'python -m pytest -q; echo "done"; echo "exit=$?"',
+                     "no tests ran in 0.01s\ndone\nexit=0")
+    assert "✅" not in row
+
+
+def test_a_dry_run_push_and_an_auto_merge_are_not_evidence(tmp_path):
+    claims = _claims(_session(tmp_path, [
+        ("Bash", {"command": "git push --dry-run origin main"}, "To github.com\n * [new branch] main -> main", False),
+        ("Bash", {"command": "git push -n origin main"}, "Everything up-to-date", False),
+    ], "已 push"))
+    assert "❓ no evidence" in claims and "✅" not in claims
+    claims = _claims(_session(tmp_path, [
+        ("Bash", {"command": "gh pr merge 13 --auto --squash"}, "✓ Pull request #13 will be automatically merged",
+         False),
+    ], "PR #13 已 merge"))
+    assert "❓ no evidence" in claims and "✅" not in claims
+
+
+def test_a_windows_path_outside_the_project_is_not_a_project_edit(tmp_path):
+    claims = _claims(_session(tmp_path, [
+        ("Bash", {"command": "python -m pytest -q"}, "3 passed", False),
+        ("Edit", {"file_path": r"C:\other\x.py", "old_string": "a", "new_string": "b"}, "ok", False),
+    ], "tests pass", cwd=r"C:\work\demo"))
+    assert "✅ backed" in claims
+    claims = _claims(_session(tmp_path, [
+        ("Bash", {"command": "python -m pytest -q"}, "3 passed", False),
+        ("Edit", {"file_path": "/etc/hosts.py", "old_string": "a", "new_string": "b"}, "ok", False),
+    ], "tests pass", cwd=""))
+    assert "⚠️ cannot tell" in claims and "files changed after it" in claims and "the project" not in claims
+
+
+def test_an_empty_hook_message_is_not_blamed_on_the_transcript(tmp_path):
+    parsed = parse_transcript(_session(tmp_path, [("Bash", {"command": "ls"}, "a", False)], "done"))
+    parsed["last_assistant_message"] = ""
+    section = render_receipt(parsed, source="s").split("## Claims\n", 1)[1].split("\n## ", 1)[0]
+    assert "No final message to check" in section and "transcript ends" not in section
+
+
+def test_english_negation_only_counts_before_the_claim():
+    assert _kinds("All tests pass, no regressions.") == ["tests"]
+    assert _kinds("Nothing is committed or pushed yet.") == []
+    assert _kinds("The branch has not been pushed.") == []
+
+
+def test_markdown_list_labels_are_quoted_cleanly():
+    assert [c.quote for c in find_claims("- **Tests**: all tests pass")] == ["Tests: all tests pass"]
