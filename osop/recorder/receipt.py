@@ -316,9 +316,9 @@ def _real_run(pattern: re.Pattern, code: str) -> re.Match | None:
 
 def _version_query(code: str, m: re.Match) -> bool:
     """`ruff --version`, `ruff -V`, `ruff check --help`, `(pytest -q -h)`: the tool ran, but checked nothing.
-    (`ctest -V` is verbose.)"""
+    (`ctest -V` is verbose, and `mvn test -V` prints the version and runs on.)"""
     segment = re.split(r"[;&|\n]", code[m.end():], maxsplit=1)[0]
-    flags = r"--version|--help|-h" + ("" if m.group(0).endswith("ctest") else r"|-V")
+    flags = r"--version|--help|-h" + ("" if re.search(r"\bctest$|\bmvnw?\s+\w+$", m.group(0)) else r"|-V")
     return re.search(rf"(?<=\s)(?:{flags})(?=[\s)]|$)", segment) is not None
 
 
@@ -395,11 +395,15 @@ def _judge(tc: ToolCall, code: str, m: re.Match, verb: str | None = None) -> tup
     if tc.status == "PENDING":
         return "pending", _status(tc)
     out = _CONTROL.sub("", tc.output)
-    alone = not _shares_output(code, m)
-    fail = _last(_GIT_FAIL[verb], out) if verb in _GIT_FAIL else None
+    others = _other_runners(code, m)
+    alone = not others
+    # `ruff check .; npx tsc --noEmit`: two linters in one call, no marker can be told apart; only the exit
+    # status counts.
+    readable = verb not in others
+    fail = _last(_GIT_FAIL[verb], out) if readable and verb in _GIT_FAIL else None
     if fail is None and alone and verb in _SHARED_FAIL:
         fail = _last(_SHARED_FAIL[verb], out)
-    done = _last(_GIT_DONE[verb], out) if verb in _GIT_DONE else None
+    done = _last(_GIT_DONE[verb], out) if readable and verb in _GIT_DONE else None
     if done is None and alone and verb in _SHARED_DONE:
         done = _last(_SHARED_DONE[verb], out)
     if fail and done and done.start() > fail.start():
@@ -445,10 +449,10 @@ def _chained(code: str, m: re.Match) -> str | None:
     return "an earlier" if before else "a later" if after else None
 
 
-def _shares_output(code: str, m: re.Match) -> bool:
-    """Whether another test, lint or build runner in the same call could have printed the markers."""
-    return any(o.start() != m.start()
-               for pattern in (_TEST_COMMAND, _LINT_COMMAND, _BUILD_COMMAND) for o in pattern.finditer(code))
+def _other_runners(code: str, m: re.Match) -> set[str]:
+    """The kinds of the other test, lint or build runners in the same call: they could have printed the markers."""
+    return {kind for kind, pattern in (("tests", _TEST_COMMAND), ("lint", _LINT_COMMAND), ("build", _BUILD_COMMAND))
+            for o in pattern.finditer(code) if o.start() != m.start() and not _version_query(code, o)}
 
 
 # What git prints when a verb worked, and when it did not. Read only when the exit status is hidden or shared.
@@ -472,20 +476,22 @@ _GIT_FAIL = {
     "build": re.compile(r"Build failed|build failed|Failed to compile|failed to compile"
                         r"|✘ \[ERROR\]|\berror\[E\d+\]|BUILD FAILURE|compilation failed", re.I),
     # `ruff check --fix` reports "Found 2 errors (2 fixed, 0 remaining)." and exits 0.
-    "lint": re.compile(r"Found \d+ errors?\b(?! \(\d+ fixed, 0 remaining\))|\d+ problems? \(|\berror\[E\d+\]"),
+    # eslint exits 0 with warnings only: "✖ 1 problem (0 errors, 1 warning)" is not a failure.
+    "lint": re.compile(r"Found \d+ errors?\b(?! \(\d+ fixed, 0 remaining\))|\d+ problems? \((?!0 errors?\b)"
+                       r"|\berror\[E\d+\]"),
 }
 # Markers a test runner in the same call could have printed just as well (`ruff check . && npm test`: jest's
 # FAIL and PASS, ts-jest's `error TS…`): read only when the build or lint tool is the only runner in the call.
 _SHARED_FAIL = {
     "build": re.compile(r"npm ERR!|ELIFECYCLE|error TS\d+|Error: ", re.I),
-    "lint": re.compile(r"error TS\d+|\[ERROR\]|FAIL\b|✖|✘"),
+    "lint": re.compile(r"error TS\d+|\[ERROR\]|FAIL\b|✘"),
 }
 _SHARED_DONE = {"lint": re.compile(r"^\s*PASS\b", re.M)}
 _GIT_DONE.update({
     "build": re.compile(r"✓ built in|built in \d|Compiled successfully|compiled successfully|Build complete"
                         r"|Complete!|BUILD SUCCESS|Finished `?(?:dev|release)|✓ Compiled"),
     "lint": re.compile(r"All checks passed!|Success: no issues found|\[OK\] No errors|\b0 problems"
-                       r"|No lint errors|\(\d+ fixed, 0 remaining\)", re.M),
+                       r"|No lint errors|\(\d+ fixed, 0 remaining\)|\(0 errors?\b", re.M),
 })
 _GIT_PAST = {"push": "pushed", "commit": "committed", "merge": "merged", "rebase": "rebased", "cherry-pick": "picked",
              "build": "built", "lint": "clean"}

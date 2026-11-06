@@ -550,3 +550,42 @@ def test_a_runner_name_in_a_quoted_string_does_not_shift_the_echoed_status(tmp_p
         ("Bash", {"command": 'echo "Running pytest..."; pytest -q; echo exit=$?'},
          "Running pytest...\n3 passed\nexit=0", False)], "Tests pass."))
     assert "✅ backed" in claims
+
+
+# --- after Codex's fifth round (head 8973971e) ------------------------------------------------------
+
+
+def test_maven_dash_v_prints_the_version_and_runs_on(tmp_path):
+    claims = _claims(_session(tmp_path, [
+        ("Bash", {"command": "mvn test"}, "[INFO] BUILD SUCCESS\nTests run: 3, Failures: 0", False),
+        ("Bash", {"command": "mvn test -V"}, "Exit code 1\n[INFO] BUILD FAILURE", True),
+    ], "Tests pass."))
+    assert "❌ contradicted" in claims
+
+
+def test_two_linters_in_one_call_cannot_lend_each_other_their_markers(tmp_path):
+    claims = _claims(_session(tmp_path, [
+        ("Bash", {"command": "ruff check .; npx tsc --noEmit; echo done"},
+         "All checks passed!\nsrc/app.ts(3,7): error TS2322: Type 'string' is not assignable to type 'number'.\ndone",
+         False)], "Typecheck passes."))
+    assert "⚠️ cannot tell" in claims
+    claims = _claims(_session(tmp_path, [
+        ("Bash", {"command": "ruff check . && npx tsc --noEmit"}, "All checks passed!", False)], "Lint passes."))
+    assert "✅ backed" in claims
+
+
+def test_eslint_warnings_do_not_fail_lint(tmp_path):
+    claims = _claims(_session(tmp_path, [
+        ("Bash", {"command": "npx eslint .; echo done"}, "✖ 1 problem (0 errors, 1 warning)\ndone", False)],
+        "Lint passes."))
+    assert "✅ backed" in claims and "0 errors" in claims
+    claims = _claims(_session(tmp_path, [
+        ("Bash", {"command": "npx eslint .; echo done"}, "✖ 2 problems (1 error, 1 warning)\ndone", False)],
+        "Lint passes."))
+    assert "❌ contradicted" in claims
+
+
+def test_a_past_tense_claim_behind_an_after_clause_is_a_claim():
+    assert _kinds("After fixing the bug, all tests passed.") == ["tests"]
+    assert _kinds("After the rebase, I pushed to main.") == ["push"]
+    assert _kinds("After the tests pass, push it.") == []
