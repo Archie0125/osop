@@ -38,6 +38,11 @@ def _section(receipt: str, title: str) -> str:
     return receipt.split(f"## {title}\n", 1)[1].split("\n## ", 1)[0]
 
 
+def _table(section: str) -> list[str]:
+    """The markdown table rows of a section, skipping a <details> wrapper and the blank lines around it."""
+    return [line for line in section.splitlines() if line.startswith("|")]
+
+
 def test_goal_and_passing_test():
     receipt = _receipt(MINIMAL_SESSION)
     assert "run the tests" in _section(receipt, "Goal")
@@ -102,8 +107,9 @@ def test_errors_section_lists_failed_calls(tmp_path):
 def test_command_with_pipe_does_not_break_the_table(tmp_path):
     commands = _section(_receipt(_session(tmp_path, [
         ("Bash", {"command": "cat a | grep b"}, "b", False)])), "Commands")
-    row = next(line for line in commands.splitlines() if "grep" in line)
-    assert row.count(" | ") == commands.splitlines()[0].count(" | ")
+    table = _table(commands)
+    row = next(line for line in table if "grep" in line)
+    assert row.count(" | ") == table[0].count(" | ")
 
 
 def test_subagent_work_is_attributed(tmp_path):
@@ -370,6 +376,7 @@ def test_shell_commands_that_may_change_files_are_listed(tmp_path):
         ("Bash", {"command": 'git commit -m "a > b"'}, "", False),
     ])), "Files changed")
     may = files.split("may have changed", 1)[1]
+    assert "<summary>4 shell commands may have changed" in files  # the count stays visible, the list is collapsed
     for command in ["sed -i", "echo hi > notes.txt", "tee -a b.log", "mv old.py new.py"]:
         assert command in may, command
     for command in ["git status", "pytest", "/dev/null", "git commit"]:
@@ -507,7 +514,7 @@ def test_backslash_before_a_pipe_is_shown_as_it_ran(tmp_path):
     command = "pytest -q | grep 'passed" + chr(92) + "|failed'"
     receipt = _receipt(_session(tmp_path, [("Bash", {"command": command}, "3 passed", False)]))
     for title in ("Tests", "Commands"):
-        lines = _section(receipt, title).splitlines()
+        lines = _table(_section(receipt, title))
         assert _columns(lines[2]) == _columns(lines[0]), title
         assert "passed" + chr(92) * 2 + "|failed" in lines[2], title
 
@@ -573,3 +580,229 @@ def test_wrapper_options_are_not_the_shells(tmp_path):
         assert "✅" in _verdicts(tmp_path, command, "3 passed"), command
     row = _verdicts(tmp_path, "bash -o pipefail +o pipefail -c 'pytest -q | tee log'", "3 passed").splitlines()[2]
     assert "🟡" in row and "✅" not in row
+
+
+# --- one-page layout: facts first, the full command table collapsed ---------------------------------
+
+
+def _pending_session(tmp_path: Path, command: str) -> Path:
+    """A Bash call whose result never arrived: the transcript ends after the tool_use."""
+    path = tmp_path / "s.jsonl"
+    path.write_text("\n".join(json.dumps(e) for e in [
+        {"type": "user", "timestamp": "2026-10-23T10:00:00Z", "sessionId": "s",
+         "message": {"role": "user", "content": "do the task"}},
+        {"type": "assistant", "timestamp": "2026-10-23T10:00:01Z", "message": {"content": [
+            {"type": "tool_use", "id": "t0", "name": "Bash", "input": {"command": command}}]}},
+    ]) + "\n", encoding="utf-8")
+    return path
+
+
+def test_commands_table_is_collapsed_after_the_facts(tmp_path):
+    receipt = _receipt(_session(tmp_path, [("Bash", {"command": "ls -la"}, "a b", False)]))
+    assert receipt.index("## Tests") < receipt.index("## Files changed") < receipt.index("## Errors")
+    assert receipt.index("## Errors") < receipt.index("## Commands")
+    commands = _section(receipt, "Commands")
+    assert commands.startswith("<details>") and "<summary>1 shell command" in commands
+    assert "ls -la" in commands and "</details>" in commands
+
+
+def test_commands_with_no_result_are_listed_outside_the_collapsed_table(tmp_path):
+    receipt = _receipt(_pending_session(tmp_path, "npm run build"))
+    unfinished = _section(receipt, "No result recorded")
+    assert "npm run build" in unfinished and "⏳" in unfinished
+    assert "1 without result" in receipt.split("## Goal", 1)[0]  # counted in the overview too
+
+
+def test_background_command_is_listed_as_unfinished(tmp_path):
+    receipt = _receipt(_session(tmp_path, [
+        ("Bash", {"command": "npm run dev", "run_in_background": True}, "Command running in background", False)]))
+    assert "npm run dev" in _section(receipt, "No result recorded")
+
+
+def test_pending_test_run_is_not_listed_twice(tmp_path):
+    receipt = _receipt(_pending_session(tmp_path, "pytest -q"))
+    assert "⏳" in _section(receipt, "Tests")
+    assert "## No result recorded" not in receipt
+
+
+def test_git_commit_and_push_results_are_visible(tmp_path):
+    receipt = _receipt(_session(tmp_path, [
+        ("Bash", {"command": "git commit -m 'fix: x'"}, "[main abc1234] fix: x", False),
+        ("Bash", {"command": "cd repo && git push origin main"}, "Exit code 1\nerror: failed to push", True),
+        ("Bash", {"command": "git log --oneline -3"}, "abc1234 fix: x", False),
+        ("Bash", {"command": "gh pr merge 11 --squash"}, "Exit code 1\nnot mergeable", True),
+    ]))
+    git = _section(receipt, "Git")
+    assert "git commit" in git and "git push" in git and "gh pr merge" in git
+    assert "git log" not in git
+    assert git.count("❌ exit 1") == 2 and "exit 0" in git
+
+
+def test_no_git_section_without_commit_push_or_merge(tmp_path):
+    receipt = _receipt(_session(tmp_path, [("Bash", {"command": "git status && git log -1"}, "clean", False)]))
+    assert "## Git" not in receipt
+
+
+def test_brief_is_one_line_with_the_counts_that_matter():
+    from osop.recorder.receipt import render_brief
+    line = render_brief(parse_transcript(MINIMAL_SESSION), receipt_path="/r/x.receipt.md")
+    assert "\n" not in line and line.startswith("OSOP")
+    assert "tests: 1 runs: 1 passed" in line
+    assert "receipt: /r/x.receipt.md" in line
+
+
+def test_brief_counts_failures_edits_and_shell_writes(tmp_path):
+    from osop.recorder.receipt import render_brief
+    path = _session(tmp_path, [
+        ("Bash", {"command": "pytest -q"}, "Exit code 1\n1 failed, 2 passed", True),
+        ("Edit", {"file_path": "a.py", "old_string": "x", "new_string": "y"}, "ok", False),
+        ("Edit", {"file_path": "a.py", "old_string": "y", "new_string": "z"}, "ok", False),
+        ("Bash", {"command": "cat a.py > b.py"}, "", False),
+    ])
+    line = render_brief(parse_transcript(path), receipt_path=Path("r.md"))
+    assert "1 runs: 1 failed" in line
+    assert "files: 1 edited, 1 shell write" in line
+    assert "tool calls: 4, 1 failed" in line
+
+
+def test_git_row_shows_the_git_command_not_the_start_of_the_script(tmp_path):
+    receipt = _receipt(_session(tmp_path, [
+        ("Bash", {"command": "cd /repo && python -m pytest -q && git commit -m 'fix: y' && git push -u origin fix-y"},
+         "3 passed\n[fix-y 1234abc] fix: y\nbranch 'fix-y' set up to track 'origin/fix-y'.", False),
+    ]))
+    row = _table(_section(receipt, "Git"))[2]
+    assert "git commit -m 'fix: y'; git push -u origin fix-y" in row
+    assert "python -m pytest" not in row
+
+
+# --- Codex review of PR #12: Git rows and text outside tables ---------------------------------------
+
+
+def test_git_global_options_do_not_hide_a_commit(tmp_path):
+    receipt = _receipt(_session(tmp_path, [
+        ("Bash", {"command": "git -c core.hooksPath=/dev/null commit -m fix"}, "[main abc1234] fix", False),
+        ("Bash", {"command": "git --no-pager -C repo push origin main"}, "main -> main", False),
+    ]))
+    git = _section(receipt, "Git")
+    assert "commit -m fix" in git and "push origin main" in git
+
+
+def test_git_merge_base_is_not_a_merge(tmp_path):
+    receipt = _receipt(_session(tmp_path, [
+        ("Bash", {"command": "git merge-base HEAD origin/main"}, "abc1234", False),
+        ("Bash", {"command": "git tag-list"}, "", False),
+    ]))
+    assert "## Git" not in receipt
+
+
+def test_quoted_git_text_is_not_shown_as_a_git_command(tmp_path):
+    receipt = _receipt(_session(tmp_path, [
+        ("Bash", {"command": 'git commit -m "fix" && echo "git push origin main"'}, "[main abc1234] fix", False),
+    ]))
+    row = _table(_section(receipt, "Git"))[2]
+    assert 'git commit -m "fix"' in row and "git push" not in row
+
+
+def test_text_outside_a_table_keeps_its_pipes_unescaped(tmp_path):
+    receipt = _receipt(_pending_session(tmp_path, "ls | head -n 1"))
+    assert "`ls | head -n 1`" in _section(receipt, "No result recorded")
+    receipt = _receipt(_session(tmp_path, [
+        ("Bash", {"command": "echo a | tee b.log"}, "a", False),
+        ("Bash", {"command": "cat x | grep y"}, "Exit code 1\nno y | here", True),
+    ]))
+    assert "`echo a | tee b.log`" in _section(receipt, "Files changed")
+    assert "`cat x | grep y` → no y | here" in _section(receipt, "Errors")
+
+
+def _git_cell(tmp_path: Path, command: str) -> str:
+    receipt = _receipt(_session(tmp_path, [("Bash", {"command": command}, "ok", False)]))
+    return _table(_section(receipt, "Git"))[2].split(" | ")[1]
+
+
+def test_git_cell_shows_commands_not_echoed_words(tmp_path):
+    assert _git_cell(tmp_path, "git commit -m fix && echo git push origin main") == "`git commit -m fix`"
+
+
+def test_git_cell_keeps_a_quoted_option_value(tmp_path):
+    assert _git_cell(tmp_path, 'git -C "my repo" push && git tag v1') == '`git -C "my repo" push; git tag v1`'
+
+
+def test_git_cell_shows_a_push_inside_bash_c(tmp_path):
+    assert "git push origin main" in _git_cell(tmp_path, 'git commit -m "fix"; bash -c "git push origin main"')
+
+
+def test_git_global_option_with_a_separate_value(tmp_path):
+    assert _git_cell(tmp_path, "git --git-dir .git push") == "`git --git-dir .git push`"
+
+
+def test_git_cell_does_not_cut_a_quoted_redirection(tmp_path):
+    assert _git_cell(tmp_path, 'git commit -m "fix > docs" && git push') == '`git commit -m "fix > docs"; git push`'
+
+
+def test_git_cell_stops_before_a_heredoc_body(tmp_path):
+    assert _git_cell(tmp_path, "git commit -F - <<EOF\ngit push origin main\nEOF") == "`git commit -F -`"
+
+
+def test_git_cell_inside_bash_c_keeps_its_quotes(tmp_path):
+    cell = _git_cell(tmp_path, """bash -c 'git -C "my repo" push origin main'""")
+    assert cell == '`git -C "my repo" push origin main`'
+
+
+def test_git_cell_inside_a_substitution_has_no_closing_paren(tmp_path):
+    assert _git_cell(tmp_path, "echo $(git push origin main)") == "`git push origin main`"
+
+
+def test_git_status_hidden_by_what_follows_is_not_exit_0(tmp_path):
+    def result(command: str) -> str:
+        receipt = _receipt(_session(tmp_path, [("Bash", {"command": command}, "rejected", False)]))
+        return _table(_section(receipt, "Git"))[2].split(" | ")[2]
+    assert result("git push 2>&1 | tail -3") == "⚠️ exit 0, but a pipe after it hides its exit status"
+    assert result("git commit -m x; git log -1") == "⚠️ exit 0, but `;` after it hides its exit status"
+    assert result("git commit -m x && git push") == "exit 0"
+    assert result("set -o pipefail; git push 2>&1 | tail -3") == "exit 0"
+
+
+# --- independent verification of PR #12 -----------------------------------------------------------
+
+
+def test_git_behind_timeout_or_an_env_assignment_is_seen(tmp_path):
+    assert _git_cell(tmp_path, "timeout 900 git push origin main") == "`git push origin main`"
+    assert _git_cell(tmp_path, "GIT_EDITOR=true git cherry-pick abc1234") == "`git cherry-pick abc1234`"
+    assert _git_cell(tmp_path, "env GIT_SSH_COMMAND=ssh git push") == "`git push`"
+
+
+def test_listing_tags_is_not_tagging(tmp_path):
+    receipt = _receipt(_session(tmp_path, [("Bash", {"command": "git tag -l 'v*'"}, "v1", False)]))
+    assert "## Git" not in receipt
+    assert _git_cell(tmp_path, "git tag v2") == "`git tag v2`"
+
+
+def test_a_quoted_multiline_commit_message_stays_one_segment(tmp_path):
+    command = 'git commit -m "$(cat <<\'EOF\'\nfix: x\n\nwhy\nEOF\n)" && git push'
+    assert _git_cell(tmp_path, command) == '`git commit -m "$(cat <<\'EOF\' fix: x why EOF )"; git push`'
+
+
+def test_a_background_start_that_failed_is_an_error_not_an_unfinished_call(tmp_path):
+    receipt = _receipt(_session(tmp_path, [
+        ("Bash", {"command": "npm run dev", "run_in_background": True}, "Exit code 127\nnpm: not found", True)]))
+    assert "## No result recorded" not in receipt and "without result" not in receipt
+    assert "npm run dev" in _section(receipt, "Errors")
+
+
+def test_a_git_command_behind_an_or_may_not_have_run(tmp_path):
+    receipt = _receipt(_session(tmp_path, [
+        ("Bash", {"command": 'git diff --cached --quiet || git commit -m "fix: docs"'}, "", False)]))
+    row = _table(_section(receipt, "Git"))[2].split(" | ")
+    assert row[1] == '`git commit -m "fix: docs"`'
+    # In a table the pipes of `||` are escaped, as in every other cell.
+    escaped_or = "`" + chr(92) + "|" + chr(92) + "|`"
+    assert row[2] == f"⚠️ exit 0, but {escaped_or} before it: it ran only if the command before failed"
+
+
+def test_a_continued_line_or_a_paren_after_the_or_still_counts(tmp_path):
+    escaped_or = "`" + chr(92) + "|" + chr(92) + "|`"
+    for command in ("git diff --cached --quiet || " + chr(92) + "\n  git commit -m x",
+                    "git diff --cached --quiet || (git commit -m x)"):
+        receipt = _receipt(_session(tmp_path, [("Bash", {"command": command}, "", False)]))
+        row = _table(_section(receipt, "Git"))[2].split(" | ")
+        assert row[2] == f"⚠️ exit 0, but {escaped_or} before it: it ran only if the command before failed", command

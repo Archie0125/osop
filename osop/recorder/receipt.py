@@ -76,29 +76,40 @@ _SHELL_WRITES = (
         r"\bgit\s+(?:apply|restore|rm|mv|clean|stash(?!\s+list)|reset\s+--hard)\b"
         r"|\bgit\s+checkout\b[^|;&\n]*\s(?:--(?:ours|theirs)?|\.(?:/\S*)?)(?:\s|$)")),
 )
+# Commands whose result backs a "committed / pushed / merged" claim. Global options (`git -c x=y`, `git -C dir`,
+# `git --no-pager`) may sit between `git` and the verb; `merge-base` and `tag-something` are not `merge` / `tag`.
+_GIT_VERB = (
+    r"(?:git\s+(?:-[cC]\s+\S+\s+|--(?:git-dir|work-tree|namespace|exec-path|config-env)\s+\S+\s+"
+    r"|--[\w-]+(?:=\S*)?\s+)*(?:commit|push|merge|rebase|cherry-pick|tag(?!\s+(?:-l|--list|-n\d*)(?!\S)))(?![\w-])"
+    r"|gh\s+pr\s+(?:create|merge|close)(?![\w-]))")
+# `timeout 900 git push`, `GIT_EDITOR=true git cherry-pick`, `env X=1 git push`: wrappers seen in real sessions.
+_GIT_START = _COMMAND_START + r"(?:(?:timeout(?:\s+-\S+)*\s+\S+|nohup|env(?:\s+-\S+)*)\s+)*(?:[A-Za-z_]\w*=\S*\s+)*"
+_GIT_STATE = re.compile(_GIT_START + _GIT_VERB)
+_GIT_SEGMENT = re.compile(_GIT_START + "(" + _GIT_VERB + r"[^;&|\n)]*)")
 _FILE_TOOLS = ("Edit", "MultiEdit", "Write", "NotebookEdit")
 _MAIN = "main"
 
 
 def render_receipt(parsed: dict, source: Path | str) -> str:
-    labels = _subagent_labels(parsed["nodes"])
-    calls = [(_owner(node.node_id, labels), tc) for node in _walk(parsed["nodes"]) for tc in node.tool_calls]
-    tests = [
-        (by, tc, code, m) for by, tc in calls if tc.tool == "Bash"
-        and (m := _TEST_COMMAND.search(code := _shell_code(_unwrap_shell_c(_command(tc)))))
-    ]
-    goal = next((n.user_prompt for n in parsed["nodes"] if n.user_prompt), "") or ""
+    labels, calls, tests, goal = _collect(parsed)
+    unfinished = _unfinished(calls, tests)
+    git = _git_table(calls)
 
+    # What a person needs before trusting "done" comes first; the full command table is collapsed at the end.
     sections = [
-        _overview(parsed, goal, calls, tests),
+        _overview(parsed, goal, calls, tests, unfinished),
         "## Goal\n" + _quote(goal),
         "## Tests\n" + _tests_table(tests),
-        "## Commands\n" + _commands_table(calls),
         "## Files changed\n" + _files_table(calls),
         "## Errors\n" + _errors_list(calls),
     ]
+    if unfinished:
+        sections.append("## No result recorded\n" + _unfinished_list(unfinished))
+    if git:
+        sections.append("## Git\n" + git)
     if labels:
         sections.append("## Sub-agents\n" + _subagents_table(calls, labels))
+    sections.append("## Commands\n" + _commands_details(calls))
     sections.append(
         f"---\nBuilt by `osop log` from `{source}`: read from the transcript, not written by the agent. "
         "Results are the exit status each tool reported."
@@ -106,15 +117,58 @@ def render_receipt(parsed: dict, source: Path | str) -> str:
     return "\n\n".join(sections) + "\n"
 
 
-def _overview(parsed: dict, goal: str, calls: list, tests: list) -> str:
+def render_brief(parsed: dict, receipt_path: Path | str) -> str:
+    """One line for a Stop hook: the counts a person needs before trusting "done", and where the receipt is."""
+    _, calls, tests, _ = _collect(parsed)
+    files, pending_edits = _edited_files(calls)
+    writes = _shell_write_rows(calls)
+    unfinished = _unfinished(calls, tests)
+    failed = sum(1 for _, tc in calls if tc.is_error)
+
+    files_part = f"files: {len(files)} edited"
+    if writes:
+        files_part += f", {_count(len(writes), 'shell write')} (not verified)"
+    if pending_edits:
+        files_part += f", {_count(len(pending_edits), 'edit')} without result"
+    calls_part = f"tool calls: {len(calls)}, {failed} failed"
+    if unfinished:
+        calls_part += f", {len(unfinished)} without result"
+    parts = [f"tests: {_tests_summary(tests)}", files_part, calls_part]
+    skipped = parsed.get("skipped") or []
+    if skipped:
+        parts.append(f"⚠️ {_count(len(skipped), 'sub-agent transcript')} could not be read")
+    parts.append(f"receipt: {receipt_path}")
+    return "OSOP · " + " · ".join(parts)
+
+
+def _collect(parsed: dict) -> tuple[dict[str, str], list, list, str]:
+    """Every tool call with who made it, the test runs among them, and the first prompt."""
+    labels = _subagent_labels(parsed["nodes"])
+    calls = [(_owner(node.node_id, labels), tc) for node in _walk(parsed["nodes"]) for tc in node.tool_calls]
+    tests = [
+        (by, tc, code, m) for by, tc in calls if tc.tool == "Bash"
+        and (m := _TEST_COMMAND.search(code := _shell_code(_unwrap_shell_c(_command(tc)))))
+    ]
+    goal = next((n.user_prompt for n in parsed["nodes"] if n.user_prompt), "") or ""
+    return labels, calls, tests, goal
+
+
+def _count(n: int, noun: str) -> str:
+    return f"{n} {noun}" if n == 1 else f"{n} {noun}s"
+
+
+def _overview(parsed: dict, goal: str, calls: list, tests: list, unfinished: list) -> str:
     failed = sum(1 for _, tc in calls if tc.is_error)
     by_subagents = sum(1 for by, _ in calls if by != _MAIN)
-    title = _cell(goal.splitlines()[0] if goal else "session", 70)
+    title = _cell(goal.splitlines()[0] if goal else "session", 70, in_table=False)
+    tool_calls = f"{len(calls)} total, {failed} failed, {by_subagents} by sub-agents"
+    if unfinished:
+        tool_calls += f", {len(unfinished)} without result"
     rows = [
         ("Session", f"`{parsed.get('session_id') or '?'}`"),
         ("Model", parsed.get("model") or "unknown"),
         ("When", f"{parsed['started_at']} → {parsed['ended_at']} ({_duration(parsed['duration_ms'])})"),
-        ("Tool calls", f"{len(calls)} total, {failed} failed, {by_subagents} by sub-agents"),
+        ("Tool calls", tool_calls),
         ("Tests", _tests_summary(tests)),
     ]
     skipped = parsed.get("skipped") or []
@@ -229,9 +283,13 @@ def _governs(code: str, switch_pos: int, pipe_pos: int) -> bool:
     return not any(open_groups)
 
 
-def _unwrap_shell_c(command: str) -> str:
+def _unwrap_shell_c(command: str, blank: bool = True) -> str:
     """`bash -c '<script>'` becomes a marked group `( <script> )`: the test inside is seen, an operator after the
-    closing quote applies to the whole script, and the mark records where a new shell started (see _governs)."""
+    closing quote applies to the whole script, and the mark records where a new shell started (see _governs).
+
+    With `blank`, the script's quotes and comments are blanked and its `-o pipefail` is written in, for analysis.
+    Without, the script is spliced in as written, for display.
+    """
     command = command.replace(_NEW_SHELL, "")
     pos = 0
     for _ in range(100):  # each pass unwraps one `bash -c`; the bound only stops a pathological command
@@ -254,11 +312,11 @@ def _unwrap_shell_c(command: str) -> str:
                 break
             inner, end = word.group(0), m.end() + word.end()
         # Nested shells are unwrapped first; then the script's own quotes and comments end with the script.
-        inner = _unwrap_shell_c(inner)
+        inner = _unwrap_shell_c(inner, blank)
         pipefail = re.findall(r"(?:^|\s)([-+])[A-Za-z]*o\s+pipefail\b", options)
-        if pipefail and pipefail[-1] == "-":  # a later `+o pipefail` turns it off again
+        if blank and pipefail and pipefail[-1] == "-":  # a later `+o pipefail` turns it off again
             inner = "set -o pipefail; " + inner
-        head = f"{command[:m.end(1)]} {_NEW_SHELL}( {_shell_code(inner)} ) "
+        head = f"{command[:m.end(1)]} {_NEW_SHELL}( {_shell_code(inner) if blank else inner} ) "
         command = head + command[end:]
         pos = len(head)
     return command
@@ -274,19 +332,96 @@ def _shell_code(command: str) -> str:
     return re.sub(r"(?m)(^|[\s;&|(])#[^\n]*", r"\1", code)
 
 
-def _commands_table(calls: list) -> str:
+def _commands_details(calls: list) -> str:
+    """The full command table, collapsed: every test, file, failure and unfinished call is already shown above."""
     shell = [(by, tc) for by, tc in calls if tc.tool == "Bash"]
     if not shell:
         return "**No shell commands ran.**"
+    failed = sum(1 for _, tc in shell if tc.is_error)
     rows = [
         f"| {i} | {_cell(by)} | {_code(_command(tc))} | {_status(tc)} |"
         for i, (by, tc) in enumerate(shell, 1)
     ]
-    return "| # | By | Command | Result |\n|---|---|---|---|\n" + "\n".join(rows)
+    table = "| # | By | Command | Result |\n|---|---|---|---|\n" + "\n".join(rows)
+    summary = f"{_count(len(shell), 'shell command')}, {failed} failed (expand for the full table)"
+    return f"<details>\n<summary>{summary}</summary>\n\n{table}\n\n</details>"
 
 
-def _files_table(calls: list) -> str:
-    files: dict[str, dict[str, set[str] | dict[str, int]]] = {}
+def _unfinished(calls: list, tests: list) -> list:
+    """Calls with nothing to judge: no result arrived, or they were started in the background.
+
+    Test runs and file edits already show their ⏳ in their own sections; a call that failed to start has a
+    result (its failure) and is listed under Errors.
+    """
+    test_calls = {id(tc) for _, tc, _, _ in tests}
+    return [
+        (by, tc) for by, tc in calls
+        if (tc.status == "PENDING" or (tc.input.get("run_in_background") and not tc.is_error))
+        and id(tc) not in test_calls and tc.tool not in _FILE_TOOLS
+    ]
+
+
+def _unfinished_list(unfinished: list) -> str:
+    return "\n".join(
+        f"- **{_cell(by, in_table=False)}** · {tc.tool} {_code(_subject(tc), 120, in_table=False)} → {_status(tc)}"
+        for by, tc in unfinished
+    )
+
+
+def _git_table(calls: list) -> str:
+    """Commands whose result backs or contradicts a "committed / pushed / merged" claim."""
+    rows = []
+    for by, tc in calls:
+        if tc.tool != "Bash":
+            continue
+        code = _shell_code(_unwrap_shell_c(_command(tc)))
+        m = _GIT_STATE.search(code)
+        if not m:
+            continue
+        # Show the git part, not the start of a long script. Unwrapped as written, so a push inside
+        # `bash -c '…'` is shown with its quotes (the marker is a control char, stripped by _cell).
+        segments = _git_segments(_unwrap_shell_c(_command(tc), blank=False))
+        # The call's exit status is only this command's when nothing after it can replace it (same rule as tests).
+        judged = tc.status == "COMPLETED" and not tc.is_error and not tc.input.get("run_in_background")
+        hidden = _hidden_status(code, m.end()) if judged else None
+        # `git diff --quiet || git commit`: exit 0 may be the first command's, with the commit never run.
+        # A `\`-continued line and an opening `(` between the `||` and the command do not change that.
+        before = re.sub(r"[\s(]+$", "", re.sub(r"\\\n", " ", code[:m.start() + 1]))
+        if judged and before.endswith("||"):
+            result = "⚠️ exit 0, but `||` before it: it ran only if the command before failed"
+        elif hidden:
+            result = f"⚠️ exit 0, but {hidden} after it hides its exit status"
+        else:
+            result = _status(tc)
+        rows.append(f"| {_cell(by)} | {_code('; '.join(segments) or _command(tc))} | {_cell(result, 200)} "
+                    f"| {_cell(_tail(_EXIT_CODE.sub('', tc.output_summary).strip(), 90), 90)} |")
+    if not rows:
+        return ""
+    return "| By | Command | Result | Output (end) |\n|---|---|---|---|\n" + "\n".join(rows)
+
+
+def _git_segments(command: str) -> list[str]:
+    """The git commands as written, each cut at the next separator or redirection, found where a command starts
+    and outside quotes and heredoc bodies.
+
+    Quotes and heredoc bodies are blanked with same-length filler (a heredoc keeps its `<<`, where the segment is
+    cut), so every position still holds and the text shown is sliced from the command itself. A quoted string that
+    spans lines, like `-m "$(cat <<'EOF' … EOF)"`, stays one segment.
+    """
+    fill = lambda m, keep=0: m.group(0)[:keep] + "x" * (len(m.group(0)) - keep)  # noqa: E731
+    blanked = _QUOTED.sub(fill, _HEREDOC.sub(lambda m: fill(m, 2), command))
+    segments = []
+    for m in _GIT_SEGMENT.finditer(blanked):
+        start = m.start(1)
+        cut = re.search(r"\s+\d?[<>]", blanked[start:m.end()])
+        end = start + cut.start() if cut else m.end()
+        segments.append(command[start:end].strip())
+    return segments
+
+
+def _edited_files(calls: list) -> tuple[dict[str, dict], list[tuple[str, ToolCall, str]]]:
+    """Files edited with Edit / Write tools, and edits whose result never arrived."""
+    files: dict[str, dict] = {}
     pending: list[tuple[str, ToolCall, str]] = []
     for by, tc in calls:
         path = tc.input.get("file_path") or tc.input.get("notebook_path")
@@ -298,6 +433,11 @@ def _files_table(calls: list) -> str:
         entry = files.setdefault(path, {"tools": {}, "by": set()})
         entry["tools"][tc.tool] = entry["tools"].get(tc.tool, 0) + 1
         entry["by"].add(by)
+    return files, pending
+
+
+def _files_table(calls: list) -> str:
+    files, pending = _edited_files(calls)
     parts = []
     if files:
         rows = [
@@ -309,12 +449,13 @@ def _files_table(calls: list) -> str:
         parts.append("**No files edited with Edit / Write.**")
     if pending:
         parts.append("⏳ Not counted, no result recorded: " + ", ".join(
-            f"{_code(_tail(path, 120))} ({tc.tool}, {_cell(by)})" for by, tc, path in pending))
+            f"{_code(_tail(path, 120), in_table=False)} ({tc.tool}, {_cell(by, in_table=False)})"
+            for by, tc, path in pending))
     parts.append(_shell_writes(calls))
     return "\n\n".join(parts)
 
 
-def _shell_writes(calls: list) -> str:
+def _shell_write_rows(calls: list) -> list[tuple[str, ToolCall, list[str]]]:
     """Shell commands whose text shows a file write. What they changed is not known, only that they could."""
     rows = []
     for by, tc in calls:
@@ -323,11 +464,21 @@ def _shell_writes(calls: list) -> str:
         code = _shell_code(_unwrap_shell_c(_command(tc)))
         reasons = [name for name, pattern in _SHELL_WRITES if pattern.search(code)]
         if reasons:
-            rows.append(f"- **{_cell(by)}** · {_code(_command(tc), 160)} ({', '.join(reasons)})"
-                        + (" ❌ failed" if tc.is_error else ""))
+            rows.append((by, tc, reasons))
+    return rows
+
+
+def _shell_writes(calls: list) -> str:
+    rows = [
+        f"- **{_cell(by, in_table=False)}** · {_code(_command(tc), 160, in_table=False)} ({', '.join(reasons)})"
+        + (" ❌ failed" if tc.is_error else "")
+        for by, tc, reasons in _shell_write_rows(calls)
+    ]
     if not rows:
         return "No shell command that writes files (`>`, `tee`, `sed -i`, `mv`, `cp`, `rm`…) was seen."
-    return "Shell commands that may have changed files (not verified):\n" + "\n".join(rows)
+    # Collapsed: the count is the fact; the list is long in big sessions and only says "could have".
+    summary = f"{_count(len(rows), 'shell command')} may have changed files (not verified)"
+    return f"<details>\n<summary>{summary}</summary>\n\n" + "\n".join(rows) + "\n\n</details>"
 
 
 def _errors_list(calls: list) -> str:
@@ -335,7 +486,8 @@ def _errors_list(calls: list) -> str:
     if not errors:
         return "**No tool call failed.**"
     return "\n".join(
-        f"- **{_cell(by)}** · {tc.tool} {_code(_subject(tc), 100)} → {_cell(_EXIT_CODE.sub('', tc.output_summary), 160)}"
+        f"- **{_cell(by, in_table=False)}** · {tc.tool} {_code(_subject(tc), 100, in_table=False)} "
+        f"→ {_cell(_EXIT_CODE.sub('', tc.output_summary), 160, in_table=False)}"
         for by, tc in errors
     )
 
@@ -399,17 +551,19 @@ def _tail(text: str, limit: int = 90) -> str:
     return text if len(text) <= limit else "…" + text[-(limit - 1):]
 
 
-def _cell(text: str, limit: int = 120) -> str:
+def _cell(text: str, limit: int = 120, in_table: bool = True) -> str:
     text = re.sub(r"\s+", " ", _CONTROL.sub("", str(text))).strip()
     if len(text) > limit:
         text = text[: limit - 1] + "…"
+    if not in_table:
+        return text  # outside a table `\|` is not an escape: the backslash would show
     # Every pipe, even one already behind a backslash: cmark-gfm reads `\\|` as an escaped pipe too, and it is
     # the only way `\|` in a command renders as it ran.
     return text.replace("|", "\\|")
 
 
-def _code(text: str, limit: int = 120) -> str:
-    cell = _cell(text, limit)
+def _code(text: str, limit: int = 120, in_table: bool = True) -> str:
+    cell = _cell(text, limit, in_table)
     if not cell:
         return cell
     # A code span needs a fence longer than any backtick run inside it.
