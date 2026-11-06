@@ -39,7 +39,7 @@ _QUESTION = re.compile(
     r"|\bshould i\b|\bdo you want\b|\bwant me\b|\bsay\s+[\"“']", re.I)
 _CONDITIONAL = re.compile(
     r"必須|需要|應該|才會|就會|將會|才能|之後再|然後再|之前先|等你|請你|如果|若是|若無|就好|就可以|就能|我就|我會"
-    r"|(?:了|完|後|綠|過|好|來)就|依序"
+    r"|(?:了|完|後|綠|過|好)就|依序"
     r"|要(?:先|再|重新|用|全綠|通過|全過|都過|綠)|會(?:跑|做|先|再|觸發|一起)|再\s*(?:commit|push|merge|推|提交|合併|跑)"
     r"|\b(?:if|once|when|unless|until|will|would|should|must|need(?:s)? to|to be|going to)\b", re.I)
 # "Verify that all tests pass before merging", "make sure the tests pass before you push": an instruction, not a
@@ -67,6 +67,8 @@ _NEGATED_ZH_BEFORE = re.compile(r"(?:沒有|沒|未|不|非|無|尚未|還沒|�
 # not "tests pass".
 _SPAN = r"(?:(?!沒|未|不|非|無|失敗|fail|\bnot\b|n't\b|\bnever\b|\bno\b|\bcannot\b)[^，。；]){0,200}?"
 _DONE = r"(?:已經|已|都已|都|也都|也|剛剛|剛|全部|全都)\s*"
+# "push 步驟", "的 commit": the word as a noun, not the deed.
+_NOUN = r"(?:的|步驟|流程|指令|命令|hook|腳本|script)"
 _SHA = r"`?[0-9a-f]{6,40}`?"
 # "merged" is about git only when the sentence says so: blog posts and data rows get 合併 too.
 _GIT_CONTEXT = re.compile(
@@ -96,15 +98,17 @@ _PATTERNS = {
         re.I),
     "commit": re.compile(
         rf"{_DONE}commit(?:ted)?(?!\s*的)|\bcommit\s*(?:了|完成|完\b|好了|成\s*{_SHA}|在本機|進|到\s*(?:整合|分支|branch|main|master|feat))"
+        r"|^committed\.?$"
         rf"|{_DONE}提交(?=[^，。；]{{0,12}}commit)|提交了\s*\d+\s*個?\s*commit"
         r"|\b(?:is|are|was|were|has been|have been|got|now|already)\s+committed\b|\bi(?:'ve| have)?\s+committed\b"
         r"|\bcommitted\s*(?:,|and\b|as\b|to\b|on\b|in\b|the\b|everything\b|all\b)",
         re.I),
     "push": re.compile(
-        rf"{_DONE}push(?:ed)?(?!\s*的)|\bpush\s*(?:了|完成|完\b|好了|成功|上去了|到了)"
-        rf"|{_DONE}推(?:上去|上|到|了)?(?=\s|$|[，。；、！!）)])|推上去了|推上了|推到了|推了(?!\s*的)"
+        rf"{_DONE}push(?:ed)?(?!\s*{_NOUN})|\bpush\s*(?:了|完成|完\b|好了|成功|上去了|到了)|^pushed\.?$"
+        rf"|{_DONE}推(?:送(?:到|上|至)?|上去|上|到|了)?(?=\s|$|[，。；、！!）)])|推上去了|推上了|推到了|推送了|推了(?!\s*的)"
         # "已 commit 並 push", "已合進 main、push": the second verb of a done list, never a bare list
-        rf"|{_DONE}[^，。；]{{0,24}}?(?:並|及|和|跟|、)\s*(?:push(?:ed)?\b(?!\s*的)|推(?:上去|上|到|了)?(?=\s|$|[，。；、！!）)]))"
+        rf"|{_DONE}[^，。；]{{0,24}}?(?:並|及|和|跟|、)\s*(?:push(?:ed)?\b(?!\s*{_NOUN})"
+        r"|推(?:送(?:到|上|至)?|上去|上|到|了)?(?=\s|$|[，。；、！!）)]))"
         r"|\b(?:is|are|was|were|has been|have been|got|now|already)\s+pushed\b|\bi(?:'ve| have)?\s+pushed\b"
         r"|\bpushed\s+(?:to|the|it|them|everything|both)\b|\b(?:and|,)\s*pushed\b(?!\s+(?:to|the|it|them|everything|both)\b)",
         re.I),
@@ -120,9 +124,15 @@ _NOT_GIT_PUSH = re.compile(r"indexnow|notification|通知|推播", re.I)
 _PASSES_OBJECT = re.compile(
     r"\btests?\s+(?:that\s+|which\s+)?pass(?:es)?\s+(?:a|an|the|its|their|our|your|this|these|those|some|every|each|all)\b",
     re.I)
-# A question or a condition counts up to the end of the claim's own clause: "測試全綠，要我 push 嗎" keeps
-# its claim, "測試過了就 push" does not.
+# A question or a condition counts in the claim's own clause: "測試全綠，要我 push 嗎" keeps its claim, "測試過了就
+# push" does not. A sentence that ends with "?" is a question unless the question is its own later clause;
+# "Do all tests pass …?" is one from its first word.
 _CLAUSE_END = re.compile(r"[，,;；]|\s[—–-]\s|—")
+_QUESTION_CLAUSE = re.compile(r"嗎|要我|要不要|是不是|\bshould i\b|\bdo you want\b|\bwant me\b|\bshall i\b", re.I)
+_AUX_QUESTION = re.compile(r"^(?:do|does|did|is|are|was|were|can|could|will|would|should|have|has)\b", re.I)
+# "測試全綠後，再 push", "等測試全綠，再 push", "測試全綠，然後 push": the claim's clause is a condition or a step.
+_PLAN_CLAUSE = re.compile(r"^(?:等|確認|待|先|請)|(?:後|前|之後|以後|時)$")
+_NEXT_PLAN = re.compile(r"^\s*(?:再|我會|然後|接著|就|才)")
 # "1 failed, 2 passed" reports a failure, whatever else it says.
 _FAILING = re.compile(r"\b[1-9]\d*\s*(?:failed|failures?|errors?)\b|[1-9]\d*\s*(?:個|條|項)?\s*失敗", re.I)
 
@@ -135,9 +145,15 @@ def find_claims(message: str) -> list[Claim]:
             m = _PATTERNS[kind].search(sentence)
             if m is None:
                 continue
-            clause = _CLAUSE_END.search(sentence, m.end())
-            scope = sentence[:clause.start()] if clause else sentence
-            if _QUESTION.search(scope) or _CONDITIONAL.search(scope):
+            own_start = max((sep.end() for sep in _CLAUSE_END.finditer(sentence, 0, m.start())), default=0)
+            nxt = _CLAUSE_END.search(sentence, m.end())
+            own = sentence[own_start:nxt.start() if nxt else len(sentence)].strip()
+            after = sentence[nxt.end():] if nxt else ""
+            if _QUESTION.search(own) or _CONDITIONAL.search(own) or _AUX_QUESTION.match(sentence):
+                continue
+            if sentence.rstrip().endswith(("?", "？")) and not _QUESTION_CLAUSE.search(after):
+                continue
+            if _PLAN_CLAUSE.search(own) or _NEXT_PLAN.match(after):
                 continue
             if _NEGATED_ZH_BEFORE.search(sentence[max(0, m.start() - 8):m.start()]):
                 continue

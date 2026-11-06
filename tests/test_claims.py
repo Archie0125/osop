@@ -744,7 +744,7 @@ def test_a_later_test_failure_does_not_pin_an_earlier_lint_error_on_a_fixed_reru
     claims = _claims(_session(tmp_path, [
         ("Bash", {"command": "ruff check .; ruff check --fix . && pytest -q"},
          "Exit code 1\nFound 1 error.\nFound 1 error (1 fixed, 0 remaining).\n1 failed", True)], "Lint passes."))
-    assert "✅ backed" in claims and "🟡 probably clean" in claims
+    assert "⚠️ cannot tell" in claims and "a later step in the chain failed" in claims
     claims = _claims(_session(tmp_path, [
         ("Bash", {"command": "ruff check --fix .; ruff check src/ && pytest -q"},
          "Exit code 1\nFound 1 error (1 fixed, 0 remaining).\nFound 1 error.", True)], "Lint passes."))
@@ -832,7 +832,6 @@ def test_words_that_only_look_like_claims(text):
     ("測試全綠，等你一句要不要 push", ["tests"]), ("The new test passes.", ["tests"]), ("已推上 main", ["push"]),
     ("LoopRegistryMatchesSchedulerTest、DocsNameOnlyRealCommandsTest 綠", ["tests"]),
     ("驗證：新增一條（20 passed）、push hook 全套 3,330 綠", ["tests"]),
-    ("重建後全套 3,491 條通過，再 push 就過了", ["tests"]),
 ])
 def test_claims_beside_a_question_or_a_second_verb(text, kinds):
     assert _kinds(text) == kinds, text
@@ -844,3 +843,47 @@ def test_a_long_single_line_message_is_scanned_quickly():
     assert _kinds("tests " * 9000) == []
     assert _kinds("tests, " * 3000) == []
     assert time.perf_counter() - start < 2.0
+
+
+# --- after the Fable review of 8c68a616 -------------------------------------------------------------
+
+
+@pytest.mark.parametrize("text", [
+    "測試全綠後，再 push", "等測試全綠後，我會再 push", "確認測試全綠後，再 merge 進 main", "等測試全綠，再 push",
+    "測試全綠，然後 push", "已把 build 跟 push 步驟寫進腳本",
+    "Do all tests pass on your side, or should I run them again?",
+    "Are all tests passing now?",
+])
+def test_plans_and_questions_around_the_comma(text):
+    assert _kinds(text) == [], text
+
+
+@pytest.mark.parametrize("text, kinds", [
+    ("已推送到 origin/main", ["push"]), ("已推送", ["push"]), ("本來就有的 312 個測試也都通過", ["tests"]),
+    ("不需要改 migration，測試全綠", ["tests"]),
+    ("Pushed.", ["push"]), ("Committed.", ["commit"]), ("測試全綠，要我 push 嗎？", ["tests"]),
+    ("你要不要先看一下，測試全綠", ["tests"]),
+])
+def test_claims_the_clause_rule_must_keep(text, kinds):
+    assert _kinds(text) == kinds, text
+
+
+def test_a_build_line_printed_mid_run_does_not_back_a_failed_build(tmp_path):
+    out = ("Exit code 1\n✓ built in 1.52s\nvite v5.4 building SSR bundle for production...\nerror during build:\n"
+           "RollupError: Could not resolve \"./missing\"\nnpm ERR! code ELIFECYCLE")
+    claims = _claims(_session(tmp_path, [("Bash", {"command": "npm run build"}, out, True)], "Build succeeds."))
+    assert "❌ contradicted" in claims
+    out = "Exit code 1\n✓ built in 2.1s\nsrc/app.ts(3,7): error TS2322: Type 'string'\nnpm ERR! code ELIFECYCLE"
+    claims = _claims(_session(tmp_path, [("Bash", {"command": "npm run build"}, out, True)], "Build succeeds."))
+    assert "❌ contradicted" in claims
+    claims = _claims(_session(tmp_path, [
+        ("Bash", {"command": "npm run build && npm test"}, "Exit code 1\n✓ built in 2.1s\nFAIL src/app.test.ts", True)],
+        "Build succeeds."))
+    assert "✅ backed" in claims and "🟡 probably built" in claims
+
+
+def test_two_lint_runs_with_errors_then_an_all_clear_at_exit_nonzero_cannot_tell(tmp_path):
+    claims = _claims(_session(tmp_path, [
+        ("Bash", {"command": "ruff check src/; ruff check tests/ && pytest -q"},
+         "Exit code 1\nFound 2 errors.\nAll checks passed!\n1 failed", True)], "Lint passes."))
+    assert "⚠️ cannot tell" in claims

@@ -423,23 +423,21 @@ def _judge(tc: ToolCall, code: str, m: re.Match, verb: str | None = None) -> tup
             fail = generic
     elif fail is None and alone and verb in _SHARED_FAIL:
         fail = _last(_SHARED_FAIL[verb], out)
-        # `npm run build` printed "✓ built in 2s", then a postbuild step "npm ERR!": the build is done.
-        if fail and done and done.start() < fail.start() and not ran_again:
-            fail = None
     # A single run that printed a failure and then a success marker ("error: Failed to format app.py", then
     # "1 file already formatted") failed. When the tool ran more than once in the call, git prints one block
     # per command, so the later block decides (`! [rejected]`, a rebase, then `main -> main` is a push); a
     # linter or build tool prints its errors before its summary, so which run printed what is unknown.
+    cleared = False
     if fail and done and done.start() > fail.start() and ran_again:
         if verb in ("lint", "build") and not tc.is_error:
             return "unclear", (f"⚠️ exit 0, but the tool ran more than once and the output shows both "
                                f"{_code(fail.group(0), 40)} and {_code(done.group(0).strip(), 40)}")
-        fail = None  # git: the later block decides; lint / build at exit≠0: the chain rule says what failed
+        fail, cleared = None, True  # git: the later block decides; lint / build: the chain rule decides
     chained = _chained(code, m)
     if tc.is_error:
         if fail:
             return "failed", f"{_failed(tc)}, output says {_code(fail.group(0), 60)}"
-        if done and verb in _GIT_PAST:
+        if done and verb in _GIT_PAST and not cleared:
             # `git commit -m x && git push` at exit 1 with `[main abc1234]` printed: the commit happened, the
             # push did not; `gh pr merge --delete-branch` merged, then failed to delete the branch.
             return "probably", (f"🟡 probably {_GIT_PAST[verb]}: {_exit_text(tc)} came from another step; "
@@ -523,8 +521,9 @@ _GIT_FAIL = {
     "rebase": re.compile(r"CONFLICT|could not apply"),
     "cherry-pick": re.compile(r"CONFLICT|could not apply"),
     # Build and lint tools print little on success and a lot on failure; both are read the same way.
-    "build": re.compile(r"Build failed|build failed|Failed to compile|failed to compile"
-                        r"|✘ \[ERROR\]|BUILD FAILURE|compilation failed", re.I),
+    # vite prints "✓ built in" for the client bundle, then "error during build:" when the SSR bundle fails.
+    "build": re.compile(r"Build failed|build failed|Failed to compile|failed to compile|error during build"
+                        r"|RollupError|✘ \[ERROR\]|BUILD FAILURE|compilation failed", re.I),
     # `ruff check --fix` reports "Found 2 errors (2 fixed, 0 remaining)." and exits 0.
     # eslint exits 0 with warnings only: "✖ 1 problem (0 errors, 1 warning)" is not a failure, unless
     # `--max-warnings` made it one ("ESLint found too many warnings"). A format check that "would reformat"
