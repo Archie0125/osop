@@ -634,3 +634,18 @@ def test_a_present_passive_behind_after_is_still_a_plan():
     assert _kinds("After the PR is merged, delete the branch.") == []
     assert _kinds("The changes are committed.") == ["commit"]
     assert _kinds("After the tests passed, I pushed to main.") == ["tests", "push"]
+
+
+def test_a_format_check_that_would_reformat_is_a_lint_failure(tmp_path):
+    claims = _claims(_session(tmp_path, [
+        ("Bash", {"command": "ruff check .; ruff format --check .; echo done"},
+         "All checks passed!\n1 file would be reformatted, 12 files already formatted\ndone", False)], "Lint passes."))
+    assert "❌ contradicted" in claims and "would be reformatted" in claims
+    claims = _claims(_session(tmp_path, [
+        ("Bash", {"command": "black --check .; echo done"}, "would reformat app.py\n1 file would be reformatted.\ndone",
+         False)], "Lint passes."))
+    assert "❌ contradicted" in claims
+    claims = _claims(_session(tmp_path, [
+        ("Bash", {"command": "ruff check .; ruff format --check .; echo done"},
+         "All checks passed!\n13 files already formatted\ndone", False)], "Lint passes."))
+    assert "✅ backed" in claims

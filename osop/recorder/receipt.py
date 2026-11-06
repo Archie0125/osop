@@ -484,9 +484,10 @@ _GIT_FAIL = {
                         r"|✘ \[ERROR\]|BUILD FAILURE|compilation failed", re.I),
     # `ruff check --fix` reports "Found 2 errors (2 fixed, 0 remaining)." and exits 0.
     # eslint exits 0 with warnings only: "✖ 1 problem (0 errors, 1 warning)" is not a failure, unless
-    # `--max-warnings` made it one ("ESLint found too many warnings").
+    # `--max-warnings` made it one ("ESLint found too many warnings"). A format check that "would reformat"
+    # (ruff format --check, black --check, prettier --check) failed, whatever a `ruff check` before it said.
     "lint": re.compile(r"Found \d+ errors?\b(?! \(\d+ fixed, 0 remaining\))|\d+ problems? \((?!0 errors?\b)"
-                       r"|too many warnings"),
+                       r"|too many warnings|would (?:be )?reformat(?:ted)?\b|Code style issues found"),
 }
 # Markers another runner in the same call could have printed just as well (`ruff check . && npm test`: jest's
 # FAIL and PASS, ts-jest's `error TS…`; `cargo clippy && cargo build`: rustc's `error[E…]`): read only when
