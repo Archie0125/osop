@@ -171,8 +171,7 @@ def _collect(parsed: dict) -> tuple[dict[str, str], list, list, str]:
     calls = [(_owner(node.node_id, labels), tc) for node in _walk(parsed["nodes"]) for tc in node.tool_calls]
     tests = [
         (by, tc, code, m) for by, tc in calls if tc.tool == "Bash"
-        and (m := _TEST_COMMAND.search(code := _shell_code(_unwrap_shell_c(_command(tc)))))
-        and not _version_query(code, m)
+        and (m := _real_run(_TEST_COMMAND, code := _shell_code(_unwrap_shell_c(_command(tc)))))
     ]
     goal = next((n.user_prompt for n in parsed["nodes"] if n.user_prompt), "") or ""
     return labels, calls, tests, goal
@@ -303,15 +302,22 @@ def _matching_calls(calls: list, pattern: re.Pattern) -> list[tuple[ToolCall, st
     for _, tc in calls:
         if tc.tool == "Bash":
             code = _shell_code(_unwrap_shell_c(_command(tc)))
-            m = pattern.search(code)
-            if m and not _version_query(code, m):
+            m = _real_run(pattern, code)
+            if m:
                 found.append((tc, code, m))
     return found
 
 
+def _real_run(pattern: re.Pattern, code: str) -> re.Match | None:
+    """The first run of the tool in the call that checks something: `ruff --version && ruff check .` is the
+    second one."""
+    return next((m for m in pattern.finditer(code) if not _version_query(code, m)), None)
+
+
 def _version_query(code: str, m: re.Match) -> bool:
-    """`ruff --version`, `phpunit --help`: the tool ran, but checked nothing."""
-    return re.match(r"\s+(?:--version|-V|--help|-h)(?=\s|$)", code[m.end():]) is not None
+    """`ruff --version`, `ruff check --help`, `pytest -q -h`: the tool ran, but checked nothing."""
+    segment = re.split(r"[;&|\n]", code[m.end():], maxsplit=1)[0]
+    return re.search(r"(?<=\s)(?:--version|-V|--help|-h)(?=\s|$)", segment) is not None
 
 
 def _git_calls(calls: list, verb: str) -> list[tuple[ToolCall, str, re.Match]]:
@@ -387,10 +393,15 @@ def _judge(tc: ToolCall, code: str, m: re.Match, verb: str | None = None) -> tup
     if tc.status == "PENDING":
         return "pending", _status(tc)
     out = _CONTROL.sub("", tc.output)
+    alone = not _shares_output(code, m)
     fail = _GIT_FAIL[verb].search(out) if verb in _GIT_FAIL else None
-    if fail is None and verb in _SHARED_FAIL and not _shares_output(code, m):
+    if fail is None and alone and verb in _SHARED_FAIL:
         fail = _SHARED_FAIL[verb].search(out)
     done = _GIT_DONE[verb].search(out) if verb in _GIT_DONE else None
+    if done is None and alone and verb in _SHARED_DONE:
+        done = _SHARED_DONE[verb].search(out)
+    if fail and done and done.start() > fail.start():
+        fail = None  # the last word wins: `! [rejected]`, a rebase, then `main -> main` is a push
     chained = _chained(code, m)
     if tc.is_error:
         if fail:
@@ -449,22 +460,22 @@ _GIT_FAIL = {
     "rebase": re.compile(r"CONFLICT|could not apply|fatal:|error:"),
     "cherry-pick": re.compile(r"CONFLICT|could not apply|fatal:|error:"),
     # Build and lint tools print little on success and a lot on failure; both are read the same way.
-    "build": re.compile(r"error TS\d+|Build failed|build failed|Failed to compile|failed to compile"
+    "build": re.compile(r"Build failed|build failed|Failed to compile|failed to compile"
                         r"|✘ \[ERROR\]|\berror\[E\d+\]|BUILD FAILURE|compilation failed", re.I),
     # `ruff check --fix` reports "Found 2 errors (2 fixed, 0 remaining)." and exits 0.
-    "lint": re.compile(r"Found \d+ errors?(?! \(\d+ fixed, 0 remaining\))|\d+ problems? \(|error TS\d+"
-                       r"|\berror\[E\d+\]"),
+    "lint": re.compile(r"Found \d+ errors?\b(?! \(\d+ fixed, 0 remaining\))|\d+ problems? \(|\berror\[E\d+\]"),
 }
-# Markers a test runner in the same call could have printed just as well (`ruff check . && npm test`): read
-# only when the build or lint tool is the only runner in the call.
+# Markers a test runner in the same call could have printed just as well (`ruff check . && npm test`: jest's
+# FAIL and PASS, ts-jest's `error TS…`): read only when the build or lint tool is the only runner in the call.
 _SHARED_FAIL = {
-    "build": re.compile(r"npm ERR!|ELIFECYCLE|Error: ", re.I),
-    "lint": re.compile(r"\[ERROR\]|FAIL\b|✖|✘"),
+    "build": re.compile(r"npm ERR!|ELIFECYCLE|error TS\d+|Error: ", re.I),
+    "lint": re.compile(r"error TS\d+|\[ERROR\]|FAIL\b|✖|✘"),
 }
+_SHARED_DONE = {"lint": re.compile(r"^\s*PASS\b", re.M)}
 _GIT_DONE.update({
     "build": re.compile(r"✓ built in|built in \d|Compiled successfully|compiled successfully|Build complete"
                         r"|Complete!|BUILD SUCCESS|Finished `?(?:dev|release)|✓ Compiled"),
-    "lint": re.compile(r"All checks passed!|Success: no issues found|\[OK\] No errors|^\s*PASS\b|0 problems"
+    "lint": re.compile(r"All checks passed!|Success: no issues found|\[OK\] No errors|0 problems"
                        r"|No lint errors|\(\d+ fixed, 0 remaining\)", re.M),
 })
 _GIT_PAST = {"push": "pushed", "commit": "committed", "merge": "merged", "rebase": "rebased", "cherry-pick": "picked",
@@ -545,7 +556,7 @@ def _test_verdict(tc: ToolCall, code: str, match: re.Match) -> str:
         return "✅ passed" if _PASSED_COUNT.search(out) else "✅ exit 0, no pass/fail summary seen"
     # The reported exit status belongs to whatever ran last, so only the output is left to read.
     echoed = _ECHOED_EXIT.findall(out)
-    runs = sum(1 for _ in _TEST_COMMAND.finditer(code))
+    runs = sum(1 for m in _TEST_COMMAND.finditer(code) if not _version_query(code, m))
     # `pytest; echo exit=$?`: the first `$?` echoed right after the test, with nothing between, is the test's.
     # `pytest | tail; echo exit=${PIPESTATUS[0]}`: so is the first pipeline status, when the test opens the pipeline.
     # (`code` has quoted strings blanked to "", so `echo "exit=$?"` shows as `echo ""`.)

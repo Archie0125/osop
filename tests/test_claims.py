@@ -403,3 +403,72 @@ def test_a_shell_script_under_the_project_is_source_too(tmp_path):
         ("Edit", {"file_path": "/work/demo/bin/run.sh", "old_string": "a", "new_string": "b"}, "ok", False),
     ], "Tests pass."))
     assert "⚠️ cannot tell" in claims and "run.sh" in claims
+
+
+def test_a_question_mark_glued_to_the_next_sentence_still_ends_the_question():
+    assert _kinds("測試過了？沒有。") == []
+    assert _kinds("Did the tests pass?No.") == []
+    assert _kinds("Tests pass?Not yet, 2 failed.") == []
+    assert _kinds("測試全過？還沒跑。") == []
+
+
+# --- after Codex's second round (head 1b4af067) ------------------------------------------------------
+
+
+def test_cannot_inside_the_claim_is_a_negation():
+    assert _kinds("Tests cannot pass.") == []
+    assert _kinds("ruff cannot pass with these errors") == []
+
+
+def test_plural_ruff_fix_summary_is_clean_too(tmp_path):
+    claims = _claims(_session(tmp_path, [
+        ("Bash", {"command": "ruff check --fix .; echo done"}, "Found 2 errors (2 fixed, 0 remaining).\ndone", False)],
+        "Lint passes."))
+    assert "✅ backed" in claims
+
+
+def test_help_after_a_subcommand_and_a_version_query_before_the_real_run(tmp_path):
+    claims = _claims(_session(tmp_path, [
+        ("Bash", {"command": "ruff check --help"}, "Usage: ruff check [OPTIONS] [FILES]...", False)], "Lint passes."))
+    assert "❓ no evidence" in claims
+    claims = _claims(_session(tmp_path, [
+        ("Bash", {"command": "ruff check ."}, "All checks passed!", False),
+        ("Bash", {"command": "ruff --version && ruff check ."}, "Exit code 1\nruff 0.8.0\nFound 1 error.", True),
+    ], "Lint passes."))
+    assert "❌ contradicted" in claims
+    path = _session(tmp_path, [
+        ("Bash", {"command": "pytest -q --help"}, "usage: pytest", False),
+        ("Bash", {"command": "pytest --version && pytest -q"}, "pytest 8.0\n3 passed", False)], "tests pass")
+    assert "tests: 1 run: 1 passed" in render_brief(parse_transcript(path), "r.md")
+
+
+def test_ts_diagnostics_and_pass_lines_of_a_test_runner_in_the_chain_are_not_the_lints(tmp_path):
+    claims = _claims(_session(tmp_path, [
+        ("Bash", {"command": "npm run lint && npm test"},
+         "Exit code 1\nAll checks passed!\nFAIL src/app.test.ts\n  src/app.test.ts:3:7 - error TS2322: Type 'string'",
+         True)], "Lint passes."))
+    assert "⚠️ cannot tell" in claims
+    claims = _claims(_session(tmp_path, [
+        ("Bash", {"command": "npx tsc --noEmit"}, "Exit code 1\nsrc/app.ts:3:7 - error TS2322: Type 'string'", True)],
+        "Lint passes."))
+    assert "❌ contradicted" in claims and "error TS2322" in claims
+    claims = _claims(_session(tmp_path, [
+        ("Bash", {"command": "npx tsc --noEmit; npx jest"}, "PASS src/app.test.ts\nTests: 1 passed", False)],
+        "Lint passes."))
+    assert "⚠️ cannot tell" in claims
+    claims = _claims(_session(tmp_path, [
+        ("Bash", {"command": "vendor/bin/pint --test; echo done"}, "  PASS   .......... 12 files\ndone", False)],
+        "Lint passes."))
+    assert "✅ backed" in claims
+
+
+def test_the_last_marker_in_the_output_decides_a_hidden_status(tmp_path):
+    out = "! [rejected] main -> main (fetch first)\nSuccessfully rebased\n   abc1234..def5678  main -> main\ndone"
+    claims = _claims(_session(tmp_path, [
+        ("Bash", {"command": "git push origin main; git pull --rebase; git push origin main; echo done"}, out, False)],
+        "Pushed to origin/main."))
+    assert "✅ backed" in claims and "🟡 probably pushed" in claims
+    out = "   abc1234..def5678  main -> main\n ! [rejected] dev -> dev (non-fast-forward)"
+    claims = _claims(_session(tmp_path, [
+        ("Bash", {"command": "git push origin main dev; echo done"}, out, False)], "已 push"))
+    assert "❌ contradicted" in claims
