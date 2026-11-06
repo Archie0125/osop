@@ -712,3 +712,32 @@ def test_text_outside_a_table_keeps_its_pipes_unescaped(tmp_path):
     ]))
     assert "`echo a | tee b.log`" in _section(receipt, "Files changed")
     assert "`cat x | grep y` → no y | here" in _section(receipt, "Errors")
+
+
+def _git_cell(tmp_path: Path, command: str) -> str:
+    receipt = _receipt(_session(tmp_path, [("Bash", {"command": command}, "ok", False)]))
+    return _table(_section(receipt, "Git"))[2].split(" | ")[1]
+
+
+def test_git_cell_shows_commands_not_echoed_words(tmp_path):
+    assert _git_cell(tmp_path, "git commit -m fix && echo git push origin main") == "`git commit -m fix`"
+
+
+def test_git_cell_keeps_a_quoted_option_value(tmp_path):
+    assert _git_cell(tmp_path, 'git -C "my repo" push && git tag v1') == '`git -C "my repo" push; git tag v1`'
+
+
+def test_git_cell_shows_a_push_inside_bash_c(tmp_path):
+    assert "git push origin main" in _git_cell(tmp_path, 'git commit -m "fix"; bash -c "git push origin main"')
+
+
+def test_git_global_option_with_a_separate_value(tmp_path):
+    assert _git_cell(tmp_path, "git --git-dir .git push") == "`git --git-dir .git push`"
+
+
+def test_git_cell_does_not_cut_a_quoted_redirection(tmp_path):
+    assert _git_cell(tmp_path, 'git commit -m "fix > docs" && git push') == '`git commit -m "fix > docs"; git push`'
+
+
+def test_git_cell_stops_before_a_heredoc_body(tmp_path):
+    assert _git_cell(tmp_path, "git commit -F - <<EOF\ngit push origin main\nEOF") == "`git commit -F -`"

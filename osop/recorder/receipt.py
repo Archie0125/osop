@@ -79,10 +79,11 @@ _SHELL_WRITES = (
 # Commands whose result backs a "committed / pushed / merged" claim. Global options (`git -c x=y`, `git -C dir`,
 # `git --no-pager`) may sit between `git` and the verb; `merge-base` and `tag-something` are not `merge` / `tag`.
 _GIT_VERB = (
-    r"(?:git\s+(?:-[cC]\s+\S+\s+|--[\w-]+(?:=\S*)?\s+)*(?:commit|push|merge|rebase|cherry-pick|tag)(?![\w-])"
+    r"(?:git\s+(?:-[cC]\s+\S+\s+|--(?:git-dir|work-tree|namespace|exec-path|config-env)\s+\S+\s+"
+    r"|--[\w-]+(?:=\S*)?\s+)*(?:commit|push|merge|rebase|cherry-pick|tag)(?![\w-])"
     r"|gh\s+pr\s+(?:create|merge|close)(?![\w-]))")
 _GIT_STATE = re.compile(_COMMAND_START + _GIT_VERB)
-_GIT_SEGMENT = re.compile(r"\b" + _GIT_VERB + r"[^;&|\n]*")
+_GIT_SEGMENT = re.compile(_COMMAND_START + "(" + _GIT_VERB + r"[^;&|\n]*)")
 _FILE_TOOLS = ("Edit", "MultiEdit", "Write", "NotebookEdit")
 _MAIN = "main"
 
@@ -367,7 +368,8 @@ def _git_table(calls: list) -> str:
         if tc.tool != "Bash" or not _GIT_STATE.search(_shell_code(_unwrap_shell_c(_command(tc)))):
             continue
         # Show the git part, not the start of a long script; the result is still that of the whole call.
-        segments = _git_segments(_command(tc))
+        # Unwrapped first, so a push inside `bash -c '…'` is shown too (the marker is a control char, stripped).
+        segments = _git_segments(_unwrap_shell_c(_command(tc)))
         rows.append(f"| {_cell(by)} | {_code('; '.join(segments) or _command(tc))} | {_status(tc)} "
                     f"| {_cell(_tail(_EXIT_CODE.sub('', tc.output_summary).strip(), 90), 90)} |")
     if not rows:
@@ -376,16 +378,22 @@ def _git_table(calls: list) -> str:
 
 
 def _git_segments(command: str) -> list[str]:
-    """The git commands as written, each up to the next separator, found outside quotes and heredoc bodies.
+    """The git commands as written, each cut at the next separator or redirection, found where a command starts
+    and outside quotes and heredoc bodies.
 
-    Blanking keeps every position, so the text shown is sliced from the original command.
+    Quotes and heredoc bodies are blanked with same-length filler that keeps newlines (and the `<<`), so every
+    position still holds and the text shown is sliced from the command itself.
     """
-    blank = lambda m: " " * len(m.group(0))  # noqa: E731
-    blanked = _QUOTED.sub(blank, _HEREDOC.sub(blank, command))
-    return [
-        re.sub(r"\s+\d?[<>].*$", "", command[m.start():m.end()]).strip()
-        for m in _GIT_SEGMENT.finditer(blanked)
-    ]
+    fill = lambda text: re.sub(r"[^\n]", "x", text)  # noqa: E731
+    blanked = _QUOTED.sub(lambda m: fill(m.group(0)),
+                          _HEREDOC.sub(lambda m: "<<" + fill(m.group(0)[2:]), command))
+    segments = []
+    for m in _GIT_SEGMENT.finditer(blanked):
+        start = m.start(1)
+        cut = re.search(r"\s+\d?[<>]", blanked[start:m.end()])
+        end = start + cut.start() if cut else m.end()
+        segments.append(command[start:end].strip())
+    return segments
 
 
 def _edited_files(calls: list) -> tuple[dict[str, dict], list[tuple[str, ToolCall, str]]]:
