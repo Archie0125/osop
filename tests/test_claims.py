@@ -472,3 +472,55 @@ def test_the_last_marker_in_the_output_decides_a_hidden_status(tmp_path):
     claims = _claims(_session(tmp_path, [
         ("Bash", {"command": "git push origin main dev; echo done"}, out, False)], "已 push"))
     assert "❌ contradicted" in claims
+
+
+# --- after Codex's third round and the verifier's fourth (head ff6f7b31) ----------------------------
+
+
+def test_a_failing_eslint_summary_is_not_zero_problems(tmp_path):
+    claims = _claims(_session(tmp_path, [
+        ("Bash", {"command": "npx eslint .; echo done"}, "✖ 10 problems (10 errors, 0 warnings)\ndone", False)],
+        "Lint passes."))
+    assert "❌ contradicted" in claims
+    claims = _claims(_session(tmp_path, [
+        ("Bash", {"command": "npx eslint .; echo done"}, "✔ 0 problems\ndone", False)], "Lint passes."))
+    assert "✅ backed" in claims
+
+
+def test_the_last_markers_are_compared_not_the_first(tmp_path):
+    out = ("! [rejected] main -> main (fetch first)\n   abc1234..def5678  main -> main\n"
+           "fatal: Could not resolve host: mirror\ndone")
+    claims = _claims(_session(tmp_path, [
+        ("Bash", {"command": "git push origin main; git push backup main; git push mirror main; echo done"}, out,
+         False)], "Pushed to mirror/main."))
+    assert "❌ contradicted" in claims and "fatal:" in claims
+
+
+def test_a_version_query_echoed_before_the_test_is_not_the_tests_status(tmp_path):
+    out = "pytest 8.0\nexit=0\nERROR: file or directory not found: tests/test_api.py\n\nno tests ran in 0.00s\nexit=4"
+    claims = _claims(_session(tmp_path, [
+        ("Bash", {"command": "pytest --version; echo exit=$?; pytest tests/test_api.py; echo exit=$?"}, out, False)],
+        "Tests pass."))
+    assert "⚠️ cannot tell" in claims
+
+
+def test_a_lowercase_answer_glued_to_a_question_mark_is_still_an_answer():
+    assert _kinds("Did the tests pass?no, still broken.") == []
+    assert _kinds("Tests pass?yes") == []
+    assert _kinds("已是新版（?v= 已換）、全套 3,330 綠") == ["tests"]
+    assert _kinds("see /docs?page=2&lang=en, all 12 tests pass") == ["tests"]
+
+
+def test_help_inside_a_group_is_not_a_run_but_ctest_verbose_is(tmp_path):
+    path = _session(tmp_path, [("Bash", {"command": "(pytest --help)"}, "usage: pytest [options]", False)], "ok")
+    assert "tests: none ran" in render_brief(parse_transcript(path), "r.md")
+    path = _session(tmp_path, [("Bash", {"command": "ctest -V"}, "100% tests passed, 0 tests failed out of 3", False)],
+                    "ok")
+    assert "tests: 1 run" in render_brief(parse_transcript(path), "r.md")
+
+
+def test_the_evidence_names_the_real_run_not_the_version_query(tmp_path):
+    claims = _claims(_session(tmp_path, [
+        ("Bash", {"command": "ruff --version && ruff check ."}, "Exit code 1\nruff 0.8.0\nFound 1 error.", True)],
+        "Lint passes."))
+    assert "last `ruff check .`" in claims

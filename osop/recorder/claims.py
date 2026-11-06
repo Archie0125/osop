@@ -28,13 +28,14 @@ _INLINE_CODE = re.compile(r"`([^`\n]*)`")
 # ("| 程式 | 已 commit、已 push |"); a clause after "；" is its own ("測試全過；全套還沒跑").
 _SENTENCE_END = re.compile(r"[。！!；;\n]|(?<=[^\s.][a-z0-9)\]])\.\s+")
 # A question mark ends a sentence too, and stays in it so the sentence reads as a question. "測試過了？沒有"
-# has no space after it; one glued to a query string ("新版（?v= 已換）") is not a question mark.
-_QUESTION_END = re.compile(r"(？|\?(?![a-z0-9_=&%/-]))")
+# and "tests pass?no" have no space after it; one that opens a query string ("新版（?v= 已換）", "?page=2")
+# is not a question mark.
+_QUESTION_END = re.compile(r"(？|\?(?![a-z0-9_.-]+=))")
 _MARKUP = re.compile(r"\*\*|__|^[-*>]\s+|^\d+\.\s+|^#+\s+", re.MULTILINE)
 
 # A sentence that asks, instructs, plans or hedges is not a claim about what happened.
 _QUESTION = re.compile(
-    r"？|\?(?![a-z0-9_=&%/-])|嗎|要我|要不要|是不是|還不知道|不確定|不清楚"
+    r"？|\?(?![a-z0-9_.-]+=)|嗎|要我|要不要|是不是|還不知道|不確定|不清楚"
     r"|\bshould i\b|\bdo you want\b|\bwant me\b|\bsay\s+[\"“']", re.I)
 _CONDITIONAL = re.compile(
     r"必須|需要|應該|才會|就會|將會|才能|之後再|然後再|之前先|等你|請你|如果|若是|就好|就可以|就能|我就|(?:了|完|後)就"

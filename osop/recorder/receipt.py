@@ -315,9 +315,10 @@ def _real_run(pattern: re.Pattern, code: str) -> re.Match | None:
 
 
 def _version_query(code: str, m: re.Match) -> bool:
-    """`ruff --version`, `ruff check --help`, `pytest -q -h`: the tool ran, but checked nothing."""
+    """`ruff --version`, `ruff check --help`, `(pytest -q -h)`: the tool ran, but checked nothing. (`-V` is
+    left out: `ctest -V` is verbose.)"""
     segment = re.split(r"[;&|\n]", code[m.end():], maxsplit=1)[0]
-    return re.search(r"(?<=\s)(?:--version|-V|--help|-h)(?=\s|$)", segment) is not None
+    return re.search(r"(?<=\s)(?:--version|--help|-h)(?=[\s)]|$)", segment) is not None
 
 
 def _git_calls(calls: list, verb: str) -> list[tuple[ToolCall, str, re.Match]]:
@@ -375,7 +376,7 @@ def _shown_segment(tc: ToolCall, kind: str, verb: str | None) -> str:
         segments = _git_segments(command)
         return next((s for s in reversed(segments) if re.search(rf"\b{verb}\b", s)),
                     segments[0] if segments else command)
-    m = (_LINT_COMMAND if kind == "lint" else _BUILD_COMMAND).search(command)
+    m = _real_run(_LINT_COMMAND if kind == "lint" else _BUILD_COMMAND, command)
     if not m:
         return command
     start = m.start() + len(re.match(r"[\s;&|(]*", m.group(0)).group(0))
@@ -394,12 +395,12 @@ def _judge(tc: ToolCall, code: str, m: re.Match, verb: str | None = None) -> tup
         return "pending", _status(tc)
     out = _CONTROL.sub("", tc.output)
     alone = not _shares_output(code, m)
-    fail = _GIT_FAIL[verb].search(out) if verb in _GIT_FAIL else None
+    fail = _last(_GIT_FAIL[verb], out) if verb in _GIT_FAIL else None
     if fail is None and alone and verb in _SHARED_FAIL:
-        fail = _SHARED_FAIL[verb].search(out)
-    done = _GIT_DONE[verb].search(out) if verb in _GIT_DONE else None
+        fail = _last(_SHARED_FAIL[verb], out)
+    done = _last(_GIT_DONE[verb], out) if verb in _GIT_DONE else None
     if done is None and alone and verb in _SHARED_DONE:
-        done = _SHARED_DONE[verb].search(out)
+        done = _last(_SHARED_DONE[verb], out)
     if fail and done and done.start() > fail.start():
         fail = None  # the last word wins: `! [rejected]`, a rebase, then `main -> main` is a push
     chained = _chained(code, m)
@@ -425,6 +426,13 @@ def _judge(tc: ToolCall, code: str, m: re.Match, verb: str | None = None) -> tup
     if done:
         return "probably", f"🟡 probably {_GIT_PAST[verb]}: {why}; output shows {_code(done.group(0).strip(), 60)}"
     return "unclear", f"⚠️ exit 0, but {why}"
+
+
+def _last(pattern: re.Pattern, text: str) -> re.Match | None:
+    """The last place the output says it: with a failure and a success marker both printed, the later one
+    decides (`! [rejected]`, then a rebase, then `main -> main`; or `main -> main`, then `fatal:`)."""
+    matches = list(pattern.finditer(text))
+    return matches[-1] if matches else None
 
 
 def _chained(code: str, m: re.Match) -> str | None:
@@ -475,7 +483,7 @@ _SHARED_DONE = {"lint": re.compile(r"^\s*PASS\b", re.M)}
 _GIT_DONE.update({
     "build": re.compile(r"✓ built in|built in \d|Compiled successfully|compiled successfully|Build complete"
                         r"|Complete!|BUILD SUCCESS|Finished `?(?:dev|release)|✓ Compiled"),
-    "lint": re.compile(r"All checks passed!|Success: no issues found|\[OK\] No errors|0 problems"
+    "lint": re.compile(r"All checks passed!|Success: no issues found|\[OK\] No errors|\b0 problems"
                        r"|No lint errors|\(\d+ fixed, 0 remaining\)", re.M),
 })
 _GIT_PAST = {"push": "pushed", "commit": "committed", "merge": "merged", "rebase": "rebased", "cherry-pick": "picked",
@@ -590,11 +598,15 @@ def _echoed_status_var(tc: ToolCall, code: str, match: re.Match) -> str | None:
     """
     # Read the command as written: `echo "exit=$?"` and `echo "done"` are both `echo ""` once blanked.
     raw = _unwrap_shell_c(_command(tc), blank=False)
-    runner = re.search(rf"(?:{_TEST_RUNNER})\b", match.group(0))
-    pos = raw.find(runner.group(0)) if runner else -1
-    if pos < 0:
+    # The same occurrence of the runner as the match: `pytest --version; echo $?; pytest tests/; echo $?`
+    # echoes the version query's status first.
+    runners = re.compile(rf"(?:{_TEST_RUNNER})\b")
+    nth = len(runners.findall(code[:match.end()]))
+    found = [r for r, _ in zip(runners.finditer(raw), range(nth), strict=False)]
+    if len(found) < nth:
         return None
-    before, after = raw[:pos], raw[pos + len(runner.group(0)):]
+    runner = found[-1]
+    before, after = raw[:runner.start()], raw[runner.end():]
     if "$?" in before or "PIPESTATUS" in before:
         return None  # an earlier status was echoed too, and the first `exit=` in the output is that one
     if re.match(r"(?:[^;|&\n]|>&)*;\s*echo\b[^;&|\n]*\$\?", after):
