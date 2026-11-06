@@ -76,14 +76,13 @@ _SHELL_WRITES = (
         r"\bgit\s+(?:apply|restore|rm|mv|clean|stash(?!\s+list)|reset\s+--hard)\b"
         r"|\bgit\s+checkout\b[^|;&\n]*\s(?:--(?:ours|theirs)?|\.(?:/\S*)?)(?:\s|$)")),
 )
-# Commands whose result backs a "committed / pushed / merged" claim.
-_GIT_STATE = re.compile(
-    _COMMAND_START + r"(?:git\s+(?:-C\s+\S+\s+)?(?:commit|push|merge|rebase|cherry-pick|tag)\b"
-    r"|gh\s+pr\s+(?:create|merge|close)\b)")
-# The same commands as written, up to the next separator: for display only, so quotes are not parsed.
-_GIT_SEGMENT = re.compile(
-    r"\b(?:git\s+(?:-C\s+\S+\s+)?(?:commit|push|merge|rebase|cherry-pick|tag)|gh\s+pr\s+(?:create|merge|close))\b"
-    r"[^;&|\n]*")
+# Commands whose result backs a "committed / pushed / merged" claim. Global options (`git -c x=y`, `git -C dir`,
+# `git --no-pager`) may sit between `git` and the verb; `merge-base` and `tag-something` are not `merge` / `tag`.
+_GIT_VERB = (
+    r"(?:git\s+(?:-[cC]\s+\S+\s+|--[\w-]+(?:=\S*)?\s+)*(?:commit|push|merge|rebase|cherry-pick|tag)(?![\w-])"
+    r"|gh\s+pr\s+(?:create|merge|close)(?![\w-]))")
+_GIT_STATE = re.compile(_COMMAND_START + _GIT_VERB)
+_GIT_SEGMENT = re.compile(r"\b" + _GIT_VERB + r"[^;&|\n]*")
 _FILE_TOOLS = ("Edit", "MultiEdit", "Write", "NotebookEdit")
 _MAIN = "main"
 
@@ -158,7 +157,7 @@ def _count(n: int, noun: str) -> str:
 def _overview(parsed: dict, goal: str, calls: list, tests: list, unfinished: list) -> str:
     failed = sum(1 for _, tc in calls if tc.is_error)
     by_subagents = sum(1 for by, _ in calls if by != _MAIN)
-    title = _cell(goal.splitlines()[0] if goal else "session", 70)
+    title = _cell(goal.splitlines()[0] if goal else "session", 70, in_table=False)
     tool_calls = f"{len(calls)} total, {failed} failed, {by_subagents} by sub-agents"
     if unfinished:
         tool_calls += f", {len(unfinished)} without result"
@@ -356,7 +355,8 @@ def _unfinished(calls: list, tests: list) -> list:
 
 def _unfinished_list(unfinished: list) -> str:
     return "\n".join(
-        f"- **{_cell(by)}** · {tc.tool} {_code(_subject(tc), 120)} → {_status(tc)}" for by, tc in unfinished
+        f"- **{_cell(by, in_table=False)}** · {tc.tool} {_code(_subject(tc), 120, in_table=False)} → {_status(tc)}"
+        for by, tc in unfinished
     )
 
 
@@ -367,12 +367,25 @@ def _git_table(calls: list) -> str:
         if tc.tool != "Bash" or not _GIT_STATE.search(_shell_code(_unwrap_shell_c(_command(tc)))):
             continue
         # Show the git part, not the start of a long script; the result is still that of the whole call.
-        segments = [re.sub(r"\s+\d?[<>].*$", "", s).strip() for s in _GIT_SEGMENT.findall(_command(tc))]
+        segments = _git_segments(_command(tc))
         rows.append(f"| {_cell(by)} | {_code('; '.join(segments) or _command(tc))} | {_status(tc)} "
                     f"| {_cell(_tail(_EXIT_CODE.sub('', tc.output_summary).strip(), 90), 90)} |")
     if not rows:
         return ""
     return "| By | Command | Result | Output (end) |\n|---|---|---|---|\n" + "\n".join(rows)
+
+
+def _git_segments(command: str) -> list[str]:
+    """The git commands as written, each up to the next separator, found outside quotes and heredoc bodies.
+
+    Blanking keeps every position, so the text shown is sliced from the original command.
+    """
+    blank = lambda m: " " * len(m.group(0))  # noqa: E731
+    blanked = _QUOTED.sub(blank, _HEREDOC.sub(blank, command))
+    return [
+        re.sub(r"\s+\d?[<>].*$", "", command[m.start():m.end()]).strip()
+        for m in _GIT_SEGMENT.finditer(blanked)
+    ]
 
 
 def _edited_files(calls: list) -> tuple[dict[str, dict], list[tuple[str, ToolCall, str]]]:
@@ -405,7 +418,8 @@ def _files_table(calls: list) -> str:
         parts.append("**No files edited with Edit / Write.**")
     if pending:
         parts.append("⏳ Not counted, no result recorded: " + ", ".join(
-            f"{_code(_tail(path, 120))} ({tc.tool}, {_cell(by)})" for by, tc, path in pending))
+            f"{_code(_tail(path, 120), in_table=False)} ({tc.tool}, {_cell(by, in_table=False)})"
+            for by, tc, path in pending))
     parts.append(_shell_writes(calls))
     return "\n\n".join(parts)
 
@@ -425,7 +439,8 @@ def _shell_write_rows(calls: list) -> list[tuple[str, ToolCall, list[str]]]:
 
 def _shell_writes(calls: list) -> str:
     rows = [
-        f"- **{_cell(by)}** · {_code(_command(tc), 160)} ({', '.join(reasons)})" + (" ❌ failed" if tc.is_error else "")
+        f"- **{_cell(by, in_table=False)}** · {_code(_command(tc), 160, in_table=False)} ({', '.join(reasons)})"
+        + (" ❌ failed" if tc.is_error else "")
         for by, tc, reasons in _shell_write_rows(calls)
     ]
     if not rows:
@@ -440,7 +455,8 @@ def _errors_list(calls: list) -> str:
     if not errors:
         return "**No tool call failed.**"
     return "\n".join(
-        f"- **{_cell(by)}** · {tc.tool} {_code(_subject(tc), 100)} → {_cell(_EXIT_CODE.sub('', tc.output_summary), 160)}"
+        f"- **{_cell(by, in_table=False)}** · {tc.tool} {_code(_subject(tc), 100, in_table=False)} "
+        f"→ {_cell(_EXIT_CODE.sub('', tc.output_summary), 160, in_table=False)}"
         for by, tc in errors
     )
 
@@ -504,17 +520,19 @@ def _tail(text: str, limit: int = 90) -> str:
     return text if len(text) <= limit else "…" + text[-(limit - 1):]
 
 
-def _cell(text: str, limit: int = 120) -> str:
+def _cell(text: str, limit: int = 120, in_table: bool = True) -> str:
     text = re.sub(r"\s+", " ", _CONTROL.sub("", str(text))).strip()
     if len(text) > limit:
         text = text[: limit - 1] + "…"
+    if not in_table:
+        return text  # outside a table `\|` is not an escape: the backslash would show
     # Every pipe, even one already behind a backslash: cmark-gfm reads `\\|` as an escaped pipe too, and it is
     # the only way `\|` in a command renders as it ran.
     return text.replace("|", "\\|")
 
 
-def _code(text: str, limit: int = 120) -> str:
-    cell = _cell(text, limit)
+def _code(text: str, limit: int = 120, in_table: bool = True) -> str:
+    cell = _cell(text, limit, in_table)
     if not cell:
         return cell
     # A code span needs a fence longer than any backtick run inside it.

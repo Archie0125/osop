@@ -673,3 +673,42 @@ def test_git_row_shows_the_git_command_not_the_start_of_the_script(tmp_path):
     row = _table(_section(receipt, "Git"))[2]
     assert "git commit -m 'fix: y'; git push -u origin fix-y" in row
     assert "python -m pytest" not in row
+
+
+# --- Codex review of PR #12: Git rows and text outside tables ---------------------------------------
+
+
+def test_git_global_options_do_not_hide_a_commit(tmp_path):
+    receipt = _receipt(_session(tmp_path, [
+        ("Bash", {"command": "git -c core.hooksPath=/dev/null commit -m fix"}, "[main abc1234] fix", False),
+        ("Bash", {"command": "git --no-pager -C repo push origin main"}, "main -> main", False),
+    ]))
+    git = _section(receipt, "Git")
+    assert "commit -m fix" in git and "push origin main" in git
+
+
+def test_git_merge_base_is_not_a_merge(tmp_path):
+    receipt = _receipt(_session(tmp_path, [
+        ("Bash", {"command": "git merge-base HEAD origin/main"}, "abc1234", False),
+        ("Bash", {"command": "git tag-list"}, "", False),
+    ]))
+    assert "## Git" not in receipt
+
+
+def test_quoted_git_text_is_not_shown_as_a_git_command(tmp_path):
+    receipt = _receipt(_session(tmp_path, [
+        ("Bash", {"command": 'git commit -m "fix" && echo "git push origin main"'}, "[main abc1234] fix", False),
+    ]))
+    row = _table(_section(receipt, "Git"))[2]
+    assert 'git commit -m "fix"' in row and "git push" not in row
+
+
+def test_text_outside_a_table_keeps_its_pipes_unescaped(tmp_path):
+    receipt = _receipt(_pending_session(tmp_path, "ls | head -n 1"))
+    assert "`ls | head -n 1`" in _section(receipt, "No result recorded")
+    receipt = _receipt(_session(tmp_path, [
+        ("Bash", {"command": "echo a | tee b.log"}, "a", False),
+        ("Bash", {"command": "cat x | grep y"}, "Exit code 1\nno y | here", True),
+    ]))
+    assert "`echo a | tee b.log`" in _section(receipt, "Files changed")
+    assert "`cat x | grep y` → no y | here" in _section(receipt, "Errors")

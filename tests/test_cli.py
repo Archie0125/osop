@@ -105,3 +105,12 @@ class TestBrief:
     def test_brief_and_stdout_are_exclusive(self, runner):
         result = runner.invoke(cli, ["log", str(MINIMAL_SESSION), "--stdout", "--brief"])
         assert result.exit_code != 0
+
+
+class TestReceiptsDir:
+    def test_project_is_the_last_segment_of_a_windows_or_posix_cwd(self, tmp_path, monkeypatch):
+        from osop.cli.main import _receipts_dir
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        for cwd in (r"C:\work\demo", "C:\\work\\demo\\", "/work/demo", "/work/demo/"):
+            assert _receipts_dir({"cwd": cwd}, Path("x/s.jsonl")).name == "demo", cwd
+        assert _receipts_dir({"cwd": ""}, Path("slug-dir/s.jsonl")).name == "slug-dir"

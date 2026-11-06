@@ -12,6 +12,10 @@ receipt could not be written. Silence would hide the failure.
 
 Claude Code writes the transcript file asynchronously, so the turn that just ended may not be in
 it yet when the hook runs. The receipt is still built from the file on disk, never from memory.
+
+It runs on every Stop, including one with stop_hook_active (Claude continued because another
+hook blocked an earlier stop): that continuation is work the receipt must cover. This hook never
+blocks, so there is no loop to guard against.
 """
 
 import json
@@ -21,13 +25,12 @@ import sys
 
 def main() -> int:
     try:
-        data = json.load(sys.stdin)
+        # Claude Code sends UTF-8; the console codec (cp950 on a zh-TW Windows) may not decode it.
+        data = json.loads(sys.stdin.buffer.read().decode("utf-8", "replace"))
     except ValueError:
         data = {}
     if not isinstance(data, dict):
         data = {}
-    if data.get("stop_hook_active"):
-        return 0  # already continuing because of a Stop hook: do not report twice
 
     transcript = data.get("transcript_path")
     if not transcript:
