@@ -21,13 +21,13 @@ _TEST_RUNNER = (
 # A runner only counts at the start of a shell command, optionally behind wrappers (sudo, timeout N),
 # VAR=x, a launcher (php, npx, python, `<interpreter> -m`) and a path. Run on code with quotes and
 # heredocs removed.
-_RUN_PREFIX = (
-    r"(?:^|[;&|(\n])\s*"
+_RUN_WRAPPERS = (
     r"(?:(?:sudo(?:\s+-\S+)*|time|nice|env|nohup|timeout\s+\S+)\s+)*"
     r"(?:[A-Za-z_]\w*=\S*\s+)*"
     r"(?:(?:php|npx|bunx|uv\s+run|poetry\s+run|python[\d.]*(?:\.exe)?|py)\s+|\S+\s+-m\s+)?"
     r"(?:\S*/)?"
 )
+_RUN_PREFIX = r"(?:^|[;&|(\n])\s*" + _RUN_WRAPPERS
 _TEST_COMMAND = re.compile(_RUN_PREFIX + rf"(?:{_TEST_RUNNER})\b")
 # Commands whose exit status backs a "lint / typecheck passes" or "build succeeds" claim.
 _LINT_RUNNER = (
@@ -396,10 +396,12 @@ def _judge(tc: ToolCall, code: str, m: re.Match, verb: str | None = None) -> tup
         return "pending", _status(tc)
     out = _CONTROL.sub("", tc.output)
     others = _other_runners(code, m)
-    alone = not others
+    mine = _tool(m)
+    # Another tool in the call could have printed the shared markers; the same tool twice could not.
+    alone = all(tool == mine for _, tool in others)
     # `ruff check .; npx tsc --noEmit`: two linters in one call, no marker can be told apart; only the exit
     # status counts. The same tool twice (`ruff check --fix .; ruff check src/`) still reads its own.
-    readable = not any(kind == verb and tool != _tool(m) for kind, tool in others)
+    readable = not any(kind == verb and tool != mine for kind, tool in others)
     fail = _last(_GIT_FAIL[verb], out) if readable and verb in _GIT_FAIL else None
     if fail is None and alone and verb in _SHARED_FAIL:
         fail = _last(_SHARED_FAIL[verb], out)
@@ -458,8 +460,11 @@ def _other_runners(code: str, m: re.Match) -> set[tuple[str, str]]:
 
 
 def _tool(m: re.Match) -> str:
-    """The runner's last word: `ruff`, `tsc`, `lint` for `npm run lint`."""
-    return re.search(r"[\w.-]+$", m.group(0).rstrip()).group(0).lower()
+    """The runner without its launcher, path or options: `black --check` and `prettier --check` are two
+    tools, `npx tsc` and `tsc` one, `npm run lint` and `npm run typecheck` two."""
+    rest = m.group(0).lstrip(";&|(\n \t")
+    rest = rest[re.match(_RUN_WRAPPERS, rest).end():]
+    return " ".join(word for word in rest.split() if not word.startswith("-")).lower()
 
 
 # What git prints when a verb worked, and when it did not. Read only when the exit status is hidden or shared.
@@ -501,7 +506,11 @@ _GIT_DONE.update({
     "build": re.compile(r"✓ built in|built in \d|Compiled successfully|compiled successfully|Build complete"
                         r"|Complete!|BUILD SUCCESS|Finished `?(?:dev|release)|✓ Compiled"),
     "lint": re.compile(r"All checks passed!|Success: no issues found|\[OK\] No errors|\b0 problems"
-                       r"|No lint errors|\(\d+ fixed, 0 remaining\)|\(0 errors?\b", re.M),
+                       r"|No lint errors|\(\d+ fixed, 0 remaining\)|\(0 errors?\b"
+                       # a formatter's all-clear summary line; "1 file would be reformatted, 12 files already
+                       # formatted" is not one
+                       r"|^\s*\d+ files? (?:already formatted|(?:would be )?left unchanged)\b"
+                       r"|use Prettier code style", re.M),
 })
 _GIT_PAST = {"push": "pushed", "commit": "committed", "merge": "merged", "rebase": "rebased", "cherry-pick": "picked",
              "build": "built", "lint": "clean"}

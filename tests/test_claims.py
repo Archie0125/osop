@@ -649,3 +649,45 @@ def test_a_format_check_that_would_reformat_is_a_lint_failure(tmp_path):
         ("Bash", {"command": "ruff check .; ruff format --check .; echo done"},
          "All checks passed!\n13 files already formatted\ndone", False)], "Lint passes."))
     assert "✅ backed" in claims
+
+
+# --- after Codex's seventh round (head 1fdb2bd2) ----------------------------------------------------
+
+
+def test_the_same_tool_twice_reads_the_shared_markers_too(tmp_path):
+    claims = _claims(_session(tmp_path, [
+        ("Bash", {"command": "cargo build; cargo build --release; echo done"},
+         "Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.12s\n"
+         "error[E0425]: cannot find value `DEBUG_ONLY` in this scope\ndone", False)], "Build succeeds."))
+    assert "❌ contradicted" in claims and "error[E0425]" in claims
+
+
+def test_black_and_prettier_are_two_tools_but_npx_tsc_and_tsc_are_one(tmp_path):
+    claims = _claims(_session(tmp_path, [
+        ("Bash", {"command": "black --check .; npx prettier --check .; echo done"},
+         "would reformat app.py\n1 file would be reformatted.\nChecking formatting...\n"
+         "All matched files use Prettier code style!\ndone", False)], "Lint passes."))
+    assert "⚠️ cannot tell" in claims
+    claims = _claims(_session(tmp_path, [
+        ("Bash", {"command": "npx tsc --noEmit; tsc -p tsconfig.build.json; echo done"},
+         "src/app.ts(3,7): error TS2322: Type 'string' is not assignable to type 'number'.\ndone", False)],
+        "Typecheck passes."))
+    assert "❌ contradicted" in claims
+
+
+def test_a_formatter_recheck_that_passes_clears_the_first_failure(tmp_path):
+    claims = _claims(_session(tmp_path, [
+        ("Bash", {"command": "ruff format --check .; ruff format .; ruff format --check .; echo done"},
+         "Would reformat: app.py\n1 file would be reformatted\n1 file reformatted\n1 file already formatted\ndone",
+         False)], "Lint passes."))
+    assert "✅ backed" in claims and "already formatted" in claims
+    claims = _claims(_session(tmp_path, [
+        ("Bash", {"command": "npx prettier --check .; echo done"},
+         "Checking formatting...\nAll matched files use Prettier code style!\ndone", False)], "Lint passes."))
+    assert "✅ backed" in claims
+
+
+def test_a_present_passive_with_an_adverb_behind_after_is_still_a_plan():
+    assert _kinds("After the branch is successfully merged into main, delete it.") == []
+    assert _kinds("After the PR gets merged into main, delete the branch.") == []
+    assert _kinds("After the branch was merged into main, I deleted it.") == ["merge"]
