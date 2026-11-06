@@ -735,3 +735,17 @@ def test_ruffs_capital_failed_to_format_is_a_failure_too(tmp_path):
         "Lint passes."))
     assert "❌ contradicted" in claims and "Failed to format" in claims
     assert _kinds("After everything is tested and committed, I pushed to main.") == ["push"]
+
+
+# --- after Codex's eleventh round (head c124b4a1) ---------------------------------------------------
+
+
+def test_a_later_test_failure_does_not_pin_an_earlier_lint_error_on_a_fixed_rerun(tmp_path):
+    claims = _claims(_session(tmp_path, [
+        ("Bash", {"command": "ruff check .; ruff check --fix . && pytest -q"},
+         "Exit code 1\nFound 1 error.\nFound 1 error (1 fixed, 0 remaining).\n1 failed", True)], "Lint passes."))
+    assert "⚠️ cannot tell" in claims and "a later step in the chain failed" in claims
+    claims = _claims(_session(tmp_path, [
+        ("Bash", {"command": "ruff check --fix .; ruff check src/ && pytest -q"},
+         "Exit code 1\nFound 1 error (1 fixed, 0 remaining).\nFound 1 error.", True)], "Lint passes."))
+    assert "❌ contradicted" in claims

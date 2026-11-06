@@ -413,11 +413,10 @@ def _judge(tc: ToolCall, code: str, m: re.Match, verb: str | None = None) -> tup
     # per command, so the later block decides (`! [rejected]`, a rebase, then `main -> main` is a push); a
     # linter or build tool prints its errors before its summary, so which run printed what is unknown.
     if fail and done and done.start() > fail.start() and _ran_again(code, m, verb, mine, others):
-        if verb not in ("lint", "build"):
-            fail = None
-        elif not tc.is_error:
+        if verb in ("lint", "build") and not tc.is_error:
             return "unclear", (f"⚠️ exit 0, but the tool ran more than once and the output shows both "
                                f"{_code(fail.group(0), 40)} and {_code(done.group(0).strip(), 40)}")
+        fail = None  # git: the later block decides; lint / build at exit≠0: the chain rule says what failed
     chained = _chained(code, m)
     if tc.is_error:
         if fail:
