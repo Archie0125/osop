@@ -599,7 +599,7 @@ def test_the_same_linter_twice_in_one_call_still_reads_its_own_markers(tmp_path)
     claims = _claims(_session(tmp_path, [
         ("Bash", {"command": "ruff check src/; ruff check --fix .; echo done"},
          "Found 1 error.\nFound 1 error (1 fixed, 0 remaining).\ndone", False)], "Lint passes."))
-    assert "✅ backed" in claims
+    assert "⚠️ cannot tell" in claims and "ran more than once" in claims
     claims = _claims(_session(tmp_path, [
         ("Bash", {"command": "npm run lint; npm run typecheck; echo done"},
          "✔ 0 problems\nsrc/app.ts(3,7): error TS2322: Type 'string'\ndone", False)], "Typecheck passes."))
@@ -675,12 +675,17 @@ def test_black_and_prettier_are_two_tools_but_npx_tsc_and_tsc_are_one(tmp_path):
     assert "❌ contradicted" in claims
 
 
-def test_a_formatter_recheck_that_passes_clears_the_first_failure(tmp_path):
+def test_a_formatter_recheck_after_a_failure_cannot_be_told_from_a_failing_recheck(tmp_path):
     claims = _claims(_session(tmp_path, [
         ("Bash", {"command": "ruff format --check .; ruff format .; ruff format --check .; echo done"},
          "Would reformat: app.py\n1 file would be reformatted\n1 file reformatted\n1 file already formatted\ndone",
          False)], "Lint passes."))
-    assert "✅ backed" in claims and "already formatted" in claims
+    assert "⚠️ cannot tell" in claims and "already formatted" in claims and "would be reformatted" in claims
+    claims = _claims(_session(tmp_path, [
+        ("Bash", {"command": "ruff format --check clean.py; ruff format --check .; echo done"},
+         "1 file already formatted\nerror: Failed to format broken.py: source contains syntax errors\n"
+         "1 file already formatted\ndone", False)], "Lint passes."))
+    assert "⚠️ cannot tell" in claims and "✅" not in claims
     claims = _claims(_session(tmp_path, [
         ("Bash", {"command": "npx prettier --check .; echo done"},
          "Checking formatting...\nAll matched files use Prettier code style!\ndone", False)], "Lint passes."))

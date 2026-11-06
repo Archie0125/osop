@@ -408,11 +408,16 @@ def _judge(tc: ToolCall, code: str, m: re.Match, verb: str | None = None) -> tup
     done = _last(_GIT_DONE[verb], out) if readable and verb in _GIT_DONE else None
     if done is None and alone and verb in _SHARED_DONE:
         done = _last(_SHARED_DONE[verb], out)
-    # The later of a failure and a success marker decides only when the tool ran more than once in the call
-    # (`git push; git pull --rebase; git push`, `ruff format --check .; ruff format .; ruff format --check .`).
-    # A single run that printed both ("error: Failed to format app.py", then "1 file already formatted") failed.
+    # A single run that printed a failure and then a success marker ("error: Failed to format app.py", then
+    # "1 file already formatted") failed. When the tool ran more than once in the call, git prints one block
+    # per command, so the later block decides (`! [rejected]`, a rebase, then `main -> main` is a push); a
+    # linter or build tool prints its errors before its summary, so which run printed what is unknown.
     if fail and done and done.start() > fail.start() and _ran_again(code, m, verb, mine, others):
-        fail = None
+        if verb not in ("lint", "build"):
+            fail = None
+        elif not tc.is_error:
+            return "unclear", (f"⚠️ exit 0, but the tool ran more than once and the output shows both "
+                               f"{_code(fail.group(0), 40)} and {_code(done.group(0).strip(), 40)}")
     chained = _chained(code, m)
     if tc.is_error:
         if fail:
