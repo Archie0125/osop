@@ -741,3 +741,21 @@ def test_git_cell_does_not_cut_a_quoted_redirection(tmp_path):
 
 def test_git_cell_stops_before_a_heredoc_body(tmp_path):
     assert _git_cell(tmp_path, "git commit -F - <<EOF\ngit push origin main\nEOF") == "`git commit -F -`"
+
+
+def test_git_cell_inside_bash_c_keeps_its_quotes(tmp_path):
+    assert _git_cell(tmp_path, """bash -c 'git -C "my repo" push origin main'""") == '`git -C "my repo" push origin main`'
+
+
+def test_git_cell_inside_a_substitution_has_no_closing_paren(tmp_path):
+    assert _git_cell(tmp_path, "echo $(git push origin main)") == "`git push origin main`"
+
+
+def test_git_status_hidden_by_what_follows_is_not_exit_0(tmp_path):
+    def result(command: str) -> str:
+        receipt = _receipt(_session(tmp_path, [("Bash", {"command": command}, "rejected", False)]))
+        return _table(_section(receipt, "Git"))[2].split(" | ")[2]
+    assert result("git push 2>&1 | tail -3") == "⚠️ exit 0, but a pipe after it hides its exit status"
+    assert result("git commit -m x; git log -1") == "⚠️ exit 0, but `;` after it hides its exit status"
+    assert result("git commit -m x && git push") == "exit 0"
+    assert result("set -o pipefail; git push 2>&1 | tail -3") == "exit 0"

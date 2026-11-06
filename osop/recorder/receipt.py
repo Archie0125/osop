@@ -83,7 +83,7 @@ _GIT_VERB = (
     r"|--[\w-]+(?:=\S*)?\s+)*(?:commit|push|merge|rebase|cherry-pick|tag)(?![\w-])"
     r"|gh\s+pr\s+(?:create|merge|close)(?![\w-]))")
 _GIT_STATE = re.compile(_COMMAND_START + _GIT_VERB)
-_GIT_SEGMENT = re.compile(_COMMAND_START + "(" + _GIT_VERB + r"[^;&|\n]*)")
+_GIT_SEGMENT = re.compile(_COMMAND_START + "(" + _GIT_VERB + r"[^;&|\n)]*)")
 _FILE_TOOLS = ("Edit", "MultiEdit", "Write", "NotebookEdit")
 _MAIN = "main"
 
@@ -281,9 +281,13 @@ def _governs(code: str, switch_pos: int, pipe_pos: int) -> bool:
     return not any(open_groups)
 
 
-def _unwrap_shell_c(command: str) -> str:
+def _unwrap_shell_c(command: str, blank: bool = True) -> str:
     """`bash -c '<script>'` becomes a marked group `( <script> )`: the test inside is seen, an operator after the
-    closing quote applies to the whole script, and the mark records where a new shell started (see _governs)."""
+    closing quote applies to the whole script, and the mark records where a new shell started (see _governs).
+
+    With `blank`, the script's quotes and comments are blanked and its `-o pipefail` is written in, for analysis.
+    Without, the script is spliced in as written, for display.
+    """
     command = command.replace(_NEW_SHELL, "")
     pos = 0
     for _ in range(100):  # each pass unwraps one `bash -c`; the bound only stops a pathological command
@@ -306,11 +310,11 @@ def _unwrap_shell_c(command: str) -> str:
                 break
             inner, end = word.group(0), m.end() + word.end()
         # Nested shells are unwrapped first; then the script's own quotes and comments end with the script.
-        inner = _unwrap_shell_c(inner)
+        inner = _unwrap_shell_c(inner, blank)
         pipefail = re.findall(r"(?:^|\s)([-+])[A-Za-z]*o\s+pipefail\b", options)
-        if pipefail and pipefail[-1] == "-":  # a later `+o pipefail` turns it off again
+        if blank and pipefail and pipefail[-1] == "-":  # a later `+o pipefail` turns it off again
             inner = "set -o pipefail; " + inner
-        head = f"{command[:m.end(1)]} {_NEW_SHELL}( {_shell_code(inner)} ) "
+        head = f"{command[:m.end(1)]} {_NEW_SHELL}( {_shell_code(inner) if blank else inner} ) "
         command = head + command[end:]
         pos = len(head)
     return command
@@ -365,12 +369,20 @@ def _git_table(calls: list) -> str:
     """Commands whose result backs or contradicts a "committed / pushed / merged" claim."""
     rows = []
     for by, tc in calls:
-        if tc.tool != "Bash" or not _GIT_STATE.search(_shell_code(_unwrap_shell_c(_command(tc)))):
+        if tc.tool != "Bash":
             continue
-        # Show the git part, not the start of a long script; the result is still that of the whole call.
-        # Unwrapped first, so a push inside `bash -c '…'` is shown too (the marker is a control char, stripped).
-        segments = _git_segments(_unwrap_shell_c(_command(tc)))
-        rows.append(f"| {_cell(by)} | {_code('; '.join(segments) or _command(tc))} | {_status(tc)} "
+        code = _shell_code(_unwrap_shell_c(_command(tc)))
+        m = _GIT_STATE.search(code)
+        if not m:
+            continue
+        # Show the git part, not the start of a long script. Unwrapped as written, so a push inside
+        # `bash -c '…'` is shown with its quotes (the marker is a control char, stripped by _cell).
+        segments = _git_segments(_unwrap_shell_c(_command(tc), blank=False))
+        # The call's exit status is only this command's when nothing after it can replace it (same rule as tests).
+        judged = tc.status == "COMPLETED" and not tc.is_error and not tc.input.get("run_in_background")
+        hidden = _hidden_status(code, m.end()) if judged else None
+        result = f"⚠️ exit 0, but {hidden} after it hides its exit status" if hidden else _status(tc)
+        rows.append(f"| {_cell(by)} | {_code('; '.join(segments) or _command(tc))} | {_cell(result, 200)} "
                     f"| {_cell(_tail(_EXIT_CODE.sub('', tc.output_summary).strip(), 90), 90)} |")
     if not rows:
         return ""
