@@ -172,6 +172,7 @@ def _collect(parsed: dict) -> tuple[dict[str, str], list, list, str]:
     tests = [
         (by, tc, code, m) for by, tc in calls if tc.tool == "Bash"
         and (m := _TEST_COMMAND.search(code := _shell_code(_unwrap_shell_c(_command(tc)))))
+        and not _version_query(code, m)
     ]
     goal = next((n.user_prompt for n in parsed["nodes"] if n.user_prompt), "") or ""
     return labels, calls, tests, goal
@@ -289,7 +290,7 @@ def _edits_after(parsed: dict, calls: list, started_at: str) -> str:
 
 _SOURCE_FILE = re.compile(
     r"\.(?:py|php|js|mjs|cjs|ts|tsx|jsx|vue|svelte|css|scss|sass|less|go|rs|java|kt|rb|c|cc|cpp|h|hpp|cs|swift"
-    r"|dart|ex|exs|sql|html|twig|json|ya?ml|toml|ini|env)$", re.I)
+    r"|dart|ex|exs|sql|html|twig|json|ya?ml|toml|ini|env|sh|bash|zsh|bats)$", re.I)
 
 
 def _norm_path(path: str) -> str:
@@ -303,29 +304,38 @@ def _matching_calls(calls: list, pattern: re.Pattern) -> list[tuple[ToolCall, st
         if tc.tool == "Bash":
             code = _shell_code(_unwrap_shell_c(_command(tc)))
             m = pattern.search(code)
-            if m:
+            if m and not _version_query(code, m):
                 found.append((tc, code, m))
     return found
 
 
+def _version_query(code: str, m: re.Match) -> bool:
+    """`ruff --version`, `phpunit --help`: the tool ran, but checked nothing."""
+    return re.match(r"\s+(?:--version|-V|--help|-h)(?=\s|$)", code[m.end():]) is not None
+
+
 def _git_calls(calls: list, verb: str) -> list[tuple[ToolCall, str, re.Match]]:
-    """Calls that run `git <verb>` (or `gh pr merge` for merge), with the match of that verb."""
+    """Calls that run `git <verb>` (or `gh pr merge` for merge), with the last match of that verb in the
+    call: `git push; git pull --rebase; git push` is judged by the second push."""
     found = []
     for _, tc in calls:
         if tc.tool != "Bash":
             continue
         code = _shell_code(_unwrap_shell_c(_command(tc)))
+        last = None
         for m in _GIT_STATE.finditer(code):
             if _verb(m) == verb and not _only_pretends(m, code):
-                found.append((tc, code, m))
-                break
+                last = m
+        if last is not None:
+            found.append((tc, code, last))
     return found
 
 
 def _only_pretends(m: re.Match, code: str) -> bool:
-    """`git push --dry-run` / `-n` pushes nothing; `gh pr merge --auto` asks for a merge later. Neither is the deed."""
+    """`git push --dry-run` / `-n` pushes nothing, `git merge --abort` undoes one, `gh pr merge --auto` asks
+    for a merge later. None is the deed."""
     options = re.split(r"[;&|\n]", code[m.end():], maxsplit=1)[0]
-    if re.search(r"(?<=\s)--dry-run\b", options):
+    if re.search(r"(?<=\s)--(?:dry-run|abort|quit)\b", options):
         return True
     if _verb(m) == "push" and re.search(r"(?<=\s)-[A-Za-z]*n[A-Za-z]*\b", options):
         return True
@@ -357,7 +367,8 @@ def _shown_segment(tc: ToolCall, kind: str, verb: str | None) -> str:
     command = _unwrap_shell_c(_command(tc), blank=False)
     if verb in _GIT_PAST and kind not in ("lint", "build"):
         segments = _git_segments(command)
-        return next((s for s in segments if re.search(rf"\b{verb}\b", s)), segments[0] if segments else command)
+        return next((s for s in reversed(segments) if re.search(rf"\b{verb}\b", s)),
+                    segments[0] if segments else command)
     m = (_LINT_COMMAND if kind == "lint" else _BUILD_COMMAND).search(command)
     if not m:
         return command
@@ -377,6 +388,8 @@ def _judge(tc: ToolCall, code: str, m: re.Match, verb: str | None = None) -> tup
         return "pending", _status(tc)
     out = _CONTROL.sub("", tc.output)
     fail = _GIT_FAIL[verb].search(out) if verb in _GIT_FAIL else None
+    if fail is None and verb in _SHARED_FAIL and not _shares_output(code, m):
+        fail = _SHARED_FAIL[verb].search(out)
     done = _GIT_DONE[verb].search(out) if verb in _GIT_DONE else None
     chained = _chained(code, m)
     if tc.is_error:
@@ -412,6 +425,12 @@ def _chained(code: str, m: re.Match) -> str | None:
     return "an earlier" if before else "a later" if after else None
 
 
+def _shares_output(code: str, m: re.Match) -> bool:
+    """Whether another test, lint or build runner in the same call could have printed the markers."""
+    return any(o.start() != m.start()
+               for pattern in (_TEST_COMMAND, _LINT_COMMAND, _BUILD_COMMAND) for o in pattern.finditer(code))
+
+
 # What git prints when a verb worked, and when it did not. Read only when the exit status is hidden or shared.
 _GIT_DONE = {
     "push": re.compile(r"^\s*(?:[0-9a-f]+\.\.+[0-9a-f]+|\* \[new (?:branch|tag)\]|\+ [0-9a-f]+\.\.\.[0-9a-f]+)"
@@ -430,15 +449,23 @@ _GIT_FAIL = {
     "rebase": re.compile(r"CONFLICT|could not apply|fatal:|error:"),
     "cherry-pick": re.compile(r"CONFLICT|could not apply|fatal:|error:"),
     # Build and lint tools print little on success and a lot on failure; both are read the same way.
-    "build": re.compile(r"npm ERR!|ELIFECYCLE|error TS\d+|Build failed|build failed|Failed to compile|failed to compile"
-                        r"|✘ \[ERROR\]|\berror\[E\d+\]|BUILD FAILURE|compilation failed|Error: ", re.I),
-    "lint": re.compile(r"Found \d+ errors?|\d+ problems? \(|error TS\d+|\[ERROR\]|\berror\[E\d+\]|FAIL\b|✖|✘"),
+    "build": re.compile(r"error TS\d+|Build failed|build failed|Failed to compile|failed to compile"
+                        r"|✘ \[ERROR\]|\berror\[E\d+\]|BUILD FAILURE|compilation failed", re.I),
+    # `ruff check --fix` reports "Found 2 errors (2 fixed, 0 remaining)." and exits 0.
+    "lint": re.compile(r"Found \d+ errors?(?! \(\d+ fixed, 0 remaining\))|\d+ problems? \(|error TS\d+"
+                       r"|\berror\[E\d+\]"),
+}
+# Markers a test runner in the same call could have printed just as well (`ruff check . && npm test`): read
+# only when the build or lint tool is the only runner in the call.
+_SHARED_FAIL = {
+    "build": re.compile(r"npm ERR!|ELIFECYCLE|Error: ", re.I),
+    "lint": re.compile(r"\[ERROR\]|FAIL\b|✖|✘"),
 }
 _GIT_DONE.update({
     "build": re.compile(r"✓ built in|built in \d|Compiled successfully|compiled successfully|Build complete"
                         r"|Complete!|BUILD SUCCESS|Finished `?(?:dev|release)|✓ Compiled"),
     "lint": re.compile(r"All checks passed!|Success: no issues found|\[OK\] No errors|^\s*PASS\b|0 problems"
-                       r"|No lint errors", re.M),
+                       r"|No lint errors|\(\d+ fixed, 0 remaining\)", re.M),
 })
 _GIT_PAST = {"push": "pushed", "commit": "committed", "merge": "merged", "rebase": "rebased", "cherry-pick": "picked",
              "build": "built", "lint": "clean"}

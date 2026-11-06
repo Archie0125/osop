@@ -323,3 +323,83 @@ def test_english_negation_only_counts_before_the_claim():
 
 def test_markdown_list_labels_are_quoted_cleanly():
     assert [c.quote for c in find_claims("- **Tests**: all tests pass")] == ["Tests: all tests pass"]
+
+
+# --- after Codex's review of 707ac287 ---------------------------------------------------------------
+
+
+def test_negation_inside_the_claim_is_a_negation():
+    assert _kinds("Tests did not pass.") == []
+    assert _kinds("The tests don't pass yet.") == []
+    assert _kinds("ruff did not pass, 3 errors remain") == []
+    assert _kinds("tests no longer pass") == []
+    assert _kinds("Tests pass now.") == ["tests"]
+
+
+def test_a_question_mark_ends_a_question_but_a_query_string_does_not():
+    assert _kinds("Did the tests pass?") == []
+    assert _kinds("Tests pass? Not sure.") == []
+    assert _kinds("Tests pass? (checked twice)") == []
+    assert _kinds("全套 3,330 綠、prod 上 contact-page.js 已是新版（?v= 已換）、/contact 200") == ["tests"]
+
+
+def test_after_or_before_ahead_of_the_claim_is_a_plan_but_behind_it_is_the_story():
+    assert _kinds("All tests passed after fixing the bug.") == ["tests"]
+    assert _kinds("I pushed after rebasing on main.") == ["push"]
+    assert _kinds("After the tests pass, push it.") == []
+    assert _kinds("Before pushing, make sure the tests pass.") == []
+
+
+def test_a_test_failure_later_in_the_chain_is_not_the_lints(tmp_path):
+    claims = _claims(_session(tmp_path, [
+        ("Bash", {"command": "ruff check . && npm test"},
+         "Exit code 1\nAll checks passed!\nFAIL src/app.test.ts\nTests: 1 failed", True)], "Lint passes."))
+    assert "⚠️ cannot tell" in claims and "a later step in the chain failed" in claims
+    claims = _claims(_session(tmp_path, [
+        ("Bash", {"command": "ruff check . && npm test"}, "Exit code 1\nFound 2 errors.", True)], "Lint passes."))
+    assert "❌ contradicted" in claims
+    claims = _claims(_session(tmp_path, [
+        ("Bash", {"command": "npm run lint"}, "Exit code 1\nFAIL src/app.ts", True)], "Lint passes."))
+    assert "❌ contradicted" in claims
+
+
+def test_the_last_push_in_a_call_is_the_one_judged(tmp_path):
+    out = "! [rejected] main -> main (fetch first)\nSuccessfully rebased\n   abc1234..def5678  main -> main"
+    claims = _claims(_session(tmp_path, [
+        ("Bash", {"command": "git push origin main; git pull --rebase; git push origin main"}, out, False)],
+        "Pushed to origin/main."))
+    assert "✅ backed" in claims and "exit 0" in claims and "rebase" not in claims.split("→")[-1]
+
+
+def test_aborting_a_merge_is_not_a_merge(tmp_path):
+    claims = _claims(_session(tmp_path, [("Bash", {"command": "git merge --abort"}, "", False)], "PR #13 is merged."))
+    assert "❓ no evidence" in claims
+
+
+def test_a_version_query_is_neither_a_lint_nor_a_test_run(tmp_path):
+    claims = _claims(_session(tmp_path, [
+        ("Bash", {"command": "ruff check ."}, "Exit code 1\nFound 1 error.", True),
+        ("Bash", {"command": "ruff --version"}, "ruff 0.8.0", False),
+    ], "Lint passes."))
+    assert "❌ contradicted" in claims and "--version" not in claims
+    path = _session(tmp_path, [("Bash", {"command": "php vendor/bin/phpunit --version"}, "PHPUnit 11.0", False)], "ok")
+    assert "tests: none ran" in render_brief(parse_transcript(path), "r.md")
+
+
+def test_ruff_fix_with_nothing_remaining_is_not_a_failure(tmp_path):
+    claims = _claims(_session(tmp_path, [
+        ("Bash", {"command": "ruff check --fix .; echo done"}, "Found 1 error (1 fixed, 0 remaining).\ndone", False)],
+        "Lint passes."))
+    assert "✅ backed" in claims and "0 remaining" in claims
+    claims = _claims(_session(tmp_path, [
+        ("Bash", {"command": "ruff check --fix .; echo done"}, "Found 3 errors (1 fixed, 2 remaining).\ndone", False)],
+        "Lint passes."))
+    assert "❌ contradicted" in claims
+
+
+def test_a_shell_script_under_the_project_is_source_too(tmp_path):
+    claims = _claims(_session(tmp_path, [
+        ("Bash", {"command": "bats test.bats"}, "1..1\nok 1 script works", False),
+        ("Edit", {"file_path": "/work/demo/bin/run.sh", "old_string": "a", "new_string": "b"}, "ok", False),
+    ], "Tests pass."))
+    assert "⚠️ cannot tell" in claims and "run.sh" in claims
