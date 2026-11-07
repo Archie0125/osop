@@ -54,6 +54,9 @@ def test_a_piped_runner_gets_pipefail(command):
         "npm test 2>&1 | sed -n '1,/summary/{p;q}'",
         "npm test 2>&1 | sed 20q",
         "npm test 2>&1 | awk '/FAIL/{print; exit}'",
+        'pytest | while read l; do echo "$l"; break; done',  # the loop body is split off by `;` (verifier's note)
+        "pytest | while read l; do echo \"$l\"; done",  # reads everything, but a loop is not inspected
+        "pytest 2>&1 | read first",
         "set -o pipefail; pytest | tail -3",  # already set
         "set -eo pipefail\npytest | tail -3",
         "set +o pipefail; pytest | tail -3",  # turned off on purpose

@@ -3,8 +3,8 @@
 
 `pytest 2>&1 | tail -20` exits with tail's status, so a failing run looks like a success to the agent and the
 transcript keeps no exit status for the receipt. With pipefail the pipeline fails when the runner fails.
-A runner piped into a reader that stops early (head, grep -q/-m/-l, sed … q, awk … exit) is left alone:
-it would die of a broken pipe, and pipefail would turn a passing run into a failure.
+A runner piped into a reader that stops early (head, read, a shell loop, grep -q/-m/-l, sed … q, awk … exit)
+is left alone: it would die of a broken pipe, and pipefail would turn a passing run into a failure.
 
 The package does not install this. Wiring it in changes settings.json, so that is the owner's call. To use
 it, add under "hooks" → "PreToolUse" (with a python that has osop installed):

@@ -23,9 +23,9 @@ def with_pipefail(command: str) -> str | None:
     """The command behind `set -o pipefail; `, or None when it should run as written.
 
     None when no runner is piped, when the command already sets or unsets pipefail (the agent is handling it),
-    and when a runner is piped into a reader that stops before the end of its input (head, grep -q/-m/-l,
-    sed … q, awk … exit): the runner then dies of a broken pipe (Python exits 120 on Windows, node with
-    EPIPE), and pipefail would turn a passing run into a failed one.
+    and when a runner is piped into a reader that stops before the end of its input (head, read, a shell
+    loop, grep -q/-m/-l, sed … q, awk … exit): the runner then dies of a broken pipe (Python exits 120 on
+    Windows, node with EPIPE), and pipefail would turn a passing run into a failed one.
     """
     masked = _mask(command)
     if _PIPEFAIL.search(masked):
@@ -67,12 +67,12 @@ def _stops_early(masked_segment: str, raw_segment: str) -> bool:
     body = _LEADING.sub("", masked_segment, count=1)
     words = body.split()
     tool = re.sub(r".*/", "", words[0]) if words else ""
-    if tool == "head":
-        return True
+    if tool in ("head", "read", "while", "until"):
+        return True  # a loop's body is cut off at its `;`, so its `break` cannot be seen: every loop counts
     if tool in ("grep", "egrep", "fgrep", "rg", "ag"):
         return bool(_GREP_STOPS.search(body))
     if tool in ("sed", "gsed"):
         return bool(_SED_QUITS.search(raw_segment))  # the script is quoted, so the raw text is needed
-    if tool in ("awk", "gawk", "mawk", "nawk", "perl", "while"):
+    if tool in ("awk", "gawk", "mawk", "nawk", "perl"):
         return bool(_SCRIPT_EXITS.search(raw_segment))
     return False
