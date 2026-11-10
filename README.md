@@ -33,7 +33,7 @@ Receipts live under `~/.osop/receipts/`, never in the repo the agent worked on.
 - **Tests**: every test run and its result, read from the exit status the tool reported and the whole output. `🟡 probably passed` means the output shows tests passing and no failure, but a pipe, `;` or `&` after the test command hid its exit status (`pytest | tail` reports `tail`'s exit code). `⚠️ unclear` means the status was hidden and the output does not settle it
 - **Files changed**: files edited with Edit / MultiEdit / Write, plus shell commands that may have changed files (`>`, `tee`, `sed -i`, `mv`…). An edit with no result recorded is not counted
 - **Errors**: every tool call that failed
-- **No result recorded**: calls that never got a result or were started in the background, so there is nothing to judge
+- **No result recorded**: calls that never got a result, or were started in the background and no completion notice has arrived yet, so there is nothing to judge. When the notice arrives, its exit status counts, and what the command printed is read from the output file Claude Code names in it (the transcript never holds it); the receipt says so, and says when that file could not be read (Claude Code deletes old ones after about a week)
 - **Git**: every `git commit` / `push` / `merge` and `gh pr merge`, with its result: what backs a "committed and pushed"
 - **Sub-agents**, **Commands**: who ran what; the complete command table sits in a collapsed block
 

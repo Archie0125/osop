@@ -13,6 +13,7 @@ Phase segmentation:
 
 from __future__ import annotations
 
+import html
 import json
 import re
 from collections.abc import Iterable
@@ -40,6 +41,8 @@ class ToolCall:
     is_error: bool
     sub_transcript_id: str | None = None  # for Agent tool dispatch
     output: str = ""  # full result text; verdicts read this, never the truncated summary
+    # A background command: "" until its completion notice arrives, then "read" or "unread" (its output file).
+    background: str = ""
 
 
 @dataclass
@@ -185,6 +188,62 @@ def _output_text(content: Any) -> str:
     return re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", "", text)  # binary noise, e.g. crash dumps
 
 
+_NOTICE = re.compile(r"<task-notification>(.*?)</task-notification>", re.S)
+# The description in `Background command "<description>" completed (exit code 0)` is the agent's own text,
+# so the status is read from the end.
+_NOTICE_EXIT = re.compile(r"(?:completed \(exit code (\d+)\)|failed with exit code (\d+))\s*$")
+_OUTPUT_FILE_LIMIT = 20_000_000  # bytes; a bigger output file is not read rather than read in part
+
+
+def _notice_tag(block: str, name: str) -> str:
+    m = re.search(rf"<{name}>(.*?)</{name}>", block, re.S)
+    return html.unescape(m.group(1).strip()) if m else ""
+
+
+def _apply_notices(event: dict, background: dict[str, ToolCall], ts: str) -> None:
+    """Give a background command its result when its completion notice arrives.
+
+    The notice carries the exit status of the whole command. What the command printed never enters the
+    transcript: Claude Code writes it to the output file the notice names, and the agent's own
+    `echo "exit=$?"` after the test lands there too. A notice without an exit status (a progress report,
+    "didn't finish before the previous session ended") leaves the call unfinished.
+
+    A notice comes as a user event, or, when it arrives while the agent is still working, as a queued_command
+    attachment. A sub-agent gets its notices in a user event marked isMeta, so isMeta does not rule one out.
+    """
+    if event.get("type") == "attachment":
+        queued = event.get("attachment")
+        if not (isinstance(queued, dict) and queued.get("type") == "queued_command"):
+            return
+        origin, content = queued.get("origin"), queued.get("prompt")
+    else:
+        origin, content = event.get("origin"), _message(event).get("content")
+    # Only Claude Code's own notice counts: notice text in a tool result, a skill body or a pasted prompt is not one.
+    if not (isinstance(origin, dict) and origin.get("kind") == "task-notification" and isinstance(content, str)):
+        return
+    for block in _NOTICE.findall(content):
+        tc = background.get(_notice_tag(block, "tool-use-id"))
+        status, m = _notice_tag(block, "status"), _NOTICE_EXIT.search(_notice_tag(block, "summary"))
+        if tc is None or (not m and status != "killed"):
+            continue
+        code = int(m.group(1) or m.group(2)) if m else None  # killed: no exit status
+        del background[_notice_tag(block, "tool-use-id")]
+        printed, tc.background = "", "unread"
+        name = _notice_tag(block, "output-file")
+        try:
+            if name and Path(name).stat().st_size <= _OUTPUT_FILE_LIMIT:
+                printed = _output_text(Path(name).read_text(encoding="utf-8", errors="replace"))
+                tc.background = "read"
+        except (OSError, ValueError):
+            pass
+        tc.output = (f"Exit code {code}\n" if code else "") + printed
+        tc.output_summary = _summarize_output(tc.output)
+        tc.is_error = code != 0
+        tc.status = "FAILED" if tc.is_error else "COMPLETED"
+        tc.ended_at = ts
+        tc.duration_ms = _ms_between(tc.started_at, ts)
+
+
 def _summarize_output(text: str, limit: int = 400) -> str:
     """Compact one-line summary of a tool result, for display only."""
     text = re.sub(r"\s+", " ", text).strip()
@@ -314,6 +373,8 @@ def parse_transcript(path: Path, subagent_root: Path | None = None, _state: _Par
     # Calls still waiting for a result, by tool_use id. A result can arrive after the user has
     # already typed the next prompt, so results are matched across phases, not only the current one.
     pending: dict[str, ToolCall] = {}
+    # Background commands, by tool_use id, until their completion notice arrives.
+    background: dict[str, ToolCall] = {}
     phase_counter = 0
     agent_counter = 0
     # The agent's final message: its text since the last user event (a prompt or a tool result).
@@ -367,14 +428,15 @@ def parse_transcript(path: Path, subagent_root: Path | None = None, _state: _Par
             else:
                 for tr in _extract_tool_results(ev):
                     tc = pending.pop(_id(tr.get("tool_use_id")), None)
-                    if tc is None:
-                        continue
+                    if tc is None or tc.background:
+                        continue  # a launch reply written after the completion notice must not undo its result
                     tc.ended_at = ts
                     tc.duration_ms = _ms_between(tc.started_at, ts)
                     tc.output = _output_text(tr.get("content"))
                     tc.output_summary = _summarize_output(tc.output)
                     tc.is_error = bool(tr.get("is_error"))
                     tc.status = "FAILED" if tc.is_error else "COMPLETED"
+                _apply_notices(ev, background, ts)
 
         elif ev_type == "assistant":
             if current is None:
@@ -423,8 +485,14 @@ def parse_transcript(path: Path, subagent_root: Path | None = None, _state: _Par
                 current.tool_calls.append(tc)
                 if tid:
                     pending[tid] = tc
+                    if inp.get("run_in_background"):
+                        background[tid] = tc
 
-        # attachment / permission-mode / system events: ignored for node graph
+        # A completion notice queued while the agent works. It is not a user turn, so the final message goes on.
+        elif ev_type == "attachment":
+            _apply_notices(ev, background, ts)
+
+        # permission-mode / system events: ignored for node graph
         else:
             continue
 
