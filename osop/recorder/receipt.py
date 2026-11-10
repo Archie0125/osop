@@ -276,7 +276,7 @@ def _tests_evidence(parsed: dict, calls: list, tests: list) -> tuple[str, str]:
         return _NO_EVIDENCE, "no test command ran"
     by, tc, code, m = max(tests, key=lambda t: t[1].started_at)
     verdict = _test_verdict(tc, code, m)
-    where = f"last test run {_code(_command(tc), 80)} at {_clock(tc.started_at)}"
+    where = f"last test run {_code(_command(tc), 80)} at {_clock(tc.started_at)}{_background_note(tc)}"
     if verdict.startswith("❌"):
         return _CONTRADICTED, f"{where} → {verdict}"
     if not verdict.startswith(("✅", "🟡")):
@@ -388,7 +388,8 @@ def _command_evidence(found: list, kind: str) -> tuple[str, str]:
     tc, code, m = max(found, key=lambda f: f[0].started_at)
     verb = _verb(m) if kind in ("commit", "push", "merge") else kind
     outcome, text = _judge(tc, code, m, verb)
-    where = f"last {_code(_shown_segment(tc, kind, verb), 80)} at {_clock(tc.started_at)} → {text}"
+    shown = _code(_shown_segment(tc, kind, verb), 80)
+    where = f"last {shown} at {_clock(tc.started_at)}{_background_note(tc)} → {text}"
     if outcome in ("ok", "probably"):
         return _BACKED, where
     if outcome == "failed":
@@ -485,7 +486,7 @@ def _judge(tc: ToolCall, code: str, m: re.Match, verb: str | None = None) -> tup
             # `gh pr merge --delete-branch`: "Squashed and merged", then "fatal:" about the branch, exit 1.
             return "unclear", f"⚠️ {_exit_text(tc)}, but output shows {_code(done.group(0).strip(), 60)}"
         return "failed", _failed(tc)
-    if tc.input.get("run_in_background"):
+    if _running(tc):
         return "pending", _status(tc)
     # A `\`-continued line and an opening `(` between the `||` and the command do not change that.
     before = re.sub(r"[\s(]+$", "", re.sub(r"\\\n", " ", code[:m.start() + 1]))
@@ -650,7 +651,7 @@ def _tests_table(tests: list) -> str:
     if not tests:
         return "**No test command ran.**"
     rows = [
-        f"| {_cell(by)} | {_code(_command(tc))} | {_cell(_test_verdict(tc, code, m), 200)} "
+        f"| {_cell(by)} | {_code(_command(tc))} | {_cell(_test_verdict(tc, code, m) + _background_note(tc), 260)} "
         f"| {_cell(_tail(tc.output_summary), 90)} |"
         for by, tc, code, m in tests
     ]
@@ -674,7 +675,7 @@ def _test_verdict(tc: ToolCall, code: str, match: re.Match) -> str:
         if before or after:
             return f"{_failed(tc)}: this test or {which} step in the chain failed"
         return _failed(tc)
-    if tc.input.get("run_in_background"):
+    if _running(tc):
         return "⏳ started in background; no exit status in the transcript"
     hidden = _hidden_status(code, match.end())
     if hidden is None:
@@ -871,7 +872,7 @@ def _unfinished(calls: list, tests: list) -> list:
     test_calls = {id(tc) for _, tc, _, _ in tests}
     return [
         (by, tc) for by, tc in calls
-        if (tc.status == "PENDING" or (tc.input.get("run_in_background") and not tc.is_error))
+        if (tc.status == "PENDING" or (_running(tc) and not tc.is_error))
         and id(tc) not in test_calls and tc.tool not in _FILE_TOOLS
     ]
 
@@ -1026,10 +1027,24 @@ def _status(tc: ToolCall) -> str:
         return "⏳ no result recorded"
     if tc.is_error:
         return _failed(tc)
-    if tc.input.get("run_in_background"):
+    if _running(tc):
         return "⏳ started in background"
     # No ✅ here: exit 0 is only what the tool reported; the Tests section judges test runs.
     return "exit 0"
+
+
+def _running(tc: ToolCall) -> bool:
+    """Started in the background and no completion notice has arrived: there is no exit status yet."""
+    return bool(tc.input.get("run_in_background")) and not tc.background
+
+
+def _background_note(tc: ToolCall) -> str:
+    """Where a background command's result came from: the transcript never holds what it printed."""
+    if tc.background == "read":
+        return " (ran in the background; output read from its task file)"
+    if tc.background == "unread":
+        return " (ran in the background; its output file could not be read)"
+    return ""
 
 
 def _failed(tc: ToolCall) -> str:
