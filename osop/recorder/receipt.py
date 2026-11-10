@@ -7,6 +7,7 @@ Nothing is taken from what the agent said about its own work.
 from __future__ import annotations
 
 import re
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from osop.recorder.claims import Claim, find_claims
@@ -230,7 +231,7 @@ def _claim_rows(parsed: dict, calls: list, tests: list) -> list[tuple[Claim, str
     """
     rows: list[tuple[Claim, str, str]] = []
     seen: set[str] = set()
-    for claim in find_claims(parsed.get("last_assistant_message") or ""):
+    for claim in find_claims(parsed.get("last_assistant_message") or "", _session_days(parsed)):
         if claim.kind in seen:
             continue
         seen.add(claim.kind)
@@ -243,6 +244,31 @@ def _claim_rows(parsed: dict, calls: list, tests: list) -> list[tuple[Claim, str
             verdict, evidence = _command_evidence(_git_calls(calls, claim.kind), claim.kind)
         rows.append((claim, verdict, evidence))
     return rows
+
+
+def _session_days(parsed: dict) -> set[str] | None:
+    """The ISO dates the session spans, in UTC and in this machine's local time; None when unknown.
+
+    A date in the final message that is none of them belongs to history, not to this session's work. Both
+    zones: agents write local dates, transcripts carry UTC timestamps, and the receipt is built on the
+    machine the session ran on. None (no usable timestamps) leaves dates unjudged rather than making every
+    dated sentence history.
+    """
+    stamps = [ts for ts in (parsed.get("started_at"), parsed.get("ended_at")) if isinstance(ts, str) and ts]
+    try:
+        bounds = [datetime.fromisoformat(ts.replace("Z", "+00:00")) for ts in stamps]
+        bounds = [b if b.tzinfo else b.replace(tzinfo=UTC) for b in bounds]  # a naive stamp is read as UTC
+        if not bounds or max(bounds) - min(bounds) > timedelta(days=400):
+            return None  # no session spans a year: the stamps are wrong, and a truncated set would judge wrongly
+        days: set[str] = set()
+        for zone in (UTC, None):  # None: the local time zone
+            day, last = min(bounds).astimezone(zone).date(), max(bounds).astimezone(zone).date()
+            while day <= last:
+                days.add(day.isoformat())
+                day += timedelta(days=1)
+        return days
+    except (ValueError, TypeError, OSError, OverflowError):  # pre-1970 on Windows raises OSError, 9999 Overflow
+        return None
 
 
 def _tests_evidence(parsed: dict, calls: list, tests: list) -> tuple[str, str]:

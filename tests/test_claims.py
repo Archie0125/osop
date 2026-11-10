@@ -49,6 +49,8 @@ def _kinds(text: str) -> list[str]:
     "All 3 tests pass.", "151 passed, exit 0.", "the suite is green: they all pass",
     "全套測試綠：2,783 通過、0 失敗、19 skipped", "相關測試 113 個全部通過，截圖也確認過了",
     "JS 224、PHP 63 passed", "測試 15 條綠", "單獨重跑那個檔是 45/45 全過",
+    "瀏覽器測試 19 項全過", "前端 38 個、worker（Python）23 個全過",
+    "已修正 migration。\n151 passed, exit 0.",  # "passed" is a test word: the migration before it does not matter
 ])
 def test_tests_pass_claims(text):
     assert _kinds(text) == ["tests"]
@@ -66,6 +68,50 @@ def test_tests_pass_claims(text):
 ])
 def test_other_claims(text, kind):
     assert kind in _kinds(text), text
+
+
+@pytest.mark.parametrize("text, kind", [
+    ("那個分支對應 PR #3，2026-04-16 已 merge 進 main", "merge"),
+    ("a memory note from 2026-07-27 says about 68 review fixes were committed then but never deployed", "commit"),
+    ("這把私鑰從 2025-01-11（commit 3de88064）就被 commit 進 git", "commit"),
+    ("PR #3 was merged into main on 2026-04-16.", "merge"),  # the date ends the message, full stop kept
+])
+def test_a_sentence_dated_on_another_day_reports_history(text, kind):
+    assert kind in _kinds(text)  # without the session's days the date cannot be judged
+    assert find_claims(text, session_days={"2026-11-09", "2026-11-10"}) == []
+
+
+def test_session_days_are_unknown_without_timestamps_and_mixed_zones_do_not_crash():
+    from osop.recorder.receipt import _session_days
+
+    assert _session_days({}) is None and _session_days({"started_at": "not a date"}) is None
+    days = _session_days({"started_at": "2026-11-10T10:00:00", "ended_at": "2026-11-10T10:01:00Z"})  # naive + aware
+    assert "2026-11-10" in days and len(days) <= 2
+    # Unknown days leave dates unjudged: the dated claim stays.
+    claims = find_claims("2026-11-10 已 push 到 origin/main", session_days=_session_days({}))
+    assert [c.kind for c in claims] == ["push"]
+
+
+def test_session_days_give_up_on_absurd_timestamps_instead_of_crashing_or_truncating():
+    from osop.recorder.receipt import _session_days
+
+    # Found by the verifier of PR #15: pre-1970 raises OSError on Windows, year 9999 OverflowError, an int
+    # AttributeError; a 30-year span hit the day cap and judged a real session day as history.
+    assert _session_days({"started_at": "9999-12-31T23:00:00Z"}) is None
+    assert _session_days({"started_at": 5, "ended_at": None}) is None
+    assert _session_days({"started_at": "2000-01-01T00:00:00Z", "ended_at": "2030-01-01T00:00:00Z"}) is None
+    early = _session_days({"started_at": "1969-12-31T00:00:00Z"})
+    assert early is None or all(day.startswith("1969") for day in early)
+
+
+@pytest.mark.parametrize("text, kind", [
+    ("2026-11-10 已 merge PR #15 進 main", "merge"),  # the session's own day
+    ("已 commit（wip/release-2026-11-06，工作樹乾淨）", "commit"),  # a date inside a branch name
+    ("docs/runbooks/2026-10-25-server-session.md（已 push，origin/main c8526dab）", "push"),  # inside a path
+    ("在本機分支 wip/release-2026-11-06，全套測試 3,604 題全過", "tests"),
+])
+def test_a_date_of_the_session_or_inside_a_name_keeps_the_claim(text, kind):
+    assert kind in [c.kind for c in find_claims(text, session_days={"2026-11-10"})], text
 
 
 def test_one_sentence_can_hold_several_claims():
@@ -86,6 +132,9 @@ def test_one_sentence_can_hold_several_claims():
     "從 commit 到開 10% 一路做完", "sitemap 也已提交", "IndexNow 45 個網址 push 成功（status 200）",
     "4 篇合併完成：舊檔已刪", "伺服器把它們合併進原本的資料", "How the PDF is merged", "W2 建置完成：七項全過審",
     "付款檢查全部通過", "通過 Google 驗證", "", "Running the tests.",
+    # a count of things that are not tests, named in the sentence or the one before it
+    "真瀏覽器操作 19 項全過：新增專案視窗開關、卡片選單、側欄切分頁", "migrate 5 支全過（問卷表、diagnostics）",
+    "從備用片挑了 15 支，先轉錄、再審核：\n- 6 支通過，補上線",
 ])
 def test_not_claims(text):
     assert _kinds(text) == [], text
@@ -207,6 +256,15 @@ def test_no_final_message_and_no_claims(tmp_path):
     assert "No final message to check" in claims
     claims = _claims(_session(tmp_path, [("Bash", {"command": "ls"}, "a", False)], "Listed the files."))
     assert "No checkable claim" in claims
+
+
+def test_a_sentence_dated_on_another_day_is_history_but_the_session_day_is_checked(tmp_path):
+    # The fixture's events are on 2026-11-06 (UTC; the same day in UTC+8).
+    claims = _claims(_session(tmp_path, [], "那個分支對應 PR #3，2026-04-16 已 merge 進 main"))
+    assert "No checkable claim" in claims
+    claims = _claims(_session(tmp_path, [("Bash", {"command": "git push origin main"}, "To github.com", False)],
+                              "2026-11-06 已 push 到 origin/main"))
+    assert "pushed" in claims and "✅ backed" in claims, claims
 
 
 def test_one_row_per_kind(tmp_path):
