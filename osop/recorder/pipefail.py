@@ -17,6 +17,12 @@ _LEADING = re.compile(r"^[\s&]*(?:\d*>&?\d*\s*)*")  # `|& tail`
 _GREP_STOPS = re.compile(r"(?:^|\s)-[A-Za-z]*[qlLm]|(?:^|\s)--(?:quiet|silent|max-count|files-with(?:out)?-match)")
 _SED_QUITS = re.compile(r"(?<![A-Za-z_-])[qQ](?![A-Za-z_])")
 _SCRIPT_EXITS = re.compile(r"\b(?:exit|last|break)\b")
+# Tools that read everything, write it (or a count) on, and exit 0 whatever came in: safe in the middle of a
+# pipeline. grep is not one, even with -v: it exits 1 when it lets nothing through.
+_PASS_THROUGH = frozenset((
+    "tail", "tee", "cat", "wc", "cut", "tr", "sort", "uniq", "sed", "gsed", "awk", "gawk", "mawk", "nawk",
+    "column", "nl", "fold",
+))
 
 
 def with_pipefail(command: str) -> str | None:
@@ -25,7 +31,10 @@ def with_pipefail(command: str) -> str | None:
     None when no runner is piped, when the command already sets or unsets pipefail (the agent is handling it),
     and when a runner is piped into a reader that stops before the end of its input (head, read, a shell
     loop, grep -q/-m/-l, sed … q, awk … exit): the runner then dies of a broken pipe (Python exits 120 on
-    Windows, node with EPIPE), and pipefail would turn a passing run into a failed one.
+    Windows, node with EPIPE), and pipefail would turn a passing run into a failed one. Also None when a
+    segment before the last is anything but a known pass-through tool (tail, tee, cat, wc, cut, tr, sort,
+    uniq, sed, awk, …): a filter in the middle exits 1 when nothing comes through (`ruff check . | grep -E
+    'error|warning' | tail`, or a `grep -v` that drops the only line), and pipefail would fail that too.
     """
     masked = _mask(command)
     if _PIPEFAIL.search(masked):
@@ -35,8 +44,8 @@ def with_pipefail(command: str) -> str | None:
     # The prefix governs every pipeline in the command, not only the runner's, so every one must be safe.
     for start, end in _statements(masked):
         cuts = [pipe.end() for pipe in _PIPE.finditer(masked, start, end)]
-        for a, b in zip(cuts, cuts[1:] + [end], strict=False):
-            if _stops_early(masked[a:b], command[a:b]):
+        for i, (a, b) in enumerate(zip(cuts, cuts[1:] + [end], strict=False)):
+            if _unsafe(masked[a:b], command[a:b], last=i == len(cuts) - 1):
                 return None
     return f"set -o pipefail; {command}"
 
@@ -62,11 +71,17 @@ def _statements(masked: str) -> list[tuple[int, int]]:
         pos = separator.end()
 
 
-def _stops_early(masked_segment: str, raw_segment: str) -> bool:
-    """Whether this pipe segment may close its input before the runner is done writing."""
+def _unsafe(masked_segment: str, raw_segment: str, last: bool) -> bool:
+    """Whether pipefail could fail a passing run because of this pipe segment.
+
+    A segment before the last must be a tool that passes everything through and exits 0 whatever it reads;
+    any segment may not close its input before the runner is done writing.
+    """
     body = _LEADING.sub("", masked_segment, count=1)
     words = body.split()
-    tool = re.sub(r".*/", "", words[0]) if words else ""
+    tool = re.sub(r".*/", "", words[0]).rstrip(")") if words else ""
+    if not last and tool not in _PASS_THROUGH:
+        return True
     if tool in ("head", "read", "while", "until"):
         return True  # a loop's body is cut off at its `;`, so its `break` cannot be seen: every loop counts
     if tool in ("grep", "egrep", "fgrep", "rg", "ag"):

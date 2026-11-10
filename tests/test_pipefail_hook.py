@@ -30,7 +30,8 @@ HOOK = Path(__file__).parent.parent / "hooks" / "osop-pipefail.py"
         "go test ./... 2>&1 | sed -n '1,40p'",  # sed without q reads everything
         "timeout 300 pytest | tail -20",
         "pytest 2>&1 | tee out.log | grep -c passed",
-        "cargo test 2>&1 | grep -E 'test result' | tail -1",
+        "pytest -q 2>&1 | tee out.log | tail -3",  # tee in the middle passes everything through
+        "go test ./... 2>&1 | tr -s ' ' | tail -20",
         "npx vitest run 2>&1 | tail -15; echo done",  # the pipe is in the runner's own command
     ],
 )
@@ -47,6 +48,11 @@ def test_a_piped_runner_gets_pipefail(command):
         "pytest tests/ 2>&1 | head -50",  # head stops early: the runner would die of a broken pipe
         "pytest | tee log | head -3",
         "pytest |& head -3",
+        # A filter in the middle of the pipeline exits 1 when nothing matches, and pipefail would fail a passing run
+        "ruff check . 2>&1 | grep -E 'error|warning' | tail -20",
+        "ruff check . | grep -v 'All checks passed' | tail -20",  # grep -v that drops the only line exits 1 too
+        "cargo test 2>&1 | grep -E 'test result' | tail -1",  # would match on success, but that cannot be known here
+        "pytest 2>&1 | python filter.py | tail -3",  # only known pass-through tools may sit in the middle
         "npm test 2>&1 | grep -q passed",
         "npm test 2>&1 | grep -m1 passed",
         "npm test 2>&1 | grep -il passed",
