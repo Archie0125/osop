@@ -92,6 +92,18 @@ def test_session_days_are_unknown_without_timestamps_and_mixed_zones_do_not_cras
     assert [c.kind for c in claims] == ["push"]
 
 
+def test_session_days_give_up_on_absurd_timestamps_instead_of_crashing_or_truncating():
+    from osop.recorder.receipt import _session_days
+
+    # Found by the verifier of PR #15: pre-1970 raises OSError on Windows, year 9999 OverflowError, an int
+    # AttributeError; a 30-year span hit the day cap and judged a real session day as history.
+    assert _session_days({"started_at": "9999-12-31T23:00:00Z"}) is None
+    assert _session_days({"started_at": 5, "ended_at": None}) is None
+    assert _session_days({"started_at": "2000-01-01T00:00:00Z", "ended_at": "2030-01-01T00:00:00Z"}) is None
+    early = _session_days({"started_at": "1969-12-31T00:00:00Z"})
+    assert early is None or all(day.startswith("1969") for day in early)
+
+
 @pytest.mark.parametrize("text, kind", [
     ("2026-11-10 已 merge PR #15 進 main", "merge"),  # the session's own day
     ("已 commit（wip/release-2026-11-06，工作樹乾淨）", "commit"),  # a date inside a branch name

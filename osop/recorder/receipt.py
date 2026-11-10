@@ -254,21 +254,21 @@ def _session_days(parsed: dict) -> set[str] | None:
     machine the session ran on. None (no usable timestamps) leaves dates unjudged rather than making every
     dated sentence history.
     """
+    stamps = [ts for ts in (parsed.get("started_at"), parsed.get("ended_at")) if isinstance(ts, str) and ts]
     try:
-        bounds = [datetime.fromisoformat(ts.replace("Z", "+00:00"))
-                  for ts in (parsed.get("started_at") or "", parsed.get("ended_at") or "") if ts]
+        bounds = [datetime.fromisoformat(ts.replace("Z", "+00:00")) for ts in stamps]
         bounds = [b if b.tzinfo else b.replace(tzinfo=UTC) for b in bounds]  # a naive stamp is read as UTC
-    except (ValueError, TypeError):
+        if not bounds or max(bounds) - min(bounds) > timedelta(days=400):
+            return None  # no session spans a year: the stamps are wrong, and a truncated set would judge wrongly
+        days: set[str] = set()
+        for zone in (UTC, None):  # None: the local time zone
+            day, last = min(bounds).astimezone(zone).date(), max(bounds).astimezone(zone).date()
+            while day <= last:
+                days.add(day.isoformat())
+                day += timedelta(days=1)
+        return days
+    except (ValueError, TypeError, OSError, OverflowError):  # pre-1970 on Windows raises OSError, 9999 Overflow
         return None
-    if not bounds:
-        return None
-    days: set[str] = set()
-    for zone in (UTC, None):  # None: the local time zone
-        day, last = min(bounds).astimezone(zone).date(), max(bounds).astimezone(zone).date()
-        while day <= last and len(days) < 400:  # a session does not span a year; a bad timestamp must not loop
-            days.add(day.isoformat())
-            day += timedelta(days=1)
-    return days
 
 
 def _tests_evidence(parsed: dict, calls: list, tests: list) -> tuple[str, str]:
