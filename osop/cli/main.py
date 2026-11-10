@@ -126,13 +126,13 @@ def log_cmd(source, short_desc, out_dir, stdout, brief, last_message):
         console.print("  Cause: No transcript matched the given source.")
         console.print("  Fix: Pass a session id or full transcript path, "
                       "or run from a project directory that has a transcript.")
-        raise SystemExit(1)
+        raise SystemExit(1) from None
 
     try:
         parsed = parse_transcript(path)
     except ValueError as e:
         console.print(f"[red]Error:[/red] {e}")
-        raise SystemExit(1)
+        raise SystemExit(1) from None
 
     if not parsed["nodes"]:
         console.print(f"[yellow]Skipped:[/yellow] transcript has no usable events: {path}")

@@ -15,11 +15,11 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Iterable
-
+from typing import Any
 
 # ---------------------------------------------------------------------------
 # Data model
@@ -58,7 +58,7 @@ class PhaseNode:
     tool_calls: list[ToolCall] = field(default_factory=list)
     user_prompt: str | None = None
     assistant_summary: str = ""
-    children: list["PhaseNode"] = field(default_factory=list)
+    children: list[PhaseNode] = field(default_factory=list)
     parent_id: str | None = None
 
 
