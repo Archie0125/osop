@@ -49,6 +49,7 @@ def _kinds(text: str) -> list[str]:
     "All 3 tests pass.", "151 passed, exit 0.", "the suite is green: they all pass",
     "全套測試綠：2,783 通過、0 失敗、19 skipped", "相關測試 113 個全部通過，截圖也確認過了",
     "JS 224、PHP 63 passed", "測試 15 條綠", "單獨重跑那個檔是 45/45 全過",
+    "瀏覽器測試 19 項全過", "前端 38 個、worker（Python）23 個全過",
 ])
 def test_tests_pass_claims(text):
     assert _kinds(text) == ["tests"]
@@ -66,6 +67,26 @@ def test_tests_pass_claims(text):
 ])
 def test_other_claims(text, kind):
     assert kind in _kinds(text), text
+
+
+@pytest.mark.parametrize("text, kind", [
+    ("那個分支對應 PR #3，2026-04-16 已 merge 進 main", "merge"),
+    ("a memory note from 2026-07-27 says about 68 review fixes were committed then but never deployed", "commit"),
+    ("這把私鑰從 2025-01-11（commit 3de88064）就被 commit 進 git", "commit"),
+])
+def test_a_sentence_dated_on_another_day_reports_history(text, kind):
+    assert kind in _kinds(text)  # without the session's days the date cannot be judged
+    assert find_claims(text, session_days={"2026-11-09", "2026-11-10"}) == []
+
+
+@pytest.mark.parametrize("text, kind", [
+    ("2026-11-10 已 merge PR #15 進 main", "merge"),  # the session's own day
+    ("已 commit（wip/release-2026-11-06，工作樹乾淨）", "commit"),  # a date inside a branch name
+    ("docs/runbooks/2026-10-25-server-session.md（已 push，origin/main c8526dab）", "push"),  # inside a path
+    ("在本機分支 wip/release-2026-11-06，全套測試 3,604 題全過", "tests"),
+])
+def test_a_date_of_the_session_or_inside_a_name_keeps_the_claim(text, kind):
+    assert kind in [c.kind for c in find_claims(text, session_days={"2026-11-10"})], text
 
 
 def test_one_sentence_can_hold_several_claims():
@@ -86,6 +107,9 @@ def test_one_sentence_can_hold_several_claims():
     "從 commit 到開 10% 一路做完", "sitemap 也已提交", "IndexNow 45 個網址 push 成功（status 200）",
     "4 篇合併完成：舊檔已刪", "伺服器把它們合併進原本的資料", "How the PDF is merged", "W2 建置完成：七項全過審",
     "付款檢查全部通過", "通過 Google 驗證", "", "Running the tests.",
+    # a count of things that are not tests, named in the sentence or the one before it
+    "真瀏覽器操作 19 項全過：新增專案視窗開關、卡片選單、側欄切分頁", "migrate 5 支全過（問卷表、diagnostics）",
+    "從備用片挑了 15 支，先轉錄、再審核：\n- 6 支通過，補上線",
 ])
 def test_not_claims(text):
     assert _kinds(text) == [], text
@@ -207,6 +231,15 @@ def test_no_final_message_and_no_claims(tmp_path):
     assert "No final message to check" in claims
     claims = _claims(_session(tmp_path, [("Bash", {"command": "ls"}, "a", False)], "Listed the files."))
     assert "No checkable claim" in claims
+
+
+def test_a_sentence_dated_on_another_day_is_history_but_the_session_day_is_checked(tmp_path):
+    # The fixture's events are on 2026-11-06 (UTC; the same day in UTC+8).
+    claims = _claims(_session(tmp_path, [], "那個分支對應 PR #3，2026-04-16 已 merge 進 main"))
+    assert "No checkable claim" in claims
+    claims = _claims(_session(tmp_path, [("Bash", {"command": "git push origin main"}, "To github.com", False)],
+                              "2026-11-06 已 push 到 origin/main"))
+    assert "pushed" in claims and "✅ backed" in claims, claims
 
 
 def test_one_row_per_kind(tmp_path):

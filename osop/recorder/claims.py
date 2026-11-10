@@ -5,12 +5,13 @@ committed, pushed or merged. Only those are looked for: they are the ones a tran
 contradict. Questions, instructions, plans and negated sentences are not claims.
 
 The patterns come from how agents actually phrase these in the owner's transcripts (zh-TW and English),
-measured on 1,636 end-of-turn messages, not from a style guide.
+measured on 1,636 end-of-turn messages (and re-measured on 3,848 on 2026-11-10), not from a style guide.
 """
 
 from __future__ import annotations
 
 import re
+from collections.abc import Collection
 from dataclasses import dataclass
 
 KINDS = ("tests", "lint", "build", "commit", "push", "merge")
@@ -149,12 +150,32 @@ _SUBORDINATOR = re.compile(
 _NEXT_PLAN = re.compile(r"^\s*(?:再|我會|然後|接著|就|才)(?!\s*(?:已|都|也|剛))")
 # "1 failed, 2 passed" reports a failure, whatever else it says.
 _FAILING = re.compile(r"\b[1-9]\d*\s*(?:failed|failures?|errors?)\b|[1-9]\d*\s*(?:個|條|項)?\s*失敗", re.I)
+# "19 項全過" counts tests only when nothing says otherwise: a count of browser checks, migrations or reviewed
+# videos ("真瀏覽器操作 19 項全過", "migrate 5 支全過", "再審核：6 支通過") is not a tests claim. Of 3,848 real
+# end-of-turn messages, 16 such counts had no test word in their sentence; the 6 that were not tests all named
+# their subject in the sentence or the one before it, the 10 that were tests never did.
+_TEST_WORD = re.compile(
+    r"測試|全套|案例|(?i:\b(?:tests?|testing|spec|suite|phpunit|pytest|vitest|jest|unit|e2e|smoke)\b)"
+    r"|(?<![A-Za-z0-9_])[A-Z][A-Za-z0-9]*Tests?(?![A-Za-z0-9_])")
+_NOT_TESTS = re.compile(r"瀏覽器|browser|migrat|審核|影片|手動|人工|manual", re.I)
+# A sentence dated on another day reports history ("PR #3，2026-04-16 已 merge 進 main", "a note from 2026-07-27
+# says … were committed"), not this session's work. A date inside a branch name or a path ("wip/release-2026-11-06",
+# "docs/2026-10-25-server-session.md") does not date the sentence.
+_ISO_DATE = re.compile(r"(?<![\w/.-])20\d\d-\d\d-\d\d(?![\w/.-])")
 
 
-def find_claims(message: str) -> list[Claim]:
-    """Every checkable claim in the message, one per kind per sentence, in the order they appear."""
+def find_claims(message: str, session_days: Collection[str] | None = None) -> list[Claim]:
+    """Every checkable claim in the message, one per kind per sentence, in the order they appear.
+
+    `session_days` are the ISO dates the session spans (UTC and local): a sentence that names another day
+    reports history, not this session's work, and is not a claim. Without them, dates are not judged.
+    """
     claims: list[Claim] = []
-    for sentence in sentences(message):
+    sents = sentences(message)
+    for i, sentence in enumerate(sents):
+        dates = _ISO_DATE.findall(sentence)
+        if session_days is not None and dates and not any(d in session_days for d in dates):
+            continue
         for kind in KINDS:
             m = _PATTERNS[kind].search(sentence)
             if m is None:
@@ -189,6 +210,9 @@ def find_claims(message: str) -> list[Claim]:
                     _NEGATED_EN_BEFORE.search(sentence[:m.start()]) or _NEGATED_EN_AFTER.search(sentence[m.end():])):
                 continue
             if kind == "tests" and (_FAILING.search(sentence) or _PASSES_OBJECT.match(sentence, m.start())):
+                continue
+            if kind == "tests" and not _TEST_WORD.search(sentence) and _NOT_TESTS.search(
+                    (sents[i - 1] if i else "") + " " + sentence):
                 continue
             if kind == "merge" and not _GIT_CONTEXT.search(sentence):
                 continue

@@ -7,6 +7,7 @@ Nothing is taken from what the agent said about its own work.
 from __future__ import annotations
 
 import re
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from osop.recorder.claims import Claim, find_claims
@@ -230,7 +231,7 @@ def _claim_rows(parsed: dict, calls: list, tests: list) -> list[tuple[Claim, str
     """
     rows: list[tuple[Claim, str, str]] = []
     seen: set[str] = set()
-    for claim in find_claims(parsed.get("last_assistant_message") or ""):
+    for claim in find_claims(parsed.get("last_assistant_message") or "", _session_days(parsed)):
         if claim.kind in seen:
             continue
         seen.add(claim.kind)
@@ -243,6 +244,29 @@ def _claim_rows(parsed: dict, calls: list, tests: list) -> list[tuple[Claim, str
             verdict, evidence = _command_evidence(_git_calls(calls, claim.kind), claim.kind)
         rows.append((claim, verdict, evidence))
     return rows
+
+
+def _session_days(parsed: dict) -> set[str]:
+    """The ISO dates the session spans, in UTC and in this machine's local time.
+
+    A date in the final message that is none of them belongs to history, not to this session's work. Both
+    zones: agents write local dates, transcripts carry UTC timestamps, and the receipt is built on the
+    machine the session ran on.
+    """
+    try:
+        bounds = [datetime.fromisoformat(ts.replace("Z", "+00:00"))
+                  for ts in (parsed.get("started_at") or "", parsed.get("ended_at") or "") if ts]
+    except ValueError:
+        return set()
+    if not bounds:
+        return set()
+    days: set[str] = set()
+    for zone in (UTC, None):  # None: the local time zone
+        day, last = min(bounds).astimezone(zone).date(), max(bounds).astimezone(zone).date()
+        while day <= last and len(days) < 400:  # a session does not span a year; a bad timestamp must not loop
+            days.add(day.isoformat())
+            day += timedelta(days=1)
+    return days
 
 
 def _tests_evidence(parsed: dict, calls: list, tests: list) -> tuple[str, str]:
