@@ -111,6 +111,29 @@ def test_a_notice_printed_by_a_tool_is_not_a_notice(tmp_path):
     assert "⏳" in _section(path, "Tests") and "✅" not in _section(path, "Claims")
 
 
+def _as_queued(path: Path, origin_kind: str) -> Path:
+    """Move the notice into the attachment Claude Code writes when it arrives while the agent is still working."""
+    events = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+    notice = events[3]
+    events[3] = {"type": "attachment", "timestamp": notice["timestamp"], "attachment": {
+        "type": "queued_command", "commandMode": "task-notification", "origin": {"kind": origin_kind},
+        "prompt": notice["message"]["content"]}}
+    path.write_text("\n".join(json.dumps(e) for e in events) + "\n", encoding="utf-8")
+    return path
+
+
+def test_a_notice_queued_while_the_agent_works_counts(tmp_path):
+    path = _as_queued(_session(tmp_path, LOGGED, 'Background command "Run the tests" completed (exit code 0)',
+                               "exit=1\n1 failed, 4 passed in 1.30s\n"), "task-notification")
+    assert "❌ contradicted" in _section(path, "Claims")
+
+
+def test_a_queued_prompt_holding_notice_text_is_not_a_notice(tmp_path):
+    path = _as_queued(_session(tmp_path, LOGGED, 'Background command "Run the tests" completed (exit code 0)',
+                               "exit=0\n5 passed\n"), "human")
+    assert "⏳" in _section(path, "Tests") and "✅" not in _section(path, "Claims")
+
+
 def test_notice_text_in_an_injected_message_is_not_a_notice(tmp_path):
     """A skill body or a pasted example can hold notice text; only Claude Code's task-notification event counts."""
     path = _session(tmp_path, "pytest -q", None, "5 passed\n")

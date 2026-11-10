@@ -207,9 +207,16 @@ def _apply_notices(event: dict, background: dict[str, ToolCall], ts: str) -> Non
     transcript: Claude Code writes it to the output file the notice names, and the agent's own
     `echo "exit=$?"` after the test lands there too. A notice without an exit status (a progress report,
     "didn't finish before the previous session ended") leaves the call unfinished.
+
+    A notice comes as a user event, or, when it arrives while the agent is still working, as a queued_command
+    attachment.
     """
+    queued = event.get("attachment") if event.get("type") == "attachment" else None
+    if isinstance(queued, dict) and queued.get("type") == "queued_command":
+        origin, content = queued.get("origin"), queued.get("prompt")
+    else:
+        origin, content = event.get("origin"), _message(event).get("content")
     # Only Claude Code's own notice counts: notice text in a tool result, a skill body or a pasted prompt is not one.
-    origin, content = event.get("origin"), _message(event).get("content")
     if not (isinstance(origin, dict) and origin.get("kind") == "task-notification" and isinstance(content, str)):
         return
     for block in _NOTICE.findall(content):
@@ -479,7 +486,11 @@ def parse_transcript(path: Path, subagent_root: Path | None = None, _state: _Par
                     if inp.get("run_in_background"):
                         background[tid] = tc
 
-        # attachment / permission-mode / system events: ignored for node graph
+        # A completion notice queued while the agent works. It is not a user turn, so the final message goes on.
+        elif ev_type == "attachment":
+            _apply_notices(ev, background, ts)
+
+        # permission-mode / system events: ignored for node graph
         else:
             continue
 
