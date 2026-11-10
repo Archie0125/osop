@@ -3,10 +3,13 @@
 The package does not install it: wiring it into settings.json is the owner's decision.
 """
 
+import importlib.util
 import json
 import os
 import subprocess
 import sys
+import textwrap
+import time
 from pathlib import Path
 
 HOOK = Path(__file__).parent.parent / "hooks" / "osop-stop.py"
@@ -148,3 +151,55 @@ def test_brief_log_path_can_be_set_and_a_write_failure_is_said_not_hidden(tmp_pa
     assert result.returncode == 0, result.stderr
     message = json.loads(result.stdout.decode("utf-8"))["systemMessage"]
     assert message.startswith("OSOP · claims:") and "brief.log not written" in message, message
+
+
+def _hook_module():
+    spec = importlib.util.spec_from_file_location("osop_stop_hook", HOOK)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_brief_log_entry_keeps_four_fields_and_one_line_per_row_whatever_the_text_holds(tmp_path, monkeypatch):
+    # A later reader splits entry lines on tabs and treats a leading tab as a claim row: no other tab or
+    # line break may come from the brief or a row (Codex review of PR #16).
+    monkeypatch.setenv("OSOP_BRIEF_LOG", str(tmp_path / "brief.log"))
+    receipt = tmp_path / "demo" / "x.receipt.md"
+    receipt.parent.mkdir()
+    receipt.write_text("# Receipt\n\n## Claims\n| Claim | Verdict | Evidence |\n|---|---|---|\n"
+                       "| tests pass: “a\tb” | ❓ no evidence | none |\n\n## Goal\n", encoding="utf-8")
+    out = _hook_module()._logged(f"OSOP · claims:\tnone\nfound · receipt: {receipt}", {"session_id": "s"}, "t.jsonl")
+    assert "not written" not in out
+    lines = (tmp_path / "brief.log").read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 2, lines
+    assert lines[0].count("\t") == 3 and lines[0].split("\t")[1:3] == ["demo", "s"], lines[0]
+    assert lines[1].startswith("\t| tests pass:") and lines[1].count("\t") == 1, lines[1]
+
+
+def test_brief_log_append_waits_for_another_writer_holding_the_lock(tmp_path):
+    # Windows' append mode seeks and writes in two steps, so two Stops at once could overwrite each other
+    # (CPython issue 86772). The append takes a lock; a holder that writes late must still come first.
+    log, ready = tmp_path / "brief.log", tmp_path / "ready"
+    holder = subprocess.Popen([sys.executable, "-c", textwrap.dedent(f"""
+        import importlib.util, time
+        from pathlib import Path
+        spec = importlib.util.spec_from_file_location("h", r"{HOOK}")
+        h = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(h)
+        with Path(r"{log}").open("a", encoding="utf-8") as fh:
+            h._lock(fh)
+            Path(r"{ready}").write_text("1")
+            time.sleep(1.5)
+            fh.seek(0, 2)
+            fh.write("first\\n")
+            fh.flush()
+            h._unlock(fh)
+        """)])
+    for _ in range(200):
+        if ready.exists():
+            break
+        time.sleep(0.05)
+    assert ready.exists(), "the lock holder did not start"
+    _hook_module()._append(log, "second\n")
+    assert holder.wait(timeout=30) == 0
+    assert log.read_text(encoding="utf-8") == "first\nsecond\n"

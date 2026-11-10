@@ -89,8 +89,9 @@ def _logged(brief: str, data: dict, transcript: str) -> str:
     """Append the brief and the receipt's claim rows to the brief log; the brief back, with a note if that failed.
 
     One entry per Stop: `<local time with offset>\\t<project>\\t<session id>\\t<brief>`, then one tab-indented
-    line per claim row of the receipt just written. One open and one write, so Stops from several windows
-    do not interleave within an entry.
+    line per claim row of the receipt just written. A reader splits entry lines on tabs and knows a row by its
+    leading tab, so no other tab or line break gets in. The write holds a lock: Stops from several windows
+    must not overwrite each other.
     """
     path = Path(os.environ.get("OSOP_BRIEF_LOG") or Path.home() / ".osop" / "brief.log")
     try:
@@ -100,14 +101,50 @@ def _logged(brief: str, data: dict, transcript: str) -> str:
         if not isinstance(session, str) or not session:
             session = Path(transcript).stem
         stamp = datetime.now().astimezone().isoformat(timespec="seconds")
-        entry = f"{stamp}\t{receipt.parent.name if receipt else ''}\t{session}\t{brief}\n"
-        entry += "".join(f"\t{row}\n" for row in rows)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("a", encoding="utf-8") as fh:
-            fh.write(entry)
+        entry = f"{stamp}\t{receipt.parent.name if receipt else ''}\t{session}\t{_one_line(brief)}\n"
+        entry += "".join(f"\t{_one_line(row)}\n" for row in rows)
+        _append(path, entry)
     except (OSError, ValueError) as e:
         return f"{brief} · brief.log not written: {e}"
     return brief
+
+
+def _one_line(text: str) -> str:
+    return text.replace("\t", " ").replace("\r", " ").replace("\n", " ")
+
+
+def _append(path: Path, entry: str) -> None:
+    """Append under a lock. Windows' append mode seeks to the end and writes in two steps (CPython issue 86772),
+    so two processes appending at once could overwrite each other; the lock serialises them."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as fh:
+        _lock(fh)
+        try:
+            fh.seek(0, os.SEEK_END)
+            fh.write(entry)
+            fh.flush()
+        finally:
+            _unlock(fh)
+
+
+if sys.platform == "win32":
+    import msvcrt
+
+    def _lock(fh) -> None:
+        fh.seek(0)
+        msvcrt.locking(fh.fileno(), msvcrt.LK_LOCK, 1)  # byte 0 of the file; retries for about 10 s, then OSError
+
+    def _unlock(fh) -> None:
+        fh.seek(0)
+        msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)
+else:
+    import fcntl
+
+    def _lock(fh) -> None:
+        fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+
+    def _unlock(fh) -> None:
+        fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
 
 
 def _claim_rows(receipt: Path) -> list[str]:
