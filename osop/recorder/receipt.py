@@ -669,7 +669,8 @@ def _test_verdict(tc: ToolCall, code: str, match: re.Match) -> str:
         after = _hidden_status(code, match.end()) is not None or "&&" in code[match.end():]
         which = "an earlier or later" if before and after else "an earlier" if before else "a later"
         if after and clean_pass:
-            return f"⚠️ unclear: {_exit_text(tc)}, but output shows tests passing; {which} step in the chain may have failed"
+            return (f"⚠️ unclear: {_exit_text(tc)}, but output shows tests passing; "
+                    f"{which} step in the chain may have failed")
         if before or after:
             return f"{_failed(tc)}: this test or {which} step in the chain failed"
         return _failed(tc)
@@ -944,7 +945,8 @@ def _files_table(calls: list) -> str:
     parts = []
     if files:
         rows = [
-            f"| {_code(_tail(path, 120))} | {', '.join(f'{t} ×{n}' for t, n in e['tools'].items())} | {_cell(', '.join(sorted(e['by'])))} |"
+            f"| {_code(_tail(path, 120))} | {', '.join(f'{t} ×{n}' for t, n in e['tools'].items())} "
+            f"| {_cell(', '.join(sorted(e['by'])))} |"
             for path, e in files.items()
         ]
         parts.append("| File | How | By |\n|---|---|---|\n" + "\n".join(rows))

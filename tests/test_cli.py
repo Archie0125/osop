@@ -1,9 +1,10 @@
 """Tests for osop.cli.main — CLI commands via Click's CliRunner."""
-import pytest
 from pathlib import Path
-from click.testing import CliRunner
-from osop.cli.main import cli
 
+import pytest
+from click.testing import CliRunner
+
+from osop.cli.main import cli
 
 FIXTURES = Path(__file__).parent / "fixtures"
 MINIMAL_SESSION = FIXTURES / "minimal_session.jsonl"

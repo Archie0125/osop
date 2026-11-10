@@ -77,7 +77,8 @@ def test_stop_hook_checks_the_claims_in_the_message_claude_code_hands_it(tmp_pat
 
 
 def test_stop_hook_without_the_message_falls_back_to_the_transcript(tmp_path):
-    result = _run_hook({"hook_event_name": "Stop", "stop_hook_active": False, "transcript_path": str(CONTRADICTED)}, tmp_path)
+    result = _run_hook(
+        {"hook_event_name": "Stop", "stop_hook_active": False, "transcript_path": str(CONTRADICTED)}, tmp_path)
     message = json.loads(result.stdout.decode("utf-8"))["systemMessage"]
     assert "claims: 1 contradicted ❌ (tests pass), 1 without evidence ❓ (committed)" in message
 
