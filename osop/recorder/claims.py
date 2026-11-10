@@ -155,13 +155,13 @@ _FAILING = re.compile(r"\b[1-9]\d*\s*(?:failed|failures?|errors?)\b|[1-9]\d*\s*(
 # end-of-turn messages, 16 such counts had no test word in their sentence; the 6 that were not tests all named
 # their subject in the sentence or the one before it, the 10 that were tests never did.
 _TEST_WORD = re.compile(
-    r"測試|全套|案例|(?i:\b(?:tests?|testing|spec|suite|phpunit|pytest|vitest|jest|unit|e2e|smoke)\b)"
+    r"測試|全套|案例|(?i:\b(?:tests?|testing|spec|suite|phpunit|pytest|vitest|jest|unit|e2e|smoke|pass(?:ed|es|ing)?)\b)"
     r"|(?<![A-Za-z0-9_])[A-Z][A-Za-z0-9]*Tests?(?![A-Za-z0-9_])")
 _NOT_TESTS = re.compile(r"瀏覽器|browser|migrat|審核|影片|手動|人工|manual", re.I)
 # A sentence dated on another day reports history ("PR #3，2026-04-16 已 merge 進 main", "a note from 2026-07-27
 # says … were committed"), not this session's work. A date inside a branch name or a path ("wip/release-2026-11-06",
-# "docs/2026-10-25-server-session.md") does not date the sentence.
-_ISO_DATE = re.compile(r"(?<![\w/.-])20\d\d-\d\d-\d\d(?![\w/.-])")
+# "docs/2026-10-25.md") does not date the sentence; a full stop that ends the sentence after it does not glue it.
+_ISO_DATE = re.compile(r"(?<![\w/.-])20\d\d-\d\d-\d\d(?![\w/-]|\.\S)")
 
 
 def find_claims(message: str, session_days: Collection[str] | None = None) -> list[Claim]:

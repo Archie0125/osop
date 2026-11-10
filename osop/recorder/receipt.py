@@ -246,20 +246,22 @@ def _claim_rows(parsed: dict, calls: list, tests: list) -> list[tuple[Claim, str
     return rows
 
 
-def _session_days(parsed: dict) -> set[str]:
-    """The ISO dates the session spans, in UTC and in this machine's local time.
+def _session_days(parsed: dict) -> set[str] | None:
+    """The ISO dates the session spans, in UTC and in this machine's local time; None when unknown.
 
     A date in the final message that is none of them belongs to history, not to this session's work. Both
     zones: agents write local dates, transcripts carry UTC timestamps, and the receipt is built on the
-    machine the session ran on.
+    machine the session ran on. None (no usable timestamps) leaves dates unjudged rather than making every
+    dated sentence history.
     """
     try:
         bounds = [datetime.fromisoformat(ts.replace("Z", "+00:00"))
                   for ts in (parsed.get("started_at") or "", parsed.get("ended_at") or "") if ts]
-    except ValueError:
-        return set()
+        bounds = [b if b.tzinfo else b.replace(tzinfo=UTC) for b in bounds]  # a naive stamp is read as UTC
+    except (ValueError, TypeError):
+        return None
     if not bounds:
-        return set()
+        return None
     days: set[str] = set()
     for zone in (UTC, None):  # None: the local time zone
         day, last = min(bounds).astimezone(zone).date(), max(bounds).astimezone(zone).date()

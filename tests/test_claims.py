@@ -50,6 +50,7 @@ def _kinds(text: str) -> list[str]:
     "全套測試綠：2,783 通過、0 失敗、19 skipped", "相關測試 113 個全部通過，截圖也確認過了",
     "JS 224、PHP 63 passed", "測試 15 條綠", "單獨重跑那個檔是 45/45 全過",
     "瀏覽器測試 19 項全過", "前端 38 個、worker（Python）23 個全過",
+    "已修正 migration。\n151 passed, exit 0.",  # "passed" is a test word: the migration before it does not matter
 ])
 def test_tests_pass_claims(text):
     assert _kinds(text) == ["tests"]
@@ -73,10 +74,21 @@ def test_other_claims(text, kind):
     ("那個分支對應 PR #3，2026-04-16 已 merge 進 main", "merge"),
     ("a memory note from 2026-07-27 says about 68 review fixes were committed then but never deployed", "commit"),
     ("這把私鑰從 2025-01-11（commit 3de88064）就被 commit 進 git", "commit"),
+    ("PR #3 was merged into main on 2026-04-16.", "merge"),  # the date ends the message, full stop kept
 ])
 def test_a_sentence_dated_on_another_day_reports_history(text, kind):
     assert kind in _kinds(text)  # without the session's days the date cannot be judged
     assert find_claims(text, session_days={"2026-11-09", "2026-11-10"}) == []
+
+
+def test_session_days_are_unknown_without_timestamps_and_mixed_zones_do_not_crash():
+    from osop.recorder.receipt import _session_days
+
+    assert _session_days({}) is None and _session_days({"started_at": "not a date"}) is None
+    days = _session_days({"started_at": "2026-11-10T10:00:00", "ended_at": "2026-11-10T10:01:00Z"})  # naive + aware
+    assert "2026-11-10" in days and len(days) <= 2
+    # Unknown days leave dates unjudged: the dated claim stays.
+    assert [c.kind for c in find_claims("2026-11-10 已 push 到 origin/main", session_days=_session_days({}))] == ["push"]
 
 
 @pytest.mark.parametrize("text, kind", [
