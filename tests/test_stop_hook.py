@@ -99,3 +99,52 @@ def test_stop_hook_survives_a_lone_surrogate_in_the_message_and_a_bad_size_limit
     result = subprocess.run([sys.executable, str(HOOK)], input=payload, capture_output=True, env=env, timeout=120)
     assert result.returncode == 0, result.stderr
     assert json.loads(result.stdout.decode("utf-8"))["systemMessage"].startswith("OSOP ·")
+
+
+# --- brief.log: what every Stop leaves behind, since the receipt itself is rewritten each time -------------
+
+
+def test_stop_hook_appends_the_brief_and_the_claim_rows_to_brief_log(tmp_path):
+    payload = {"hook_event_name": "Stop", "session_id": "sess-1", "transcript_path": str(CONTRADICTED),
+               "cwd": "/work/demo", "last_assistant_message": "全套測試綠，已 push 到 origin/main。"}
+    for _ in range(2):
+        result = _run_hook(payload, tmp_path)
+        assert result.returncode == 0, result.stderr
+    log = (tmp_path / ".osop" / "brief.log").read_text(encoding="utf-8")
+    entries = [line for line in log.splitlines() if not line.startswith("\t")]
+    rows = [line for line in log.splitlines() if line.startswith("\t")]
+    assert len(entries) == 2 and len(rows) == 4, log  # two Stops, two claim rows each, appended
+    stamp, project, session, brief = entries[0].split("\t")
+    assert len(stamp) == 25 and stamp[10] == "T" and stamp[19] in "+-", stamp  # local time with its UTC offset
+    assert project == "demo" and session == "sess-1"
+    assert brief.startswith("OSOP · claims: 1 contradicted ❌ (tests pass), 1 without evidence ❓ (pushed)")
+    assert rows[0].startswith("\t| tests pass: ") and "❌ contradicted" in rows[0], rows
+    assert rows[1].startswith("\t| pushed: ") and "❓ no evidence" in rows[1], rows
+
+
+def test_brief_log_holds_only_the_brief_when_there_are_no_claims(tmp_path):
+    result = _run_hook({"hook_event_name": "Stop", "transcript_path": str(MINIMAL_SESSION),
+                        "last_assistant_message": "Listed the files."}, tmp_path)
+    assert result.returncode == 0, result.stderr
+    lines = (tmp_path / ".osop" / "brief.log").read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 1, lines
+    assert lines[0].split("\t")[2] == "minimal_session"  # no session_id in the input: the transcript's name
+    assert "\tOSOP · claims: none found" in lines[0]
+
+
+def test_brief_log_path_can_be_set_and_a_write_failure_is_said_not_hidden(tmp_path):
+    custom = tmp_path / "logs" / "osop-brief.tsv"
+    env = dict(os.environ, HOME=str(tmp_path), USERPROFILE=str(tmp_path), OSOP_BRIEF_LOG=str(custom))
+    payload = json.dumps({"hook_event_name": "Stop", "transcript_path": str(MINIMAL_SESSION),
+                          "last_assistant_message": "Listed the files."}).encode("utf-8")
+    result = subprocess.run([sys.executable, str(HOOK)], input=payload, capture_output=True, env=env, timeout=120)
+    assert result.returncode == 0, result.stderr
+    assert custom.read_text(encoding="utf-8").count("\n") == 1
+    assert not (tmp_path / ".osop" / "brief.log").exists()
+    blocker = tmp_path / "blocker"
+    blocker.write_text("not a directory")
+    env["OSOP_BRIEF_LOG"] = str(blocker / "brief.log")
+    result = subprocess.run([sys.executable, str(HOOK)], input=payload, capture_output=True, env=env, timeout=120)
+    assert result.returncode == 0, result.stderr
+    message = json.loads(result.stdout.decode("utf-8"))["systemMessage"]
+    assert message.startswith("OSOP · claims:") and "brief.log not written" in message, message
