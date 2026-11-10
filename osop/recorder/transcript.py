@@ -17,7 +17,7 @@ import json
 import re
 from collections.abc import Iterable
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -156,14 +156,19 @@ def _extract_user_prompt(event: dict) -> str | None:
     return text
 
 
-def _ms_between(start: str, end: str | None) -> int:
+def _stamp(value: Any) -> datetime:
+    """An ISO string, or a number of milliseconds since the epoch."""
+    if isinstance(value, int | float):
+        return datetime.fromtimestamp(value / 1000, UTC)
+    return datetime.fromisoformat(value.replace("Z", "+00:00"))
+
+
+def _ms_between(start: Any, end: Any) -> int:
     if not end:
         return 0
     try:
-        a = datetime.fromisoformat(start.replace("Z", "+00:00"))
-        b = datetime.fromisoformat(end.replace("Z", "+00:00"))
-        return int((b - a).total_seconds() * 1000)
-    except (ValueError, TypeError):
+        return int((_stamp(end) - _stamp(start)).total_seconds() * 1000)
+    except (AttributeError, OSError, OverflowError, TypeError, ValueError):
         return 0
 
 
