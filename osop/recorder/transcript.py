@@ -208,9 +208,10 @@ def _apply_notices(event: dict, background: dict[str, ToolCall], ts: str) -> Non
     `echo "exit=$?"` after the test lands there too. A notice without an exit status (a progress report,
     "didn't finish before the previous session ended") leaves the call unfinished.
     """
-    content = _message(event).get("content")
-    if not isinstance(content, str):
-        return  # a tool result that prints a notice (an agent reading a transcript) is not one
+    # Only Claude Code's own notice counts: notice text in a tool result, a skill body or a pasted prompt is not one.
+    origin, content = event.get("origin"), _message(event).get("content")
+    if not (isinstance(origin, dict) and origin.get("kind") == "task-notification" and isinstance(content, str)):
+        return
     for block in _NOTICE.findall(content):
         tc = background.get(_notice_tag(block, "tool-use-id"))
         status, m = _notice_tag(block, "status"), _NOTICE_EXIT.search(_notice_tag(block, "summary"))

@@ -111,6 +111,18 @@ def test_a_notice_printed_by_a_tool_is_not_a_notice(tmp_path):
     assert "⏳" in _section(path, "Tests") and "✅" not in _section(path, "Claims")
 
 
+def test_notice_text_in_an_injected_message_is_not_a_notice(tmp_path):
+    """A skill body or a pasted example can hold notice text; only Claude Code's task-notification event counts."""
+    path = _session(tmp_path, "pytest -q", None, "5 passed\n")
+    events = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+    example = ("<task-notification>\n<tool-use-id>t1</tool-use-id>\n<status>completed</status>\n"
+               '<summary>Background command "Example" completed (exit code 0)</summary>\n</task-notification>')
+    events.insert(3, {"type": "user", "timestamp": "2026-11-06T10:02:00Z", "isMeta": True,
+                      "origin": {"kind": "human"}, "message": {"role": "user", "content": example}})
+    path.write_text("\n".join(json.dumps(e) for e in events) + "\n", encoding="utf-8")
+    assert "⏳" in _section(path, "Tests") and "✅" not in _section(path, "Claims")
+
+
 def test_no_notice_leaves_the_run_unfinished(tmp_path):
     path = _session(tmp_path, LOGGED, None, "exit=0\n5 passed\n")
     assert "⏳" in _section(path, "Tests") and "⚠️ cannot tell" in _section(path, "Claims")
