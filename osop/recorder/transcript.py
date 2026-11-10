@@ -428,8 +428,8 @@ def parse_transcript(path: Path, subagent_root: Path | None = None, _state: _Par
             else:
                 for tr in _extract_tool_results(ev):
                     tc = pending.pop(_id(tr.get("tool_use_id")), None)
-                    if tc is None:
-                        continue
+                    if tc is None or tc.background:
+                        continue  # a launch reply written after the completion notice must not undo its result
                     tc.ended_at = ts
                     tc.duration_ms = _ms_between(tc.started_at, ts)
                     tc.output = _output_text(tr.get("content"))

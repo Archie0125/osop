@@ -136,6 +136,16 @@ def test_an_attachment_other_than_a_queued_command_is_not_a_notice(tmp_path):
     assert "⏳" in _section(path, "Tests") and "✅" not in _section(path, "Claims")
 
 
+def test_a_launch_reply_written_after_the_notice_does_not_undo_it(tmp_path):
+    """Never seen (0 of 1,418 notices came first), but if it happens, a failure must not turn into exit 0."""
+    path = _session(tmp_path, "pytest -q", 'Background command "Run the tests" failed with exit code 1',
+                    "1 failed, 4 passed\n")
+    events = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+    events[2], events[3] = events[3], events[2]
+    path.write_text("\n".join(json.dumps(e) for e in events) + "\n", encoding="utf-8")
+    assert "❌ contradicted" in _section(path, "Claims")
+
+
 def test_a_queued_prompt_holding_notice_text_is_not_a_notice(tmp_path):
     path = _as_queued(_session(tmp_path, LOGGED, 'Background command "Run the tests" completed (exit code 0)',
                                "exit=0\n5 passed\n"), "human")
