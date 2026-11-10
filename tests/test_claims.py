@@ -88,7 +88,8 @@ def test_session_days_are_unknown_without_timestamps_and_mixed_zones_do_not_cras
     days = _session_days({"started_at": "2026-11-10T10:00:00", "ended_at": "2026-11-10T10:01:00Z"})  # naive + aware
     assert "2026-11-10" in days and len(days) <= 2
     # Unknown days leave dates unjudged: the dated claim stays.
-    assert [c.kind for c in find_claims("2026-11-10 已 push 到 origin/main", session_days=_session_days({}))] == ["push"]
+    claims = find_claims("2026-11-10 已 push 到 origin/main", session_days=_session_days({}))
+    assert [c.kind for c in claims] == ["push"]
 
 
 @pytest.mark.parametrize("text, kind", [
