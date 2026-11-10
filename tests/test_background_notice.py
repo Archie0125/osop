@@ -146,6 +146,15 @@ def test_notice_text_in_an_injected_message_is_not_a_notice(tmp_path):
     assert "⏳" in _section(path, "Tests") and "✅" not in _section(path, "Claims")
 
 
+def test_an_injected_message_is_not_a_notice_whatever_its_origin(tmp_path):
+    """isMeta marks text Claude Code injects (a skill body); no real notice carries it."""
+    path = _session(tmp_path, "pytest -q", 'Background command "Run the tests" completed (exit code 0)', "5 passed\n")
+    events = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+    events[3]["isMeta"] = True
+    path.write_text("\n".join(json.dumps(e) for e in events) + "\n", encoding="utf-8")
+    assert "⏳" in _section(path, "Tests") and "✅" not in _section(path, "Claims")
+
+
 def test_no_notice_leaves_the_run_unfinished(tmp_path):
     path = _session(tmp_path, LOGGED, None, "exit=0\n5 passed\n")
     assert "⏳" in _section(path, "Tests") and "⚠️ cannot tell" in _section(path, "Claims")
