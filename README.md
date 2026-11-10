@@ -39,7 +39,7 @@ Receipts live under `~/.osop/receipts/`, never in the repo the agent worked on.
 
 ## Stop hook (optional)
 
-`hooks/osop-stop.py` writes the receipt when a Claude Code turn ends and shows the one-line summary, claims first: `OSOP · claims: 1 contradicted ❌ (tests pass) · tests: 3 runs: … · receipt: …`. It checks the final message Claude Code hands the hook (`last_assistant_message`), so a transcript file that has not caught up yet does not matter. It is not installed for you: add it to `settings.json` under `hooks` → `Stop` with a python that has osop installed (see the file's docstring). Transcripts over 200 MB are skipped, and the summary says so (`OSOP_MAX_TRANSCRIPT_MB` changes the limit).
+`hooks/osop-stop.py` writes the receipt when a Claude Code turn ends and shows the one-line summary, claims first: `OSOP · claims: 1 contradicted ❌ (tests pass) · tests: 3 runs: … · receipt: …`. It checks the final message Claude Code hands the hook (`last_assistant_message`), so a transcript file that has not caught up yet does not matter. It is not installed for you: add it to `settings.json` under `hooks` → `Stop` with a python that has osop installed (see the file's docstring). Transcripts over 200 MB are skipped, and the summary says so (`OSOP_MAX_TRANSCRIPT_MB` changes the limit). Every Stop also appends the summary and the receipt's claim rows to `~/.osop/brief.log` (`OSOP_BRIEF_LOG` changes the path): the receipt is rewritten at each Stop, so this log is where you look back at what earlier turns claimed and how each claim was judged.
 
 ## Commands
 
