@@ -209,17 +209,17 @@ def _apply_notices(event: dict, background: dict[str, ToolCall], ts: str) -> Non
     "didn't finish before the previous session ended") leaves the call unfinished.
 
     A notice comes as a user event, or, when it arrives while the agent is still working, as a queued_command
-    attachment.
+    attachment. A sub-agent gets its notices in a user event marked isMeta, so isMeta does not rule one out.
     """
-    queued = event.get("attachment") if event.get("type") == "attachment" else None
-    if isinstance(queued, dict) and queued.get("type") == "queued_command":
+    if event.get("type") == "attachment":
+        queued = event.get("attachment")
+        if not (isinstance(queued, dict) and queued.get("type") == "queued_command"):
+            return
         origin, content = queued.get("origin"), queued.get("prompt")
     else:
         origin, content = event.get("origin"), _message(event).get("content")
-    # Only Claude Code's own notice counts: notice text in a tool result, a skill body (isMeta) or a pasted prompt is
-    # not one. Of 3,142 real notices in 30 days of transcripts, none carried isMeta.
-    if event.get("isMeta") or not (isinstance(origin, dict) and origin.get("kind") == "task-notification"
-                                   and isinstance(content, str)):
+    # Only Claude Code's own notice counts: notice text in a tool result, a skill body or a pasted prompt is not one.
+    if not (isinstance(origin, dict) and origin.get("kind") == "task-notification" and isinstance(content, str)):
         return
     for block in _NOTICE.findall(content):
         tc = background.get(_notice_tag(block, "tool-use-id"))
