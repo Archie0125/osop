@@ -77,17 +77,19 @@ _COUNTED = re.compile(
     _NUMBER_TOKEN + r"\s*(?:個|条|條|項|项|題|题|支|筆|(?:tests?|specs?|cases?|checks?|examples?)\b"
     r"|(?=(?:passed|passing|pass|通過|過|綠)))", re.IGNORECASE)
 _NOT_PASSING = re.compile(r"\s*(?:跳過|略過|失敗|錯誤|skip|fail|error|pending|risky|incomplete)", re.IGNORECASE)
+_ZERO_FAILED = re.compile(r"[,，、]?\s*(?<![\d.,])0\s*(?:個\s*)?(?:失敗|failures?\b|failed\b)", re.IGNORECASE)
 # 過 alone, but not in 跳過 / 略過 (skipped), 跑過 (ran), 看過 / 試過 / 做過 / 改過 / 用過 / 經過.
 _PASS_WORD = re.compile(r"全過|通過|(?<![跳略跑看試做改用經])過|綠|\bpass(?:ed|es|ing)?\b|\bgreen\b", re.IGNORECASE)
-# A line of runner output that reports counts: "Tests: 3477, …", "18 passed", "OK (42 tests", "ℹ pass 13".
-_COUNT_LINE = re.compile(r"\btests?\b|\bpass(?:ed|ing)?\b|\bexamples?\b|^\s*OK\b", re.IGNORECASE)
-# Not a progress percentage ("[ 18%]"), a duration ("18ms"), a time ("00:18") or part of a name ("test_v18.py").
-_COUNT_NUMBER = re.compile(r"(?<![\w:.,/\\])(\d{1,3}(?:,\d{3})+|\d+)(?![\w%]|[,.]\d)")
-# Assertions are not tests: "OK (18 tests, 49 assertions)", "Tests: 3477, Assertions: 73480".
-_ASSERTION_COUNT = re.compile(r"\bassertions?:\s*\d+(?:,\d{3})*|\b\d+(?:,\d{3})*\s+assertions?\b", re.IGNORECASE)
+# What a runner labels as a number of tests: "18 passed", "1 failed", "OK (42 tests", "13 examples", "50 total",
+# "13 passing", "Tests: 3477", "ℹ pass 13". Not skipped tests, assertions, a progress percentage ("[ 18%]"), part of
+# a name ("test_v18.py"), and not the lines that count suites or files ("Test Suites: 18 total", "Test Files 3 passed").
+_COUNT = r"(\d{1,3}(?:,\d{3})+|\d+)"
+_TEST_COUNT = re.compile(
+    rf"(?<![\w:.,/\\]){_COUNT}\s+(?:passed|passing|failed|failures?|errors?|tests?|examples?|total)\b"
+    rf"|\btests?:\s*{_COUNT}(?![\w%]|[,.]\d)|(?:ℹ|#)\s*(?:tests|pass|fail)\s+{_COUNT}\b", re.IGNORECASE)
+_SUITE_LINE = re.compile(r"^\s*Test (?:Suites|Files)\b", re.IGNORECASE)
 # The tests that ran to a result; skipped ones did not pass ("4 passed, 1 skipped" is not 5 passing).
-_STATUS_COUNT = re.compile(
-    r"(?<![\d:.,])(\d{1,3}(?:,\d{3})+|\d+)\s+(?:passed|failed|failures?|errors?)\b", re.IGNORECASE)
+_STATUS_COUNT = re.compile(rf"(?<![\w:.,/\\]){_COUNT}\s+(?:passed|failed|failures?|errors?)\b", re.IGNORECASE)
 _ECHOED_EXIT = re.compile(r"\bexit(?:\s+code)?\s*[=:]\s*\d+", re.IGNORECASE)
 _EXIT_CODE = re.compile(r"^Exit code (\d+)")
 # A lone `&` runs the command in the background: not `&&`, and not the `&` of `2>&1`, `<&0`, `|&` or `&>`.
@@ -335,6 +337,8 @@ def _tests_evidence(parsed: dict, calls: list, tests: list, quote: str = "") -> 
 def _claimed_counts(quote: str) -> list[int]:
     """The counts of passing tests a sentence gives, 2 or more: "1 個" is too common to tell runs apart."""
     counts: set[int] = set()
+    # "3,477 個 0 失敗", "3477 tests, 0 failures": no failures says the count passed.
+    quote = _ZERO_FAILED.sub(" 全過", quote)
     for clause in _CLAUSE_BREAK.split(quote):
         for m in _ALL_OF.finditer(clause):  # "13/13" is all of them, unless skipped; "3188／3169" is not a pass count
             if m.group(1).replace(",", "") == m.group(2).replace(",", "") and not _NOT_PASSING.match(clause, m.end()):
@@ -346,16 +350,15 @@ def _claimed_counts(quote: str) -> list[int]:
 
 
 def _printed_counts(output: str) -> set[int]:
-    """The counts a run's output reports, on lines that report counts (not "18ms", "1.30s", "line 18").
+    """The numbers of tests a run's output reports.
 
     A line's status counts are summed too: pytest prints "1 failed, 4 passed", never the 5 a sentence gives.
     """
     found: set[int] = set()
     for line in output.splitlines():
-        if not _COUNT_LINE.search(line):
+        if _SUITE_LINE.match(line):
             continue
-        line = _ASSERTION_COUNT.sub(" ", line)
-        found.update(int(n.replace(",", "")) for n in _COUNT_NUMBER.findall(line))
+        found.update(int(n.replace(",", "")) for groups in _TEST_COUNT.findall(line) for n in groups if n)
         statuses = [int(n.replace(",", "")) for n in _STATUS_COUNT.findall(line)]
         if len(statuses) > 1:
             found.add(sum(statuses))

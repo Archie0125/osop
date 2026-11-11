@@ -121,3 +121,20 @@ def test_a_progress_percentage_or_a_file_name_is_not_a_count(tmp_path):
 def test_a_fraction_that_is_skipped_or_failed_is_not_a_pass_count(tmp_path):
     claims = _claims(_session(tmp_path, [SUBSET_PASSED, MAP_TESTS], "選用測試 31/31 跳過，其他測試全過"))
     assert "✅ backed" in claims and "printed 31" not in claims
+
+
+def test_skipped_counts_and_suite_counts_in_runner_output_are_not_test_counts(tmp_path):
+    """Only what a runner labels as tests counts: not "18 skipped", not Jest's "Test Suites: 18 total"."""
+    earlier = ("Bash", {"command": "python -m pytest -q tests/test_map.py"}, "18 passed in 0.20s", False)
+    for output in ("Exit code 1\n1 failed, 49 passed, 18 skipped in 0.31s",
+                   "Exit code 1\nTest Suites: 18 failed, 18 total\nTests:       1 failed, 49 passed, 50 total"):
+        claims = _claims(_session(tmp_path, [earlier, ("Bash", {"command": "npx jest"}, output, True)],
+                                  "All 18 tests passed."))
+        assert "✅ backed" in claims and "the last run that printed 18" in claims, output
+
+
+def test_zero_failures_says_the_count_passed(tmp_path):
+    """「3,477 個 0 失敗」 and "3477 tests, 0 failures" give the count as passing."""
+    for sentence in ("全套 3,477 個 0 失敗", "Full suite: 3477 tests, 0 failures"):
+        claims = _claims(_session(tmp_path, [FULL_SUITE_FAILED, SUBSET_PASSED], sentence))
+        assert "the last run that printed 3477" in claims, sentence
