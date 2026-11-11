@@ -300,72 +300,49 @@ def _session_days(parsed: dict) -> set[str] | None:
 
 
 def _tests_evidence(parsed: dict, calls: list, tests: list, quote: str = "") -> tuple[str, str]:
-    """The last test run judges a "tests pass" sentence, unless the sentence gives a count the run did not print.
+    """The last test run judges a "tests pass" sentence, unless the sentence gives a count it did not print.
 
-    "18 map tests pass" is not about the full suite that ran after it: when the last run printed counts and
-    none is the sentence's, each count the sentence gives is judged by the last run that printed it.
+    "18 map tests pass" is not about the full suite that ran after it. When the sentence gives a count of passing
+    tests and the last run printed counts, none of them that one, no run judges the sentence: it is ⚠️, and the
+    runs that did print its counts are named, never used. An older pass cannot back it, because the last run may
+    be the same tests with a failure in a format read short (Mocha prints "4 passing" and "1 failing" on two
+    lines); an older failure cannot contradict it, because the suite may have passed later outside a test
+    command (a pre-push hook runs it). So this only ever moves a verdict to ⚠️, never to ✅ or ❌.
     """
     if not tests:
         return _NO_EVIDENCE, "no test command ran"
-    last = max(tests, key=lambda t: t[1].started_at)
-    counts = _claimed_counts(quote)
-    # A run that printed no count at all (only an exit status came back) cannot be told apart; it judges as before.
-    last_printed = _printed_counts(last[1].output)
-    if counts and last_printed and not last_printed & set(counts):
-        return _counted_evidence(parsed, calls, tests, last, counts)
-    by, tc, code, m = last
+    by, tc, code, m = max(tests, key=lambda t: t[1].started_at)
     verdict = _test_verdict(tc, code, m)
     where = f"last test run {_code(_command(tc), 80)} at {_clock(tc.started_at)}{_background_note(tc)}"
+    counts = _claimed_counts(quote)
+    printed = _printed_counts(tc.output)
+    # A run that printed no count at all (only an exit status came back) cannot be told apart; it judges as before.
+    if counts and printed and not printed & set(counts):
+        return _UNCLEAR, f"{_where_counts_were_printed(tests, counts)}; {where} printed other counts → {verdict}"
     if verdict.startswith("❌"):
         return _CONTRADICTED, f"{where} → {verdict}"
-    return _passing_evidence(parsed, calls, where, verdict, tc.started_at)
-
-
-def _counted_evidence(parsed: dict, calls: list, tests: list, last: tuple, counts: list[int]) -> tuple[str, str]:
-    """Judge a sentence's counts by the last runs that printed them; these older runs can only back the claim.
-
-    Every count needs a run, and every such run must have passed. An older failure does not contradict the
-    claim: the suite may have passed later outside a test command (a pre-push hook runs it). And when the last
-    test run shows a failure, nothing older backs the claim: that run may be the same tests in a format read
-    short (Mocha prints "4 passing" and "1 failing" on two lines). No run printing a count: the runs that did
-    happen are about something else.
-    """
-    by, tc, code, m = last
-    last_verdict = _test_verdict(tc, code, m)
-    last_run = f"last test run {_code(_command(tc), 60)} at {_clock(tc.started_at)}"
-    last_where = f"{last_run} → {last_verdict}"
-    runs = {n: max((t for t in tests if n in _printed_counts(t[1].output)), key=lambda t: t[1].started_at,
-                   default=None) for n in counts}
-    missing = [str(n) for n, run in runs.items() if run is None]
-    if missing:
-        return _UNCLEAR, f"no test run printed {'/'.join(missing)}, a count the sentence gives; {last_where}"
-    by_run: dict[int, tuple[tuple, list[str]]] = {}
-    for n, run in runs.items():
-        by_run.setdefault(id(run[1]), (run, []))[1].append(str(n))
-    judged = [(run, shown, _test_verdict(run[1], run[2], run[3])) for run, shown in by_run.values()]
-    where = "; ".join(f"the last run that printed {'/'.join(shown)}, {_code(_command(run[1]), 80)} at "
-                      f"{_clock(run[1].started_at)}{_background_note(run[1])} → {verdict}"
-                      for run, shown, verdict in judged)
-    if any(verdict.startswith("❌") for _, _, verdict in judged):
-        return _UNCLEAR, f"{where}; a later run outside the test commands (a hook) may have passed"
-    if tc.is_error or _FAILURE.search(tc.output) or last_verdict.startswith("❌"):
-        return _UNCLEAR, f"{where}; but the {last_run} shows a failure → {last_verdict}"
-    unclear = [verdict for _, _, verdict in judged if not verdict.startswith(("✅", "🟡"))]
-    earliest = min(run[1].started_at for run, _, _ in judged)
-    return _passing_evidence(parsed, calls, where, unclear[0] if unclear else "", earliest, joined=True)
-
-
-def _passing_evidence(parsed: dict, calls: list, where: str, verdict: str, started_at: str,
-                      joined: bool = False) -> tuple[str, str]:
-    """Backed, unless the run did not clearly pass or the project changed after it."""
-    shown = where if joined else f"{where} → {verdict}"
-    if verdict and not verdict.startswith(("✅", "🟡")):
-        return _UNCLEAR, shown
-    later = _edits_after(parsed, calls, started_at)
+    if not verdict.startswith(("✅", "🟡")):
+        return _UNCLEAR, f"{where} → {verdict}"
+    later = _edits_after(parsed, calls, tc.started_at)
     if later:
         what = "the project changed after it" if parsed.get("cwd") else "files changed after it"
-        return _UNCLEAR, f"{shown}, but {what}: {later}"
-    return _BACKED, shown
+        return _UNCLEAR, f"{where} → {verdict}, but {what}: {later}"
+    return _BACKED, f"{where} → {verdict}"
+
+
+def _where_counts_were_printed(tests: list, counts: list[int]) -> str:
+    """For each count a sentence gives, the last run that printed it, or that none did: shown, not judged."""
+    parts = []
+    for n in counts:
+        run = max((t for t in tests if n in _printed_counts(t[1].output)), key=lambda t: t[1].started_at,
+                  default=None)
+        if run is None:
+            parts.append(f"no test run printed {n}, a count the sentence gives")
+        else:
+            by, tc, code, m = run
+            parts.append(f"the last run that printed {n} was {_code(_command(tc), 60)} at {_clock(tc.started_at)}"
+                         f" → {_test_verdict(tc, code, m)}")
+    return "; ".join(parts)
 
 
 def _claimed_counts(quote: str) -> list[int]:

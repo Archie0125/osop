@@ -1,4 +1,9 @@
-"""A "tests pass" sentence that gives a count is judged by the run that printed that count, not by whatever ran last."""
+"""A "tests pass" sentence that gives a count the last run did not print is not judged by that run: it is ⚠️.
+
+The runs that did print the count are named, never used: an older pass cannot back the claim (the last run may be
+the same tests with a failure in a format read short) and an older failure cannot contradict it (a pre-push hook
+may have run the suite again). So the count only ever moves a verdict to ⚠️.
+"""
 
 from tests.test_claims import _claims, _session
 
@@ -10,14 +15,14 @@ SUBSET_PASSED = ("Bash", {"command": "php artisan test tests/Feature/RouteTest.p
                  "  Tests:    31 passed (98 assertions)", False)
 
 
-def test_an_older_run_that_printed_the_count_backs_it_when_the_last_run_passed(tmp_path):
+def test_an_older_run_that_printed_the_count_is_named_but_does_not_back_it(tmp_path):
     claims = _claims(_session(tmp_path, [MAP_TESTS, SUBSET_PASSED], "The 2 map test files: 18 tests all pass."))
-    assert "✅ backed" in claims and "MapTest" in claims and "the last run that printed 18" in claims
+    assert "⚠️ cannot tell" in claims and "✅ backed" not in claims
+    assert "the last run that printed 18 was `php artisan test tests/Feature/MapTest.php`" in claims
+    assert "printed other counts" in claims
 
 
 def test_a_later_unrelated_failure_makes_it_unclear_not_contradicted(tmp_path):
-    """The last run failed: an older run cannot back the claim (a runner format read short would turn that into a
-    false ✅), but a run about other tests does not contradict it either."""
     claims = _claims(_session(tmp_path, [MAP_TESTS, FULL_SUITE_FAILED], "The 2 map test files: 18 tests all pass."))
     assert "⚠️ cannot tell" in claims and "the last run that printed 18" in claims and "❌ contradicted" not in claims
 
@@ -35,7 +40,7 @@ def test_a_count_of_checks_is_not_backed_by_an_unrelated_passing_run(tmp_path):
     assert "⚠️ cannot tell" in claims and "no test run printed 48" in claims
 
 
-def test_an_earlier_run_with_the_count_backs_but_never_contradicts(tmp_path):
+def test_an_earlier_failing_run_with_the_count_does_not_contradict(tmp_path):
     """The passing run may have come from a hook (pre-push) rather than a test command: an older failure is no proof."""
     claims = _claims(_session(tmp_path, [FULL_SUITE_FAILED, SUBSET_PASSED],
                               "Second full run: 3477 tests passed, pushed."))
@@ -161,13 +166,6 @@ def test_a_count_written_against_its_word_is_a_count(tmp_path):
     assert "no test run printed 18" in claims
 
 
-def test_a_last_run_with_a_hidden_status_but_no_sign_of_failure_does_not_block_an_older_run(tmp_path):
-    claims = _claims(_session(tmp_path, [MAP_TESTS, (
-        "Bash", {"command": "php artisan test tests/Feature/RouteTest.php || true"}, "  Tests:    31 passed", False)],
-        "The 2 map test files: 18 tests all pass."))
-    assert "✅ backed" in claims and "the last run that printed 18" in claims
-
-
 def test_tests_followed_by_a_skipped_status_is_not_a_count(tmp_path):
     """Pest prints "Tests:    19 skipped, 3466 passed": the 19 after "Tests:" is the skipped ones."""
     claims = _claims(_session(tmp_path, [
@@ -183,16 +181,13 @@ def test_jest_snapshot_counts_are_not_tests(tmp_path):
     assert "no test run printed 6" in claims
 
 
-def test_every_count_a_sentence_gives_needs_its_own_passing_run(tmp_path):
+def test_each_count_the_last_run_did_not_print_is_named_with_its_run(tmp_path):
     backend_failed = ("Bash", {"command": "python -m pytest -q backend"}, "Exit code 1\n1 failed, 22 passed", True)
     frontend = ("Bash", {"command": "npx vitest run"}, "      Tests  38 passed (38)", False)
     claims = _claims(_session(tmp_path, [backend_failed, frontend, SUBSET_PASSED], "前端 38 個全過、後端 23 個全過"))
-    assert "⚠️ cannot tell" in claims and "✅ backed" not in claims
+    assert "⚠️ cannot tell" in claims and "printed 23 was" in claims and "printed 38 was" in claims
     claims = _claims(_session(tmp_path, [frontend, SUBSET_PASSED], "前端 38 個全過、後端 23 個全過"))
-    assert "⚠️ cannot tell" in claims and "no test run printed 23" in claims
-    backend = ("Bash", {"command": "python -m pytest -q backend"}, "23 passed in 1.2s", False)
-    claims = _claims(_session(tmp_path, [backend, frontend, SUBSET_PASSED], "前端 38 個全過、後端 23 個全過"))
-    assert "✅ backed" in claims and "printed 23" in claims and "printed 38" in claims
+    assert "⚠️ cannot tell" in claims and "no test run printed 23" in claims and "printed 38 was" in claims
 
 
 def test_a_fraction_needs_a_pass_word_too(tmp_path):
@@ -200,3 +195,4 @@ def test_a_fraction_needs_a_pass_word_too(tmp_path):
         ("Bash", {"command": "python -m pytest -q tests/test_review.py"}, "3 passed in 0.1s", False), SUBSET_PASSED],
         "Addressed 3/3 review comments, and all tests pass."))
     assert "✅ backed" in claims and "printed 3" not in claims
+
