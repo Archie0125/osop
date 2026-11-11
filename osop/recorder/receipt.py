@@ -66,6 +66,25 @@ _CONTROL = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]|[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]"
 _PASSED_COUNT = re.compile(
     r"\b\d+\s+pass(?:ed|ing)\b|^OK \(\d+ tests?\b|^OK, but |test result: ok\b|\b\d+ examples?, 0 failures\b|^ok\s+\S+",
     re.IGNORECASE | re.MULTILINE)
+# A count of passing tests a sentence gives, within one clause: "13/13", "245 條全過", "3,792 過", "18 tests all pass",
+# "151 passed", "1273 綠". A number glued to `#`, a date, a time or a version ("#19", "2026-11-10", "05:22", "8.3")
+# is not one, nor a count of skipped or failed tests ("19 條跳過"), nor one with no pass word after it in its clause
+# ("內容池 358 條", "3091 tests, 0 failures").
+_CLAUSE_BREAK = re.compile(r"[，。；;、（）()\n]|,(?!\d{3}(?!\d))")  # "1,475" is one number
+_NUMBER_TOKEN = r"(?<![\w#.,/／:\-–])(\d{1,3}(?:,\d{3})+|\d+)(?![\w.,:\-–])"
+_ALL_OF = re.compile(_NUMBER_TOKEN + r"\s*[/／]\s*(\d{1,3}(?:,\d{3})+|\d+)(?![\w.,])")
+_COUNTED = re.compile(
+    _NUMBER_TOKEN + r"\s*(?:個|条|條|項|项|題|题|支|筆|(?:tests?|specs?|cases?|checks?|examples?)\b"
+    r"|(?=(?:passed|passing|pass|通過|過|綠)))", re.IGNORECASE)
+_NOT_PASSING = re.compile(r"\s*(?:跳過|略過|失敗|錯誤|skip|fail|error|pending|risky|incomplete)", re.IGNORECASE)
+# 過 alone, but not in 跳過 / 略過 (skipped), 跑過 (ran), 看過 / 試過 / 做過 / 改過 / 用過 / 經過.
+_PASS_WORD = re.compile(r"全過|通過|(?<![跳略跑看試做改用經])過|綠|\bpass(?:ed|es|ing)?\b|\bgreen\b", re.IGNORECASE)
+# A line of runner output that reports counts: "Tests: 3477, …", "18 passed", "OK (42 tests", "ℹ pass 13".
+_COUNT_LINE = re.compile(r"\btests?\b|\bpass(?:ed|ing)?\b|\bexamples?\b|^\s*OK\b", re.IGNORECASE)
+_COUNT_NUMBER = re.compile(r"(?<![\d:.,])(\d{1,3}(?:,\d{3})+|\d+)(?![\w]|[,.]\d)")
+_STATUS_COUNT = re.compile(
+    r"(?<![\d:.,])(\d{1,3}(?:,\d{3})+|\d+)\s+(?:passed|failed|failures?|errors?|skipped|pending|incomplete|risky)\b",
+    re.IGNORECASE)
 _ECHOED_EXIT = re.compile(r"\bexit(?:\s+code)?\s*[=:]\s*\d+", re.IGNORECASE)
 _EXIT_CODE = re.compile(r"^Exit code (\d+)")
 # A lone `&` runs the command in the background: not `&&`, and not the `&` of `2>&1`, `<&0`, `|&` or `&>`.
@@ -236,7 +255,7 @@ def _claim_rows(parsed: dict, calls: list, tests: list) -> list[tuple[Claim, str
             continue
         seen.add(claim.kind)
         if claim.kind == "tests":
-            verdict, evidence = _tests_evidence(parsed, calls, tests)
+            verdict, evidence = _tests_evidence(parsed, calls, tests, claim.quote)
         elif claim.kind in ("lint", "build"):
             pattern = _LINT_COMMAND if claim.kind == "lint" else _BUILD_COMMAND
             verdict, evidence = _command_evidence(_matching_calls(calls, pattern), claim.kind)
@@ -271,13 +290,35 @@ def _session_days(parsed: dict) -> set[str] | None:
         return None
 
 
-def _tests_evidence(parsed: dict, calls: list, tests: list) -> tuple[str, str]:
+def _tests_evidence(parsed: dict, calls: list, tests: list, quote: str = "") -> tuple[str, str]:
+    """The last test run judges a "tests pass" sentence, unless the sentence gives a count the run did not print.
+
+    "18 map tests pass" is not about the full suite that ran after it. Then the last run that printed one of
+    the sentence's counts is the evidence, and it can only back the claim: a run that passed with that count
+    may have come later from outside a test command (a pre-push hook runs the suite), so an older failure
+    does not contradict it. No run printing the count: the runs that did happen are about something else.
+    """
     if not tests:
         return _NO_EVIDENCE, "no test command ran"
-    by, tc, code, m = max(tests, key=lambda t: t[1].started_at)
+    last = max(tests, key=lambda t: t[1].started_at)
+    counts = _claimed_counts(quote)
+    chosen, which = last, "last test run"
+    # A run that printed no count at all (only an exit status came back) cannot be told apart; it judges as before.
+    last_printed = _printed_counts(last[1].output)
+    if counts and last_printed and not last_printed & set(counts):
+        printed = [t for t in tests if _printed_counts(t[1].output) & set(counts)]
+        shown = "/".join(str(n) for n in counts)
+        if not printed:
+            by, tc, code, m = last
+            return _UNCLEAR, (f"no test run printed {shown}, the count the sentence gives; last test run "
+                              f"{_code(_command(tc), 80)} at {_clock(tc.started_at)} → {_test_verdict(tc, code, m)}")
+        chosen, which = max(printed, key=lambda t: t[1].started_at), f"the last run that printed {shown},"
+    by, tc, code, m = chosen
     verdict = _test_verdict(tc, code, m)
-    where = f"last test run {_code(_command(tc), 80)} at {_clock(tc.started_at)}{_background_note(tc)}"
+    where = f"{which} {_code(_command(tc), 80)} at {_clock(tc.started_at)}{_background_note(tc)}"
     if verdict.startswith("❌"):
+        if chosen is not last:
+            return _UNCLEAR, f"{where} → {verdict}; a later run outside the test commands (a hook) may have passed"
         return _CONTRADICTED, f"{where} → {verdict}"
     if not verdict.startswith(("✅", "🟡")):
         return _UNCLEAR, f"{where} → {verdict}"
@@ -286,6 +327,35 @@ def _tests_evidence(parsed: dict, calls: list, tests: list) -> tuple[str, str]:
         what = "the project changed after it" if parsed.get("cwd") else "files changed after it"
         return _UNCLEAR, f"{where} → {verdict}, but {what}: {later}"
     return _BACKED, f"{where} → {verdict}"
+
+
+def _claimed_counts(quote: str) -> list[int]:
+    """The counts of passing tests a sentence gives, 2 or more: "1 個" is too common to tell runs apart."""
+    counts: set[int] = set()
+    for clause in _CLAUSE_BREAK.split(quote):
+        for m in _ALL_OF.finditer(clause):  # "13/13" is all of them; "3188／3169" is not a pass count
+            if m.group(1).replace(",", "") == m.group(2).replace(",", ""):
+                counts.add(int(m.group(1).replace(",", "")))
+        for m in _COUNTED.finditer(clause):
+            if not _NOT_PASSING.match(clause, m.end()) and _PASS_WORD.search(clause, m.end()):
+                counts.add(int(m.group(1).replace(",", "")))
+    return sorted(n for n in counts if n >= 2)
+
+
+def _printed_counts(output: str) -> set[int]:
+    """The counts a run's output reports, on lines that report counts (not "18ms", "1.30s", "line 18").
+
+    A line's status counts are summed too: pytest prints "1 failed, 4 passed", never the 5 a sentence gives.
+    """
+    found: set[int] = set()
+    for line in output.splitlines():
+        if not _COUNT_LINE.search(line):
+            continue
+        found.update(int(n.replace(",", "")) for n in _COUNT_NUMBER.findall(line))
+        statuses = [int(n.replace(",", "")) for n in _STATUS_COUNT.findall(line)]
+        if len(statuses) > 1:
+            found.add(sum(statuses))
+    return found
 
 
 def _edits_after(parsed: dict, calls: list, started_at: str) -> str:
