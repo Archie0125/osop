@@ -81,7 +81,8 @@ _NOT_PASSING = re.compile(r"\s*(?:跳過|略過|失敗|錯誤|skip|fail|error|pe
 _PASS_WORD = re.compile(r"全過|通過|(?<![跳略跑看試做改用經])過|綠|\bpass(?:ed|es|ing)?\b|\bgreen\b", re.IGNORECASE)
 # A line of runner output that reports counts: "Tests: 3477, …", "18 passed", "OK (42 tests", "ℹ pass 13".
 _COUNT_LINE = re.compile(r"\btests?\b|\bpass(?:ed|ing)?\b|\bexamples?\b|^\s*OK\b", re.IGNORECASE)
-_COUNT_NUMBER = re.compile(r"(?<![\d:.,])(\d{1,3}(?:,\d{3})+|\d+)(?![\w]|[,.]\d)")
+# Not a progress percentage ("[ 18%]"), a duration ("18ms"), a time ("00:18") or part of a name ("test_v18.py").
+_COUNT_NUMBER = re.compile(r"(?<![\w:.,/\\])(\d{1,3}(?:,\d{3})+|\d+)(?![\w%]|[,.]\d)")
 # Assertions are not tests: "OK (18 tests, 49 assertions)", "Tests: 3477, Assertions: 73480".
 _ASSERTION_COUNT = re.compile(r"\bassertions?:\s*\d+(?:,\d{3})*|\b\d+(?:,\d{3})*\s+assertions?\b", re.IGNORECASE)
 # The tests that ran to a result; skipped ones did not pass ("4 passed, 1 skipped" is not 5 passing).
@@ -335,8 +336,8 @@ def _claimed_counts(quote: str) -> list[int]:
     """The counts of passing tests a sentence gives, 2 or more: "1 個" is too common to tell runs apart."""
     counts: set[int] = set()
     for clause in _CLAUSE_BREAK.split(quote):
-        for m in _ALL_OF.finditer(clause):  # "13/13" is all of them; "3188／3169" is not a pass count
-            if m.group(1).replace(",", "") == m.group(2).replace(",", ""):
+        for m in _ALL_OF.finditer(clause):  # "13/13" is all of them, unless skipped; "3188／3169" is not a pass count
+            if m.group(1).replace(",", "") == m.group(2).replace(",", "") and not _NOT_PASSING.match(clause, m.end()):
                 counts.add(int(m.group(1).replace(",", "")))
         for m in _COUNTED.finditer(clause):
             if not _NOT_PASSING.match(clause, m.end()) and _PASS_WORD.search(clause, m.end()):

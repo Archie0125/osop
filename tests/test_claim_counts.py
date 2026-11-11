@@ -105,3 +105,19 @@ def test_skipped_tests_are_not_summed_into_a_pass_count(tmp_path):
         ("Bash", {"command": "python -m pytest -q"}, "4 passed, 1 skipped in 0.31s", False), SUBSET_PASSED],
         "All 5 tests passed."))
     assert "no test run printed 5" in claims
+
+
+def test_a_progress_percentage_or_a_file_name_is_not_a_count(tmp_path):
+    """pytest prints "tests/test_api.py .... [ 18%]" on every run; 18% is no count of 18 tests, nor is test_v2."""
+    claims = _claims(_session(tmp_path, [
+        ("Bash", {"command": "python -m pytest -q tests/test_map.py"}, "18 passed in 0.20s", False),
+        ("Bash", {"command": "python -m pytest -q"},
+         "Exit code 1\ntests/test_api.py .... [ 18%]\ntests/test_v18.py ....F [100%]\n"
+         "1 failed, 49 passed in 0.31s", True)],
+        "All 18 tests passed."))
+    assert "✅ backed" in claims and "the last run that printed 18" in claims
+
+
+def test_a_fraction_that_is_skipped_or_failed_is_not_a_pass_count(tmp_path):
+    claims = _claims(_session(tmp_path, [SUBSET_PASSED, MAP_TESTS], "選用測試 31/31 跳過，其他測試全過"))
+    assert "✅ backed" in claims and "printed 31" not in claims
