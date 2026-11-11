@@ -82,9 +82,11 @@ _PASS_WORD = re.compile(r"全過|通過|(?<![跳略跑看試做改用經])過|�
 # A line of runner output that reports counts: "Tests: 3477, …", "18 passed", "OK (42 tests", "ℹ pass 13".
 _COUNT_LINE = re.compile(r"\btests?\b|\bpass(?:ed|ing)?\b|\bexamples?\b|^\s*OK\b", re.IGNORECASE)
 _COUNT_NUMBER = re.compile(r"(?<![\d:.,])(\d{1,3}(?:,\d{3})+|\d+)(?![\w]|[,.]\d)")
+# Assertions are not tests: "OK (18 tests, 49 assertions)", "Tests: 3477, Assertions: 73480".
+_ASSERTION_COUNT = re.compile(r"\bassertions?:\s*\d+(?:,\d{3})*|\b\d+(?:,\d{3})*\s+assertions?\b", re.IGNORECASE)
+# The tests that ran to a result; skipped ones did not pass ("4 passed, 1 skipped" is not 5 passing).
 _STATUS_COUNT = re.compile(
-    r"(?<![\d:.,])(\d{1,3}(?:,\d{3})+|\d+)\s+(?:passed|failed|failures?|errors?|skipped|pending|incomplete|risky)\b",
-    re.IGNORECASE)
+    r"(?<![\d:.,])(\d{1,3}(?:,\d{3})+|\d+)\s+(?:passed|failed|failures?|errors?)\b", re.IGNORECASE)
 _ECHOED_EXIT = re.compile(r"\bexit(?:\s+code)?\s*[=:]\s*\d+", re.IGNORECASE)
 _EXIT_CODE = re.compile(r"^Exit code (\d+)")
 # A lone `&` runs the command in the background: not `&&`, and not the `&` of `2>&1`, `<&0`, `|&` or `&>`.
@@ -351,6 +353,7 @@ def _printed_counts(output: str) -> set[int]:
     for line in output.splitlines():
         if not _COUNT_LINE.search(line):
             continue
+        line = _ASSERTION_COUNT.sub(" ", line)
         found.update(int(n.replace(",", "")) for n in _COUNT_NUMBER.findall(line))
         statuses = [int(n.replace(",", "")) for n in _STATUS_COUNT.findall(line)]
         if len(statuses) > 1:

@@ -86,3 +86,22 @@ def test_skipped_ran_or_looked_at_is_not_passed(tmp_path):
     claims = _claims(_session(tmp_path, [FULL_SUITE_FAILED, SUBSET_PASSED],
                               "整套測試：3,485 個通過，另有 19 個是本來就設定跳過的"))
     assert "no test run printed 3485" in claims
+
+
+def test_an_assertion_count_is_not_a_test_count(tmp_path):
+    """PHPUnit prints "OK (18 tests, 49 assertions)": 49 is not a number of tests."""
+    claims = _claims(_session(tmp_path, [
+        ("Bash", {"command": "php vendor/bin/phpunit"}, "OK (18 tests, 49 assertions)", False),
+        SUBSET_PASSED], "All 49 tests passed."))
+    assert "no test run printed 49" in claims
+    claims = _claims(_session(tmp_path, [
+        ("Bash", {"command": "php vendor/bin/phpunit"}, "Tests: 3477, Assertions: 73480, Skipped: 19.", False),
+        SUBSET_PASSED], "73480 tests passed."))
+    assert "no test run printed 73480" in claims
+
+
+def test_skipped_tests_are_not_summed_into_a_pass_count(tmp_path):
+    claims = _claims(_session(tmp_path, [
+        ("Bash", {"command": "python -m pytest -q"}, "4 passed, 1 skipped in 0.31s", False), SUBSET_PASSED],
+        "All 5 tests passed."))
+    assert "no test run printed 5" in claims
