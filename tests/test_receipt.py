@@ -218,8 +218,14 @@ def test_node_running_a_test_file_is_a_test_run(tmp_path):
     for command in ["node --test test/parser.test.ts", "node --test --test-name-pattern='login' test/a.test.ts",
                     "node --test tests/js/", "node tests/js/run.mjs", "node test.js", "node src/cart.spec.mjs",
                     "env -u FORCE_COLOR node tests/js/run.mjs", "node --no-warnings test/unit/cart.mjs",
-                    "node -r ts-node/register tests/api.test.ts", "node --import tsx --test test/a.test.ts"]:
+                    "node -r ts-node/register tests/api.test.ts", "node --import tsx --test test/a.test.ts",
+                    # `--test` among node's options, whatever options with values come before it.
+                    "node --test-concurrency 1 --test tests/smoke.js"]:
         assert "No test command ran." not in _verdicts(tmp_path, command), command
+    # The path ends where the shell command does: `||true`, `;echo …` and `|tail` hide the script's exit status.
+    for command in ["node tests/smoke.js||true", "node tests/js/run.mjs;echo done", "node tests/js/run.mjs|tail -3"]:
+        row = _verdicts(tmp_path, command, "AssertionError: expected 3, got 2").splitlines()[2]
+        assert "✅" not in row and "hide" in row, command
     # A script that is not a test file, inline code, a syntax check and a version query are not test runs.
     for command in ["node scripts/test-data.js", "node abtest.js", "node server.js", "node latests/x.js",
                     "node -e 'require(\"./tests/js/x.mjs\")'", "node --check tests/js/form.mjs",

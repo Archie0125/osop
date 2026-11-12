@@ -16,6 +16,9 @@ from osop.recorder.transcript import ToolCall, _walk
 # Node options whose value is the next word: `-r ./tests/setup.js` loads that file, it is not the script that runs.
 _NODE_VALUE_OPTION = (r"(?:-r|-C|--(?:require|import|loader|experimental-loader|conditions|input-type|env-file|title"
                       r"|test-reporter|test-reporter-destination|test-name-pattern|test-skip-pattern))(?!\S)")
+# One word of a shell command: it ends where `;`, `&`, `|`, a redirect or a parenthesis starts the next part
+# (`node tests/a.js||true` runs `true` after the test, which hides its exit status).
+_SHELL_WORD = r"[^\s;&|<>()]"
 _TEST_RUNNER = (
     r"pytest|py\.test|unittest|nosetests|phpunit|pest|artisan\s+test|manage\.py\s+test|tox|prove"
     r"|(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?test|make\s+test|go\s+test|cargo\s+test"
@@ -23,10 +26,12 @@ _TEST_RUNNER = (
     r"|playwright\s+test|cypress\s+run|mocha|ava\b|ctest|bats|flutter\s+test|mix\s+test|sbt\s+test"
     # Node's own runner, or node running a test file: `node --test`, `node tests/js/run.mjs`, `node test.js`,
     # `node src/cart.spec.mjs`. Not `node -e`, `-p` or `--check`: inline code, or a syntax check that runs nothing.
-    rf"|node(?:\.exe)?(?:\s+(?:{_NODE_VALUE_OPTION}\s+\S+"
-    rf"|(?!{_NODE_VALUE_OPTION})(?!-(?:[ecp]|-eval|-print|-check)\b)-\S+))*\s+"
-    r"(?:--test(?![\w-])|(?:\S*/)?(?:test\.[cm]?[jt]s|[^\s/]+\.(?:test|spec)\.[cm]?[jt]sx?)(?![\w.])"
-    r"|(?P<test_dir_script>(?:\S*/)?tests?/\S*))"
+    # `--test` counts wherever it is among the options, after options with values osop does not know.
+    rf"|node(?:\.exe)?(?:\s+(?!-(?:[ecp]|-eval|-print|-check)\b){_SHELL_WORD}+)*?\s+--test(?![\w-])"
+    rf"|node(?:\.exe)?(?:\s+(?:{_NODE_VALUE_OPTION}\s+{_SHELL_WORD}+"
+    rf"|(?!{_NODE_VALUE_OPTION})(?!-(?:[ecp]|-eval|-print|-check)\b)-{_SHELL_WORD}+))*\s+"
+    rf"(?:(?:{_SHELL_WORD}*/)?(?:test\.[cm]?[jt]s|[^\s/;&|<>()]+\.(?:test|spec)\.[cm]?[jt]sx?)(?![\w.])"
+    rf"|(?P<test_dir_script>(?:{_SHELL_WORD}*/)?tests?/{_SHELL_WORD}*))"
 )
 # A script that lives in test/ or tests/ without being a test: a fixture server, a seed script, a setup file.
 _TEST_HELPER = re.compile(
