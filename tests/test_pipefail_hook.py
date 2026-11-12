@@ -149,8 +149,8 @@ def test_hook_is_silent_and_exits_zero_when_it_has_nothing_to_say(stdin):
 
 
 def test_env_options_are_read_in_linear_time():
-    """The hook runs before every Bash command: `env -ua -ua …` must not make the runner pattern backtrack."""
-    command = "env " + "-ua " * 24 + "true | tail"
-    start = time.perf_counter()
-    with_pipefail(command)
-    assert time.perf_counter() - start < 0.5
+    """The hook runs before every Bash command: `env -ua …` or `node -r a …` repeated must not make it backtrack."""
+    for command in ("env " + "-ua " * 24 + "true | tail", "node " + "-r a " * 24 + "x | tail"):
+        start = time.perf_counter()
+        with_pipefail(command)
+        assert time.perf_counter() - start < 0.5, command[:20]

@@ -217,12 +217,15 @@ def test_env_that_unsets_or_clears_variables_is_a_wrapper(tmp_path):
 def test_node_running_a_test_file_is_a_test_run(tmp_path):
     for command in ["node --test test/parser.test.ts", "node --test --test-name-pattern='login' test/a.test.ts",
                     "node --test tests/js/", "node tests/js/run.mjs", "node test.js", "node src/cart.spec.mjs",
-                    "env -u FORCE_COLOR node tests/js/run.mjs", "node --no-warnings test/unit/cart.mjs"]:
+                    "env -u FORCE_COLOR node tests/js/run.mjs", "node --no-warnings test/unit/cart.mjs",
+                    "node -r ts-node/register tests/api.test.ts", "node --import tsx --test test/a.test.ts"]:
         assert "No test command ran." not in _verdicts(tmp_path, command), command
     # A script that is not a test file, inline code, a syntax check and a version query are not test runs.
     for command in ["node scripts/test-data.js", "node abtest.js", "node server.js", "node latests/x.js",
                     "node -e 'require(\"./tests/js/x.mjs\")'", "node --check tests/js/form.mjs",
-                    "node -c tests/js/form.mjs", "node --version"]:
+                    "node -c tests/js/form.mjs", "node --version",
+                    # The value of an option is not the script: setup files are not tests.
+                    "node --require ./tests/setup.js scripts/build.js", "node -r ./test/env.js server.js"]:
         assert "No test command ran." in _verdicts(tmp_path, command), command
 
 

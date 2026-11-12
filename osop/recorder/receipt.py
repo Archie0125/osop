@@ -13,6 +13,9 @@ from pathlib import Path
 from osop.recorder.claims import Claim, find_claims
 from osop.recorder.transcript import ToolCall, _walk
 
+# Node options whose value is the next word: `-r ./tests/setup.js` loads that file, it is not the script that runs.
+_NODE_VALUE_OPTION = (r"(?:-r|-C|--(?:require|import|loader|experimental-loader|conditions|input-type|env-file|title"
+                      r"|test-reporter|test-reporter-destination|test-name-pattern|test-skip-pattern))(?!\S)")
 _TEST_RUNNER = (
     r"pytest|py\.test|unittest|nosetests|phpunit|pest|artisan\s+test|manage\.py\s+test|tox|prove"
     r"|(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?test|make\s+test|go\s+test|cargo\s+test"
@@ -20,7 +23,8 @@ _TEST_RUNNER = (
     r"|playwright\s+test|cypress\s+run|mocha|ava\b|ctest|bats|flutter\s+test|mix\s+test|sbt\s+test"
     # Node's own runner, or node running a test file: `node --test`, `node tests/js/run.mjs`, `node test.js`,
     # `node src/cart.spec.mjs`. Not `node -e`, `-p` or `--check`: inline code, or a syntax check that runs nothing.
-    r"|node(?:\.exe)?(?:\s+(?!-(?:[ecp]|-eval|-print|-check)\b)-\S+)*\s+"
+    rf"|node(?:\.exe)?(?:\s+(?:{_NODE_VALUE_OPTION}\s+\S+"
+    rf"|(?!{_NODE_VALUE_OPTION})(?!-(?:[ecp]|-eval|-print|-check)\b)-\S+))*\s+"
     r"(?:--test(?![\w-])|(?:\S*/)?(?:tests?/\S*|test\.[cm]?[jt]s|\S+\.(?:test|spec)\.[cm]?[jt]sx?)(?![\w.]))"
 )
 # `env -u FORCE_COLOR -u CLICOLOR`, `env -i`, `env --unset=CI`: env's options, some taking a value. Each option
