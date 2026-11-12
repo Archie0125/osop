@@ -18,12 +18,18 @@ _TEST_RUNNER = (
     r"|(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?test|make\s+test|go\s+test|cargo\s+test"
     r"|vitest|jest|rspec|mvn\s+test|gradlew?\s+test|dotnet\s+test"
     r"|playwright\s+test|cypress\s+run|mocha|ava\b|ctest|bats|flutter\s+test|mix\s+test|sbt\s+test"
+    # Node's own runner, or node running a test file: `node --test`, `node tests/js/run.mjs`, `node test.js`,
+    # `node src/cart.spec.mjs`. Not `node -e`, `-p` or `--check`: inline code, or a syntax check that runs nothing.
+    r"|node(?:\.exe)?(?:\s+(?!-(?:[ecp]|-eval|-print|-check)\b)-\S+)*\s+"
+    r"(?:--test(?![\w-])|(?:\S*/)?(?:tests?/\S*|test\.[cm]?[jt]s|\S+\.(?:test|spec)\.[cm]?[jt]sx?)(?![\w.]))"
 )
-# A runner only counts at the start of a shell command, optionally behind wrappers (sudo, timeout N),
+# `env -u FORCE_COLOR -u CLICOLOR`, `env -i`, `env --unset=CI`: env's options, some taking a value.
+_ENV = r"env(?:\s+(?:-[uC]\s*\S+|--[\w-]+=\S+|-[^\s=]*))*"
+# A runner only counts at the start of a shell command, optionally behind wrappers (sudo, env, timeout N),
 # VAR=x, a launcher (php, npx, python, `<interpreter> -m`) and a path. Run on code with quotes and
 # heredocs removed.
 _RUN_WRAPPERS = (
-    r"(?:(?:sudo(?:\s+-\S+)*|time|nice|env|nohup|timeout\s+\S+)\s+)*"
+    rf"(?:(?:sudo(?:\s+-\S+)*|time|nice|{_ENV}|nohup|timeout\s+\S+)\s+)*"
     r"(?:[A-Za-z_]\w*=\S*\s+)*"
     r"(?:(?:php|npx|bunx|uv\s+run|poetry\s+run|python[\d.]*(?:\.exe)?|py)\s+|\S+\s+-m\s+)?"
     r"(?:\S*/)?"
@@ -81,6 +87,12 @@ _NOT_PASSING = re.compile(r"\s*(?:跳過|略過|失敗|錯誤|skip|fail|error|pe
 _ZERO_FAILED = re.compile(r"[,，、]?\s*(?<![\d.,])0\s*(?:個\s*)?(?:失敗|failures?\b|failed\b)", re.IGNORECASE)
 # 過 alone, but not in 跳過 / 略過 (skipped), 跑過 (ran), 看過 / 試過 / 做過 / 改過 / 用過 / 經過.
 _PASS_WORD = re.compile(r"全過|通過|(?<![跳略跑看試做改用經])過|綠|\bpass(?:ed|es|ing)?\b|\bgreen\b", re.IGNORECASE)
+# "整套測試通過，4120 個", "All tests passed, 4120 tests.": a clause that is only a count of tests, right after
+# the clause that says pass. Not "測試全過，2 個檔案改了".
+_ENDS_PASSING = re.compile(rf"(?:{_PASS_WORD.pattern})了?\s*$", re.IGNORECASE)
+_COUNT_ALONE = re.compile(
+    r"\s*" + _NUMBER_TOKEN + r"\s*(?:(?:個|条|條|項|项|題|题|支|筆)\s*(?:測試|测试)?|測試|测试"
+    r"|(?:tests?|specs?|cases?|examples?)\b)\s*[.!]?\s*$", re.IGNORECASE)
 # What a runner labels as a number of tests: "18 passed", "1 failed", "OK (42 tests", "13 examples", "50 total",
 # "13 passing", "Tests: 3477", "ℹ pass 13". Not skipped tests, assertions, a progress percentage ("[ 18%]"), part of
 # a name ("test_v18.py"), nor "Tests: 19 skipped" (Pest and Jest put skipped first), and not the lines that count
@@ -103,7 +115,7 @@ _BACKGROUND = re.compile(r"(?<![<>&|])&(?![&>])")
 # group 3 the flag cluster holding `c`. Wrappers (`sudo -n`, `env -i`, `nice -n 10`, `timeout -s KILL 60`) come first.
 _SHELL_C = re.compile(
     r"(^|[;&|(\n])\s*"
-    r"(?:(?:sudo(?:\s+-\S+(?:\s+[^-\s]\S*)?)*|env(?:\s+-\S+)*|nohup|time|nice(?:\s+-n\s+\S+)?"
+    rf"(?:(?:sudo(?:\s+-\S+(?:\s+[^-\s]\S*)?)*|{_ENV}|nohup|time|nice(?:\s+-n\s+\S+)?"
     r"|timeout(?:\s+-\S+\s+\S+)?\s+\S+)\s+)*"
     r"(?:[A-Za-z_]\w*=\S*\s+)*"
     r"(?:\S*[\\/])?(?:ba|z|da|k)?sh(?:\.exe)?\s+"
@@ -130,7 +142,7 @@ _GIT_VERB = (
     r"|--[\w-]+(?:=\S*)?\s+)*(?:commit|push|merge|rebase|cherry-pick|tag(?!\s+(?:-l|--list|-n\d*)(?!\S)))(?![\w-])"
     r"|gh\s+pr\s+(?:create|merge|close)(?![\w-]))")
 # `timeout 900 git push`, `GIT_EDITOR=true git cherry-pick`, `env X=1 git push`: wrappers seen in real sessions.
-_GIT_START = _COMMAND_START + r"(?:(?:timeout(?:\s+-\S+)*\s+\S+|nohup|env(?:\s+-\S+)*)\s+)*(?:[A-Za-z_]\w*=\S*\s+)*"
+_GIT_START = _COMMAND_START + rf"(?:(?:timeout(?:\s+-\S+)*\s+\S+|nohup|{_ENV})\s+)*(?:[A-Za-z_]\w*=\S*\s+)*"
 _GIT_STATE = re.compile(_GIT_START + _GIT_VERB)
 _GIT_SEGMENT = re.compile(_GIT_START + "(" + _GIT_VERB + r"[^;&|\n)]*)")
 _FILE_TOOLS = ("Edit", "MultiEdit", "Write", "NotebookEdit")
@@ -350,7 +362,10 @@ def _claimed_counts(quote: str) -> list[int]:
     counts: set[int] = set()
     # "3,477 個 0 失敗", "3477 tests, 0 failures": no failures says the count passed.
     quote = _ZERO_FAILED.sub(" 全過", quote)
-    for clause in _CLAUSE_BREAK.split(quote):
+    clauses = _CLAUSE_BREAK.split(quote)
+    for i, clause in enumerate(clauses):
+        if i and _ENDS_PASSING.search(clauses[i - 1]) and (alone := _COUNT_ALONE.match(clause)):
+            counts.add(int(alone.group(1).replace(",", "")))
         # "13/13 全過" is all of them passing; "3188／3169" and "3/3 review comments" are not.
         for m in _ALL_OF.finditer(clause):
             if (m.group(1).replace(",", "") == m.group(2).replace(",", "") and not _NOT_PASSING.match(clause, m.end())

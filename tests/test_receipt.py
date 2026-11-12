@@ -207,6 +207,25 @@ def test_more_runner_forms_are_detected(tmp_path):
         assert "No test command ran." not in _verdicts(tmp_path, command), command
 
 
+def test_env_that_unsets_or_clears_variables_is_a_wrapper(tmp_path):
+    for command in ["env -u FORCE_COLOR php artisan test tests/Feature/PdfTest.php",
+                    "env -u FORCE_COLOR -u CLICOLOR php vendor/bin/phpunit --no-progress tests/Feature",
+                    "env -i PATH=/usr/bin pytest -q", "env --unset=CI npm test", "env -uCI pytest"]:
+        assert "No test command ran." not in _verdicts(tmp_path, command), command
+
+
+def test_node_running_a_test_file_is_a_test_run(tmp_path):
+    for command in ["node --test test/parser.test.ts", "node --test --test-name-pattern='login' test/a.test.ts",
+                    "node --test tests/js/", "node tests/js/run.mjs", "node test.js", "node src/cart.spec.mjs",
+                    "env -u FORCE_COLOR node tests/js/run.mjs", "node --no-warnings test/unit/cart.mjs"]:
+        assert "No test command ran." not in _verdicts(tmp_path, command), command
+    # A script that is not a test file, inline code, a syntax check and a version query are not test runs.
+    for command in ["node scripts/test-data.js", "node abtest.js", "node server.js", "node latests/x.js",
+                    "node -e 'require(\"./tests/js/x.mjs\")'", "node --check tests/js/form.mjs",
+                    "node -c tests/js/form.mjs", "node --version"]:
+        assert "No test command ran." in _verdicts(tmp_path, command), command
+
+
 def test_runner_failure_markers_beat_exit_zero(tmp_path):
     for output in ["FAILURES!\nTests: 5, Failures: 2.", "--- FAIL: TestLogin (0.01s)", "ok 1 - a\nnot ok 2 - b"]:
         row = _verdicts(tmp_path, "npm test", output).splitlines()[2]
@@ -794,6 +813,7 @@ def test_git_behind_timeout_or_an_env_assignment_is_seen(tmp_path):
     assert _git_cell(tmp_path, "timeout 900 git push origin main") == "`git push origin main`"
     assert _git_cell(tmp_path, "GIT_EDITOR=true git cherry-pick abc1234") == "`git cherry-pick abc1234`"
     assert _git_cell(tmp_path, "env GIT_SSH_COMMAND=ssh git push") == "`git push`"
+    assert _git_cell(tmp_path, "env -u FORCE_COLOR git push origin main") == "`git push origin main`"
 
 
 def test_listing_tags_is_not_tagging(tmp_path):

@@ -33,6 +33,8 @@ HOOK = Path(__file__).parent.parent / "hooks" / "osop-pipefail.py"
         "pytest -q 2>&1 | tee out.log | tail -3",  # tee in the middle passes everything through
         "go test ./... 2>&1 | tr -s ' ' | tail -20",
         "npx vitest run 2>&1 | tail -15; echo done",  # the pipe is in the runner's own command
+        "env -u FORCE_COLOR php artisan test 2>&1 | tail -4",
+        "node tests/js/run.mjs 2>&1 | tail -3",
     ],
 )
 def test_a_piped_runner_gets_pipefail(command):

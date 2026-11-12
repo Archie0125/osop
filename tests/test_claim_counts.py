@@ -190,6 +190,27 @@ def test_each_count_the_last_run_did_not_print_is_named_with_its_run(tmp_path):
     assert "⚠️ cannot tell" in claims and "no test run printed 23" in claims and "printed 38 was" in claims
 
 
+def test_a_count_right_after_the_clause_that_says_pass_is_a_count(tmp_path):
+    """「整套測試通過，4120 個」: a passing JS run that printed other counts does not back the PHP suite's 4120."""
+    js = ("Bash", {"command": "node tests/js/run.mjs"}, "34 passed, 0 failed", False)
+    for sentence in ("推送前整套測試通過，4120 個、12 個 skipped", "All tests passed, 4120 tests."):
+        claims = _claims(_session(tmp_path, [FULL_SUITE_FAILED, js], sentence))
+        assert "⚠️ cannot tell" in claims and "printed 4120" in claims and "✅ backed" not in claims, sentence
+    # Only a clause that is the count alone ("2 個檔案改了" is not a number of tests), and only right after the pass.
+    for sentence in ("測試全過，2 個檔案改了", "圖檔轉完，358 個，測試全過"):
+        assert "✅ backed" in _claims(_session(tmp_path, [js], sentence)), sentence
+
+
+def test_a_rerun_behind_env_is_the_last_run(tmp_path):
+    """A run that failed and passed again with `env -u FORCE_COLOR` is judged by the second one."""
+    claims = _claims(_session(tmp_path, [
+        ("Bash", {"command": "php artisan test tests/Feature/PdfTest.php 2>&1 | tail -25"},
+         "Exit code 1\n  Tests:    1 failed, 5 passed", True),
+        ("Bash", {"command": "env -u FORCE_COLOR php artisan test tests/Feature/PdfTest.php 2>&1 | tail -4"},
+         "  Tests:    6 passed (12 assertions)", False)], "The PDF tests pass."))
+    assert "✅ backed" in claims and "❌ contradicted" not in claims
+
+
 def test_a_fraction_needs_a_pass_word_too(tmp_path):
     claims = _claims(_session(tmp_path, [
         ("Bash", {"command": "python -m pytest -q tests/test_review.py"}, "3 passed in 0.1s", False), SUBSET_PASSED],
