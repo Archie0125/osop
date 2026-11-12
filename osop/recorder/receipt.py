@@ -23,8 +23,9 @@ _TEST_RUNNER = (
     r"|node(?:\.exe)?(?:\s+(?!-(?:[ecp]|-eval|-print|-check)\b)-\S+)*\s+"
     r"(?:--test(?![\w-])|(?:\S*/)?(?:tests?/\S*|test\.[cm]?[jt]s|\S+\.(?:test|spec)\.[cm]?[jt]sx?)(?![\w.]))"
 )
-# `env -u FORCE_COLOR -u CLICOLOR`, `env -i`, `env --unset=CI`: env's options, some taking a value.
-_ENV = r"env(?:\s+(?:-[uC]\s*\S+|--[\w-]+=\S+|-[^\s=]*))*"
+# `env -u FORCE_COLOR -u CLICOLOR`, `env -i`, `env --unset=CI`: env's options, some taking a value. Each option
+# has one way to match, or `env -ua -ua …` backtracks exponentially in the hook that runs before every command.
+_ENV = r"env(?:\s+(?:-[uC]\s*\S+|--[\w-]+=\S+|-(?![uC])[^\s=]*))*"
 # A runner only counts at the start of a shell command, optionally behind wrappers (sudo, env, timeout N),
 # VAR=x, a launcher (php, npx, python, `<interpreter> -m`) and a path. Run on code with quotes and
 # heredocs removed.

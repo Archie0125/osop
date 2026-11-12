@@ -7,6 +7,7 @@ The package does not install it: wiring it into settings.json is the owner's dec
 import json
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -145,3 +146,11 @@ def test_hook_is_silent_and_exits_zero_when_it_has_nothing_to_say(stdin):
     result = _run_hook(stdin)
     assert result.returncode == 0, result.stderr
     assert result.stdout == b""
+
+
+def test_env_options_are_read_in_linear_time():
+    """The hook runs before every Bash command: `env -ua -ua …` must not make the runner pattern backtrack."""
+    command = "env " + "-ua " * 24 + "true | tail"
+    start = time.perf_counter()
+    with_pipefail(command)
+    assert time.perf_counter() - start < 0.5
