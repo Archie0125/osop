@@ -201,6 +201,19 @@ def test_a_count_right_after_the_clause_that_says_pass_is_a_count(tmp_path):
         assert "✅ backed" in _claims(_session(tmp_path, [js], sentence)), sentence
 
 
+def test_a_helper_script_in_tests_is_not_a_test_run(tmp_path):
+    """A fixture server or a seed script lives in tests/ too: its exit 0 does not back "tests pass" after a failure."""
+    failed = ("Bash", {"command": "python -m pytest -q"}, "Exit code 1\n1 failed, 4 passed in 0.31s", True)
+    for helper in [("Bash", {"command": "node tests/fixtures/server.mjs --once"}, "listening on 3000", False),
+                   ("Bash", {"command": "node test/helpers/seed-db.js"}, "seeded 41 rows", False)]:
+        claims = _claims(_session(tmp_path, [failed, helper], "The tests pass."))
+        assert "❌ contradicted" in claims and "pytest" in claims, helper[1]
+    # A server that timed out is no failing test either.
+    passed = ("Bash", {"command": "python -m pytest -q"}, "5 passed in 0.31s", False)
+    timed_out = ("Bash", {"command": "timeout 5 node tests/e2e/server.mjs"}, "Exit code 124\nlistening on 3000", True)
+    assert "✅ backed" in _claims(_session(tmp_path, [passed, timed_out], "The tests pass."))
+
+
 def test_a_rerun_behind_env_is_the_last_run(tmp_path):
     """A run that failed and passed again with `env -u FORCE_COLOR` is judged by the second one."""
     claims = _claims(_session(tmp_path, [

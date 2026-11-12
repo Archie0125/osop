@@ -25,8 +25,12 @@ _TEST_RUNNER = (
     # `node src/cart.spec.mjs`. Not `node -e`, `-p` or `--check`: inline code, or a syntax check that runs nothing.
     rf"|node(?:\.exe)?(?:\s+(?:{_NODE_VALUE_OPTION}\s+\S+"
     rf"|(?!{_NODE_VALUE_OPTION})(?!-(?:[ecp]|-eval|-print|-check)\b)-\S+))*\s+"
-    r"(?:--test(?![\w-])|(?:\S*/)?(?:tests?/\S*|test\.[cm]?[jt]s|\S+\.(?:test|spec)\.[cm]?[jt]sx?)(?![\w.]))"
+    r"(?:--test(?![\w-])|(?:\S*/)?(?:test\.[cm]?[jt]s|[^\s/]+\.(?:test|spec)\.[cm]?[jt]sx?)(?![\w.])"
+    r"|(?P<test_dir_script>(?:\S*/)?tests?/\S*))"
 )
+# A script that lives in test/ or tests/ without being a test: a fixture server, a seed script, a setup file.
+_TEST_HELPER = re.compile(
+    r"(?:^|/)(?:fixtures?|helpers?|support|mocks?|__mocks__)/|(?:^|/)(?:setup|server|serve|seed|teardown)[^/]*$", re.I)
 # `env -u FORCE_COLOR -u CLICOLOR`, `env -i`, `env --unset=CI`: env's options, some taking a value. Each option
 # has one way to match, or `env -ua -ua …` backtracks exponentially in the hook that runs before every command.
 _ENV = r"env(?:\s+(?:-[uC]\s*\S+|--[\w-]+=\S+|-(?![uC])[^\s=]*))*"
@@ -447,7 +451,8 @@ def _matching_calls(calls: list, pattern: re.Pattern) -> list[tuple[ToolCall, st
 def _real_run(pattern: re.Pattern, code: str) -> re.Match | None:
     """The first run of the tool in the call that checks something: `ruff --version && ruff check .` is the
     second one."""
-    return next((m for m in pattern.finditer(code) if not _version_query(code, m)), None)
+    return next((m for m in pattern.finditer(code) if not _version_query(code, m)
+                 and not _TEST_HELPER.search(m.groupdict().get("test_dir_script") or "")), None)
 
 
 def _version_query(code: str, m: re.Match) -> bool:
