@@ -77,6 +77,8 @@ def test_a_piped_runner_gets_pipefail(command):
         "pytest tests/ # see | head",  # a comment
         "echo 'running pytest' | cat",  # the runner is inside a string
         "timeout 5 node tests/e2e/server.mjs 2>&1 | tail",  # a helper in tests/ is no runner: its status stays tail's
+        # A quoted option value is a word, as in the receipt: the server is the script, its `--test` its own.
+        'timeout 5 node --require "./register.js" tests/e2e/server.mjs --test 2>&1 | tail',
         "",
     ],
 )

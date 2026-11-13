@@ -16,6 +16,7 @@ from osop.recorder.transcript import ToolCall, _walk
 # Node options whose value is the next word: `-r ./tests/setup.js` loads that file, it is not the script that runs.
 _NODE_VALUE_OPTION = (r"(?:-r|-C|--(?:require|import|loader|experimental-loader|conditions|input-type|env-file"
                       r"|env-file-if-exists|title|disable-warning|redirect-warnings|watch-path|experimental-config-file"
+                      r"|dns-result-order|unhandled-rejections"
                       r"|test-reporter|test-reporter-destination|test-name-pattern|test-skip-pattern|test-concurrency"
                       r"|test-timeout|test-shard|test-coverage-include|test-coverage-exclude|test-global-setup))(?!\S)")
 # One word of a shell command: it ends where `;`, `&`, `|`, a redirect or a parenthesis starts the next part
@@ -23,11 +24,11 @@ _NODE_VALUE_OPTION = (r"(?:-r|-C|--(?:require|import|loader|experimental-loader|
 _SHELL_WORD = r"[^\s;&|<>()]"
 # Between node's words: spaces on one line, or a `\` that continues it. A newline starts another command.
 _GAP = r"(?:[ \t]|\\\n)+"
-# One of node's options before the script: a listed option and its value, or any other option with perhaps a
-# plain value (`--dns-result-order ipv4first`; a path or a file name is the script). Not `-e`, `-p` or `-c`:
-# inline code, or a syntax check that runs nothing; not `-v` or `-h`: node prints and exits.
+# One of node's options before the script: a listed option and its value, or any other option alone (an unlisted
+# option with a value is a miss, not a guess: `node --no-warnings app --test` runs the script `app`). Not `-e`,
+# `-p` or `-c`: inline code, or a syntax check that runs nothing; not `-v` or `-h`: node prints and exits.
 _NODE_OPTION = (rf"(?:{_NODE_VALUE_OPTION}{_GAP}{_SHELL_WORD}+|(?!{_NODE_VALUE_OPTION})"
-                rf"(?!-(?:[ecpvh]|-eval|-print|-check|-version|-help)\b)-{_SHELL_WORD}+(?:{_GAP}[^\s\-./;&|<>()]+)?)")
+                rf"(?!-(?:[ecpvh]|-eval|-print|-check|-version|-help)\b)-{_SHELL_WORD}+)")
 _TEST_RUNNER = (
     r"pytest|py\.test|unittest|nosetests|phpunit|pest|artisan\s+test|manage\.py\s+test|tox|prove"
     r"|(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?test|make\s+test|go\s+test|cargo\s+test"
@@ -483,8 +484,8 @@ def _version_query(code: str, m: re.Match) -> bool:
     (`ctest -V` is verbose, and `mvn test -V` prints the version and runs on.)"""
     segment = re.split(r"[;&|\n]", code[m.end():], maxsplit=1)[0]
     flags = r"--version|--help|-h" + ("" if re.search(r"\bctest$|\bmvnw?\s+\w+$", m.group(0)) else r"|-V")
-    if re.search(r"(?:^|[\s/])node(?:\.exe)?\s", m.group(0)):
-        flags += r"|-v"  # node's -v prints its version (pytest's is verbose)
+    if m.group(0).endswith("--test") and re.match(r"(?:\s+-\S+)*?\s+-v(?=[\s)]|$)", segment):
+        return True  # `node --test -v`: node's own -v, before any file, prints its version (a script's -v is its own)
     return re.search(rf"(?<=\s)(?:{flags})(?=[\s)]|$)", segment) is not None
 
 

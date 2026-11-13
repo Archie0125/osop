@@ -224,9 +224,12 @@ def test_node_running_a_test_file_is_a_test_run(tmp_path):
                     "node --env-file-if-exists .env tests/js/run.mjs",
                     # A `\` continues the command on the next line; `observer` is no helper name.
                     "node \\\n  tests/js/run.mjs", "node tests/js/observer.mjs",
-                    # An option with a plain value osop does not list (`--dns-result-order ipv4first`).
-                    "node --dns-result-order ipv4first tests/http.js"]:
-        assert "No test command ran." not in _verdicts(tmp_path, command), command
+                    # Listed options with a plain value, also one holding a hyphen.
+                    "node --dns-result-order ipv4first tests/http.js",
+                    "node --unhandled-rejections warn-with-error-code --test",
+                    # `-v` after the script is the script's (verbose), not node's version.
+                    "node tests/run.test.js -v", "node --test tests/a.test.js -v"]:
+        assert "No test command ran." not in _verdicts(tmp_path, command, "5 passed"), command
     # The path ends where the shell command does: `||true`, `;echo …` and `|tail` hide the script's exit status.
     for command, output in [(c, o) for c in ("node tests/a.test.js||true", "node tests/a.test.mjs;echo done",
                                              "node tests/a.test.mjs|tail -3")
@@ -245,6 +248,7 @@ def test_node_running_a_test_file_is_a_test_run(tmp_path):
                     "node --experimental-sea-config ./tests/sea.json scripts/build.js",
                     # `--test` after the script is the script's argument, not node's test runner.
                     "node scripts/build.js --test", "node dist/cli.mjs --test", "node cli --test",
+                    "node --no-warnings app --test",  # a flag without a value: `app` is the script
                     # node's version and help print and exit.
                     "node --version --test", "node --test -v", "node -h tests/x.js",
                     # node's words are on its own line: the next line is another command.
