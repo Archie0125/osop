@@ -251,6 +251,8 @@ def test_node_running_a_test_file_is_a_test_run(tmp_path):
                     "node --no-warnings app --test",  # a flag without a value: `app` is the script
                     # node's version and help print and exit.
                     "node --version --test", "node --test -v", "node -h tests/x.js",
+                    # Bundled short options: `-e1` is inline code, `-pe` prints.
+                    "node -e1 --test", "node -pe 1 tests/a.js",
                     # node's words are on its own line: the next line is another command.
                     "node app\ncheck --test",
                     # Helpers by name: setup, server, seed, teardown, fixtures, mocks.

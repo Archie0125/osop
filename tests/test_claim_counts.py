@@ -230,6 +230,16 @@ def test_a_script_known_only_by_its_folder_needs_a_test_result(tmp_path):
         assert verdict in _claims(_session(tmp_path, [passed, run], "The tests pass.")), output
 
 
+def test_a_bare_ok_line_is_not_a_pass_summary(tmp_path):
+    """go's "ok  pkg" and TAP's "ok 1 - …" are on one line; a lone `ok` from a step before is not a test result."""
+    failed = ("Bash", {"command": "python -m pytest -q"}, "Exit code 1\n1 failed, 4 passed in 0.31s", True)
+    for command in ("python scripts/prep.py && node tests/js/cart.mjs 2>&1 | grep -A2 '✗' | cut -c1-400",
+                    "python scripts/prep.py && npx vitest run 2>&1 | grep -A2 '×'"):
+        run = ("Bash", {"command": command}, "ok\n✗ the total includes tax\n  expected 108, got 100", False)
+        claims = _claims(_session(tmp_path, [failed, run], "The tests pass."))
+        assert "✅ backed" not in claims, command
+
+
 def test_a_rerun_behind_env_is_the_last_run(tmp_path):
     """A run that failed and passed again with `env -u FORCE_COLOR` is judged by the second one."""
     claims = _claims(_session(tmp_path, [

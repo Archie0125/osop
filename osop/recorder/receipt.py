@@ -28,7 +28,7 @@ _GAP = r"(?:[ \t]|\\\n)+"
 # option with a value is a miss, not a guess: `node --no-warnings app --test` runs the script `app`). Not `-e`,
 # `-p` or `-c`: inline code, or a syntax check that runs nothing; not `-v` or `-h`: node prints and exits.
 _NODE_OPTION = (rf"(?:{_NODE_VALUE_OPTION}{_GAP}{_SHELL_WORD}+|(?!{_NODE_VALUE_OPTION})"
-                rf"(?!-(?:[ecpvh]|-eval|-print|-check|-version|-help)\b)-{_SHELL_WORD}+)")
+                rf"(?!-[ecpvh]|--(?:eval|print|check|version|help)\b)-{_SHELL_WORD}+)")
 _TEST_RUNNER = (
     r"pytest|py\.test|unittest|nosetests|phpunit|pest|artisan\s+test|manage\.py\s+test|tox|prove"
     r"|(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?test|make\s+test|go\s+test|cargo\s+test"
@@ -98,7 +98,8 @@ _CONTROL = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]|[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]"
 # A pass summary: pytest / jest / vitest "N passed", mocha "N passing", PHPUnit "OK (N tests, …)" and
 # "OK, but incomplete, skipped, or risky tests!", cargo "test result: ok", rspec "N examples, 0 failures", go "ok  pkg".
 _PASSED_COUNT = re.compile(
-    r"\b\d+\s+pass(?:ed|ing)\b|^OK \(\d+ tests?\b|^OK, but |test result: ok\b|\b\d+ examples?, 0 failures\b|^ok\s+\S+",
+    r"\b\d+\s+pass(?:ed|ing)\b|^OK \(\d+ tests?\b|^OK, but |test result: ok\b|\b\d+ examples?, 0 failures\b"
+    r"|^ok[ \t]+\S+",  # on its own line: a lone `ok` printed by another step is no summary
     re.IGNORECASE | re.MULTILINE)
 # A count of passing tests a sentence gives, within one clause: "13/13", "245 條全過", "3,792 過", "18 tests all pass",
 # "151 passed", "1273 綠". A number glued to `#`, a date, a time or a version ("#19", "2026-11-10", "05:22", "8.3")
