@@ -214,6 +214,22 @@ def test_a_helper_script_in_tests_is_not_a_test_run(tmp_path):
     assert "✅ backed" in _claims(_session(tmp_path, [passed, timed_out], "The tests pass."))
 
 
+def test_a_script_known_only_by_its_folder_needs_a_test_result(tmp_path):
+    """A helper the names miss (`mockServer.js`, `shot.js`) makes the last run unclear, never backed or contradicted."""
+    failed = ("Bash", {"command": "python -m pytest -q"}, "Exit code 1\n1 failed, 4 passed in 0.31s", True)
+    passed = ("Bash", {"command": "python -m pytest -q"}, "5 passed in 0.31s", False)
+    helper = ("Bash", {"command": "node tests/mockServer.js --once"}, "listening on 3000", False)
+    timed_out = ("Bash", {"command": "timeout 5 node test/shot.js"}, "Exit code 124\nsaved shot.png", True)
+    for calls in ([failed, helper], [passed, timed_out]):
+        claims = _claims(_session(tmp_path, calls, "The tests pass."))
+        assert "⚠️ cannot tell" in claims and "printed no test result" in claims, calls[1]
+    # A test script there that prints its result backs or contradicts as any runner does.
+    for output, is_error, verdict in [("34 passed, 0 failed", False, "✅ backed"),
+                                      ("Exit code 1\n33 passed, 1 failed", True, "❌ contradicted")]:
+        run = ("Bash", {"command": "node tests/js/cart.mjs"}, output, is_error)
+        assert verdict in _claims(_session(tmp_path, [passed, run], "The tests pass.")), output
+
+
 def test_a_rerun_behind_env_is_the_last_run(tmp_path):
     """A run that failed and passed again with `env -u FORCE_COLOR` is judged by the second one."""
     claims = _claims(_session(tmp_path, [

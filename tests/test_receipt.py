@@ -228,9 +228,13 @@ def test_node_running_a_test_file_is_a_test_run(tmp_path):
                     "node --dns-result-order ipv4first tests/http.js"]:
         assert "No test command ran." not in _verdicts(tmp_path, command), command
     # The path ends where the shell command does: `||true`, `;echo …` and `|tail` hide the script's exit status.
-    for command in ["node tests/smoke.js||true", "node tests/js/run.mjs;echo done", "node tests/js/run.mjs|tail -3"]:
-        row = _verdicts(tmp_path, command, "AssertionError: expected 3, got 2").splitlines()[2]
-        assert "✅" not in row and "hide" in row, command
+    for command, output in [(c, o) for c in ("node tests/a.test.js||true", "node tests/a.test.mjs;echo done",
+                                             "node tests/a.test.mjs|tail -3")
+                            for o in ("AssertionError: expected 3, got 2", "5 passed")] + [
+            (c, "5 passed") for c in ("node tests/js/a.mjs||true", "node tests/js/a.mjs;echo done",
+                                      "node tests/js/a.mjs|tail -3")]:
+        row = _verdicts(tmp_path, command, output).splitlines()[2]
+        assert "✅" not in row and " hid" in row, (command, output)
     # A script that is not a test file, inline code, a syntax check and a version query are not test runs.
     for command in ["node scripts/test-data.js", "node abtest.js", "node server.js", "node latests/x.js",
                     "node -e 'require(\"./tests/js/x.mjs\")'", "node --check tests/js/form.mjs",

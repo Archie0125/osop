@@ -802,6 +802,11 @@ def _test_verdict(tc: ToolCall, code: str, match: re.Match) -> str:
     out = tc.output  # the whole output: a failure in the middle of a long run must not be lost
     if tc.status == "PENDING":
         return "⏳ no result recorded"
+    if match.groupdict().get("test_dir_script") and not _running(tc) and not (
+            _PASSED_COUNT.search(out) or _FAILURE.search(out)):
+        # Known to be a test only by its folder: a helper there (a mock server, a screenshot script) exits 0 too,
+        # or 124 under `timeout`. Without a test result its exit status backs or contradicts nothing.
+        return "⚠️ unclear: a script in tests/ that printed no test result"
     mentions_failure = bool(_FAILURE.search(out) or _DOUBT.search(out))
     clean_pass = bool(_PASSED_COUNT.search(out)) and not mentions_failure
     if tc.is_error:
