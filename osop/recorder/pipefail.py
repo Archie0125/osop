@@ -7,7 +7,7 @@ hooks/osop-pipefail.py applies this as a Claude Code PreToolUse hook.
 
 import re
 
-from osop.recorder.receipt import _BUILD_RUNNER, _LINT_RUNNER, _PIPEFAIL, _RUN_PREFIX, _TEST_RUNNER, _mask
+from osop.recorder.receipt import _BUILD_RUNNER, _LINT_RUNNER, _PIPEFAIL, _RUN_PREFIX, _TEST_RUNNER, _checks, _mask
 
 _RUNNER = re.compile(_RUN_PREFIX + rf"(?:{_TEST_RUNNER}|{_LINT_RUNNER}|{_BUILD_RUNNER})\b")
 _PIPE = re.compile(r"(?<!\|)\|(?!\|)")
@@ -39,7 +39,9 @@ def with_pipefail(command: str) -> str | None:
     masked = _mask(command)
     if _PIPEFAIL.search(masked):
         return None
-    if not any(_PIPE.search(masked, r.end(), _statement_end(masked, r.end())) for r in _RUNNER.finditer(masked)):
+    # A runner the receipt would judge: not a version query, nor a helper script in tests/ (a server under timeout).
+    if not any(_PIPE.search(masked, r.end(), _statement_end(masked, r.end()))
+               for r in _RUNNER.finditer(masked) if _checks(masked, r)):
         return None
     # The prefix governs every pipeline in the command, not only the runner's, so every one must be safe.
     for start, end in _statements(masked):

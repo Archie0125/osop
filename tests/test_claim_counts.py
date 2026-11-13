@@ -190,6 +190,66 @@ def test_each_count_the_last_run_did_not_print_is_named_with_its_run(tmp_path):
     assert "⚠️ cannot tell" in claims and "no test run printed 23" in claims and "printed 38 was" in claims
 
 
+def test_a_count_right_after_the_clause_that_says_pass_is_a_count(tmp_path):
+    """「整套測試通過，4120 個」: a passing JS run that printed other counts does not back the PHP suite's 4120."""
+    js = ("Bash", {"command": "node tests/js/run.mjs"}, "34 passed, 0 failed", False)
+    for sentence in ("推送前整套測試通過，4120 個、12 個 skipped", "All tests passed, 4120 tests."):
+        claims = _claims(_session(tmp_path, [FULL_SUITE_FAILED, js], sentence))
+        assert "⚠️ cannot tell" in claims and "printed 4120" in claims and "✅ backed" not in claims, sentence
+    # Only a clause that is the count alone ("2 個檔案改了" is not a number of tests), and only right after the pass.
+    for sentence in ("測試全過，2 個檔案改了", "圖檔轉完，358 個，測試全過"):
+        assert "✅ backed" in _claims(_session(tmp_path, [js], sentence)), sentence
+
+
+def test_a_helper_script_in_tests_is_not_a_test_run(tmp_path):
+    """A fixture server or a seed script lives in tests/ too: its exit 0 does not back "tests pass" after a failure."""
+    failed = ("Bash", {"command": "python -m pytest -q"}, "Exit code 1\n1 failed, 4 passed in 0.31s", True)
+    for helper in [("Bash", {"command": "node tests/fixtures/server.mjs --once"}, "listening on 3000", False),
+                   ("Bash", {"command": "node test/helpers/seed-db.js"}, "seeded 41 rows", False)]:
+        claims = _claims(_session(tmp_path, [failed, helper], "The tests pass."))
+        assert "❌ contradicted" in claims and "pytest" in claims, helper[1]
+    # A server that timed out is no failing test either.
+    passed = ("Bash", {"command": "python -m pytest -q"}, "5 passed in 0.31s", False)
+    timed_out = ("Bash", {"command": "timeout 5 node tests/e2e/server.mjs"}, "Exit code 124\nlistening on 3000", True)
+    assert "✅ backed" in _claims(_session(tmp_path, [passed, timed_out], "The tests pass."))
+
+
+def test_a_script_known_only_by_its_folder_needs_a_test_result(tmp_path):
+    """A helper the names miss (`mockServer.js`, `shot.js`) makes the last run unclear, never backed or contradicted."""
+    failed = ("Bash", {"command": "python -m pytest -q"}, "Exit code 1\n1 failed, 4 passed in 0.31s", True)
+    passed = ("Bash", {"command": "python -m pytest -q"}, "5 passed in 0.31s", False)
+    helper = ("Bash", {"command": "node tests/mockServer.js --once"}, "listening on 3000", False)
+    timed_out = ("Bash", {"command": "timeout 5 node test/shot.js"}, "Exit code 124\nsaved shot.png", True)
+    for calls in ([failed, helper], [passed, timed_out]):
+        claims = _claims(_session(tmp_path, calls, "The tests pass."))
+        assert "⚠️ cannot tell" in claims and "printed no test result" in claims, calls[1]
+    # A test script there that prints its result backs or contradicts as any runner does.
+    for output, is_error, verdict in [("34 passed, 0 failed", False, "✅ backed"),
+                                      ("Exit code 1\n33 passed, 1 failed", True, "❌ contradicted")]:
+        run = ("Bash", {"command": "node tests/js/cart.mjs"}, output, is_error)
+        assert verdict in _claims(_session(tmp_path, [passed, run], "The tests pass.")), output
+
+
+def test_a_bare_ok_line_is_not_a_pass_summary(tmp_path):
+    """go's "ok  pkg" and TAP's "ok 1 - …" are on one line; a lone `ok` from a step before is not a test result."""
+    failed = ("Bash", {"command": "python -m pytest -q"}, "Exit code 1\n1 failed, 4 passed in 0.31s", True)
+    for command in ("python scripts/prep.py && node tests/js/cart.mjs 2>&1 | grep -A2 '✗' | cut -c1-400",
+                    "python scripts/prep.py && npx vitest run 2>&1 | grep -A2 '×'"):
+        run = ("Bash", {"command": command}, "ok\n✗ the total includes tax\n  expected 108, got 100", False)
+        claims = _claims(_session(tmp_path, [failed, run], "The tests pass."))
+        assert "✅ backed" not in claims, command
+
+
+def test_a_rerun_behind_env_is_the_last_run(tmp_path):
+    """A run that failed and passed again with `env -u FORCE_COLOR` is judged by the second one."""
+    claims = _claims(_session(tmp_path, [
+        ("Bash", {"command": "php artisan test tests/Feature/PdfTest.php 2>&1 | tail -25"},
+         "Exit code 1\n  Tests:    1 failed, 5 passed", True),
+        ("Bash", {"command": "env -u FORCE_COLOR php artisan test tests/Feature/PdfTest.php 2>&1 | tail -4"},
+         "  Tests:    6 passed (12 assertions)", False)], "The PDF tests pass."))
+    assert "✅ backed" in claims and "❌ contradicted" not in claims
+
+
 def test_a_fraction_needs_a_pass_word_too(tmp_path):
     claims = _claims(_session(tmp_path, [
         ("Bash", {"command": "python -m pytest -q tests/test_review.py"}, "3 passed in 0.1s", False), SUBSET_PASSED],

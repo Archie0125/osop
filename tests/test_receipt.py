@@ -207,6 +207,72 @@ def test_more_runner_forms_are_detected(tmp_path):
         assert "No test command ran." not in _verdicts(tmp_path, command), command
 
 
+def test_env_that_unsets_or_clears_variables_is_a_wrapper(tmp_path):
+    for command in ["env -u FORCE_COLOR php artisan test tests/Feature/PdfTest.php",
+                    "env -u FORCE_COLOR -u CLICOLOR php vendor/bin/phpunit --no-progress tests/Feature",
+                    "env -i PATH=/usr/bin pytest -q", "env --unset=CI npm test", "env -uCI pytest"]:
+        assert "No test command ran." not in _verdicts(tmp_path, command), command
+
+
+def test_node_running_a_test_file_is_a_test_run(tmp_path):
+    for command in ["node --test test/parser.test.ts", "node --test --test-name-pattern='login' test/a.test.ts",
+                    "node --test tests/js/", "node tests/js/run.mjs", "node test.js", "node src/cart.spec.mjs",
+                    "env -u FORCE_COLOR node tests/js/run.mjs", "node --no-warnings test/unit/cart.mjs",
+                    "node -r ts-node/register tests/api.test.ts", "node --import tsx --test test/a.test.ts",
+                    # `--test` among node's options, whatever options with values come before it.
+                    "node --test-concurrency 1 --test tests/smoke.js",
+                    "node --env-file-if-exists .env tests/js/run.mjs",
+                    # A `\` continues the command on the next line; `observer` is no helper name.
+                    "node \\\n  tests/js/run.mjs", "node tests/js/observer.mjs",
+                    # Listed options with a plain value, also one holding a hyphen.
+                    "node --dns-result-order ipv4first tests/http.js",
+                    "node --unhandled-rejections warn-with-error-code --test",
+                    # `-v` after the script is the script's (verbose), not node's version.
+                    "node tests/run.test.js -v", "node --test tests/a.test.js -v"]:
+        assert "No test command ran." not in _verdicts(tmp_path, command, "5 passed"), command
+    # The path ends where the shell command does: `||true`, `;echo …` and `|tail` hide the script's exit status.
+    for command, output in [(c, o) for c in ("node tests/a.test.js||true", "node tests/a.test.mjs;echo done",
+                                             "node tests/a.test.mjs|tail -3")
+                            for o in ("AssertionError: expected 3, got 2", "5 passed")] + [
+            (c, "5 passed") for c in ("node tests/js/a.mjs||true", "node tests/js/a.mjs;echo done",
+                                      "node tests/js/a.mjs|tail -3")]:
+        row = _verdicts(tmp_path, command, output).splitlines()[2]
+        assert "✅" not in row and " hid" in row, (command, output)
+    # A script that is not a test file, inline code, a syntax check and a version query are not test runs.
+    for command in ["node scripts/test-data.js", "node abtest.js", "node server.js", "node latests/x.js",
+                    "node -e 'require(\"./tests/js/x.mjs\")'", "node --check tests/js/form.mjs",
+                    "node -c tests/js/form.mjs", "node --version",
+                    # The value of an option is not the script: setup files are not tests.
+                    "node --require ./tests/setup.js scripts/build.js", "node -r ./test/env.js server.js",
+                    # An option osop does not know may take a value; only a JS or TS file under tests/ is a script.
+                    "node --experimental-sea-config ./tests/sea.json scripts/build.js",
+                    # `--test` after the script is the script's argument, not node's test runner.
+                    "node scripts/build.js --test", "node dist/cli.mjs --test", "node cli --test",
+                    "node --no-warnings app --test",  # a flag without a value: `app` is the script
+                    # node's version and help print and exit.
+                    "node --version --test", "node --test -v", "node -h tests/x.js",
+                    "node --test --test-concurrency 1 -v",
+                    # Bundled short options: `-e1` is inline code, `-pe` prints.
+                    "node -e1 --test", "node -pe 1 tests/a.js",
+                    # node's words are on its own line: the next line is another command.
+                    "node app\ncheck --test",
+                    # Helpers by name: setup, server, seed, teardown, fixtures, mocks.
+                    "node tests/e2e/global-setup.js", "node test/__fixtures__/app.js", "node tests/mock-server.js",
+                    "node tests/e2e/start-server.mjs"]:
+        assert "No test command ran." in _verdicts(tmp_path, command), command
+    # A helper in the same call is not a second test command: the status echoed right after the test is the test's.
+    row = _verdicts(tmp_path, 'pytest -q 2>&1 | tail -3; echo "exit=${PIPESTATUS[0]}"; node tests/helpers/cleanup.js',
+                    "5 passed\nexit=0").splitlines()[2]
+    assert "✅" in row and "test commands in one call" not in row
+    # A quoted option value: the `$?` echoed after a helper is the helper's, not the piped test's.
+    for command in ('node --require "./tests/setup.js" tests/run.js 2>&1 | tail -20; '
+                    'node tests/helpers/cleanup.js; echo "exit=$?"',
+                    # A quoted part glued to a path is one word, as the receipt reads it.
+                    'node --import "$PWD"/register.js --test 2>&1 | tail -4; '
+                    'node tests/helpers/cleanup.js; echo "exit=$?"'):
+        assert "✅" not in _verdicts(tmp_path, command, "AssertionError: x\nexit=0").splitlines()[2], command
+
+
 def test_runner_failure_markers_beat_exit_zero(tmp_path):
     for output in ["FAILURES!\nTests: 5, Failures: 2.", "--- FAIL: TestLogin (0.01s)", "ok 1 - a\nnot ok 2 - b"]:
         row = _verdicts(tmp_path, "npm test", output).splitlines()[2]
@@ -794,6 +860,7 @@ def test_git_behind_timeout_or_an_env_assignment_is_seen(tmp_path):
     assert _git_cell(tmp_path, "timeout 900 git push origin main") == "`git push origin main`"
     assert _git_cell(tmp_path, "GIT_EDITOR=true git cherry-pick abc1234") == "`git cherry-pick abc1234`"
     assert _git_cell(tmp_path, "env GIT_SSH_COMMAND=ssh git push") == "`git push`"
+    assert _git_cell(tmp_path, "env -u FORCE_COLOR git push origin main") == "`git push origin main`"
 
 
 def test_listing_tags_is_not_tagging(tmp_path):

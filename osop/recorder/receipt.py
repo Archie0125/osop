@@ -13,17 +13,51 @@ from pathlib import Path
 from osop.recorder.claims import Claim, find_claims
 from osop.recorder.transcript import ToolCall, _walk
 
+# Node options whose value is the next word: `-r ./tests/setup.js` loads that file, it is not the script that runs.
+_NODE_VALUE_OPTION = (r"(?:-r|-C|--(?:require|import|loader|experimental-loader|conditions|input-type|env-file"
+                      r"|env-file-if-exists|title|disable-warning|redirect-warnings|watch-path|experimental-config-file"
+                      r"|dns-result-order|unhandled-rejections"
+                      r"|test-reporter|test-reporter-destination|test-name-pattern|test-skip-pattern|test-concurrency"
+                      r"|test-timeout|test-shard|test-coverage-include|test-coverage-exclude|test-global-setup))(?!\S)")
+# One word of a shell command: it ends where `;`, `&`, `|`, a redirect or a parenthesis starts the next part
+# (`node tests/a.js||true` runs `true` after the test, which hides its exit status).
+_SHELL_WORD = r"[^\s;&|<>()]"
+# Between node's words: spaces on one line, or a `\` that continues it. A newline starts another command.
+_GAP = r"(?:[ \t]|\\\n)+"
+# One of node's options before the script: a listed option and its value, or any other option alone (an unlisted
+# option with a value is a miss, not a guess: `node --no-warnings app --test` runs the script `app`). Not `-e`,
+# `-p` or `-c`: inline code, or a syntax check that runs nothing; not `-v` or `-h`: node prints and exits.
+_NODE_OPTION = (rf"(?:{_NODE_VALUE_OPTION}{_GAP}{_SHELL_WORD}+|(?!{_NODE_VALUE_OPTION})"
+                rf"(?!-[ecpvh]|--(?:eval|print|check|version|help)\b)-{_SHELL_WORD}+)")
 _TEST_RUNNER = (
     r"pytest|py\.test|unittest|nosetests|phpunit|pest|artisan\s+test|manage\.py\s+test|tox|prove"
     r"|(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?test|make\s+test|go\s+test|cargo\s+test"
     r"|vitest|jest|rspec|mvn\s+test|gradlew?\s+test|dotnet\s+test"
     r"|playwright\s+test|cypress\s+run|mocha|ava\b|ctest|bats|flutter\s+test|mix\s+test|sbt\s+test"
+    # Node's own runner, or node running a test file: `node --test`, `node tests/js/run.mjs`, `node test.js`,
+    # `node src/cart.spec.mjs`. `--test` counts wherever it is among node's options, but not after the script:
+    # `node build.js --test` passes `--test` to build.js.
+    rf"|node(?:\.exe)?(?:{_GAP}{_NODE_OPTION})*?{_GAP}--test(?![\w-])"
+    rf"|node(?:\.exe)?(?:{_GAP}{_NODE_OPTION})*{_GAP}"
+    rf"(?:(?:{_SHELL_WORD}*/)?(?:test\.[cm]?[jt]s|[^\s/;&|<>()]+\.(?:test|spec)\.[cm]?[jt]sx?)(?![\w.])"
+    rf"|(?P<test_dir_script>(?:{_SHELL_WORD}*/)?tests?/{_SHELL_WORD}*))"
 )
-# A runner only counts at the start of a shell command, optionally behind wrappers (sudo, timeout N),
+# A script that lives in test/ or tests/ without being a test: a fixture server, a seed script, a setup file, by
+# folder (`fixtures/`, `__mocks__/`) or by a part of its name (`global-setup.js`, `mock-server.js`, not
+# `observer.mjs`). And only a JS or TS file is a script: `./tests/test.env` is the value of an option osop does
+# not know.
+_TEST_HELPER = re.compile(
+    r"(?:^|/)_*(?:fixtures?|helpers?|support|mocks?)_*/"
+    r"|(?:^|/)(?:[^/]*[-_.])?(?:setup|server|serve|seed|seeder|teardown|fixtures?|mocks?)(?:[-_.][^/]*)?$"
+    r"|(?<!\.[cm][jt]s)(?<!\.[jt]sx)(?<!\.[jt]s)$", re.I)
+# `env -u FORCE_COLOR -u CLICOLOR`, `env -i`, `env --unset=CI`: env's options, some taking a value. Each option
+# has one way to match, or `env -ua -ua …` backtracks exponentially in the hook that runs before every command.
+_ENV = r"env(?:\s+(?:-[uC]\s*\S+|--[\w-]+=\S+|-(?![uC])[^\s=]*))*"
+# A runner only counts at the start of a shell command, optionally behind wrappers (sudo, env, timeout N),
 # VAR=x, a launcher (php, npx, python, `<interpreter> -m`) and a path. Run on code with quotes and
 # heredocs removed.
 _RUN_WRAPPERS = (
-    r"(?:(?:sudo(?:\s+-\S+)*|time|nice|env|nohup|timeout\s+\S+)\s+)*"
+    rf"(?:(?:sudo(?:\s+-\S+)*|time|nice|{_ENV}|nohup|timeout\s+\S+)\s+)*"
     r"(?:[A-Za-z_]\w*=\S*\s+)*"
     r"(?:(?:php|npx|bunx|uv\s+run|poetry\s+run|python[\d.]*(?:\.exe)?|py)\s+|\S+\s+-m\s+)?"
     r"(?:\S*/)?"
@@ -64,7 +98,8 @@ _CONTROL = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]|[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]"
 # A pass summary: pytest / jest / vitest "N passed", mocha "N passing", PHPUnit "OK (N tests, …)" and
 # "OK, but incomplete, skipped, or risky tests!", cargo "test result: ok", rspec "N examples, 0 failures", go "ok  pkg".
 _PASSED_COUNT = re.compile(
-    r"\b\d+\s+pass(?:ed|ing)\b|^OK \(\d+ tests?\b|^OK, but |test result: ok\b|\b\d+ examples?, 0 failures\b|^ok\s+\S+",
+    r"\b\d+\s+pass(?:ed|ing)\b|^OK \(\d+ tests?\b|^OK, but |test result: ok\b|\b\d+ examples?, 0 failures\b"
+    r"|^ok[ \t]+\S+",  # on its own line: a lone `ok` printed by another step is no summary
     re.IGNORECASE | re.MULTILINE)
 # A count of passing tests a sentence gives, within one clause: "13/13", "245 條全過", "3,792 過", "18 tests all pass",
 # "151 passed", "1273 綠". A number glued to `#`, a date, a time or a version ("#19", "2026-11-10", "05:22", "8.3")
@@ -81,6 +116,12 @@ _NOT_PASSING = re.compile(r"\s*(?:跳過|略過|失敗|錯誤|skip|fail|error|pe
 _ZERO_FAILED = re.compile(r"[,，、]?\s*(?<![\d.,])0\s*(?:個\s*)?(?:失敗|failures?\b|failed\b)", re.IGNORECASE)
 # 過 alone, but not in 跳過 / 略過 (skipped), 跑過 (ran), 看過 / 試過 / 做過 / 改過 / 用過 / 經過.
 _PASS_WORD = re.compile(r"全過|通過|(?<![跳略跑看試做改用經])過|綠|\bpass(?:ed|es|ing)?\b|\bgreen\b", re.IGNORECASE)
+# "整套測試通過，4120 個", "All tests passed, 4120 tests.": a clause that is only a count of tests, right after
+# the clause that says pass. Not "測試全過，2 個檔案改了".
+_ENDS_PASSING = re.compile(rf"(?:{_PASS_WORD.pattern})了?\s*$", re.IGNORECASE)
+_COUNT_ALONE = re.compile(
+    r"\s*" + _NUMBER_TOKEN + r"\s*(?:(?:個|条|條|項|项|題|题|支|筆)\s*(?:測試|测试)?|測試|测试"
+    r"|(?:tests?|specs?|cases?|examples?)\b)\s*[.!]?\s*$", re.IGNORECASE)
 # What a runner labels as a number of tests: "18 passed", "1 failed", "OK (42 tests", "13 examples", "50 total",
 # "13 passing", "Tests: 3477", "ℹ pass 13". Not skipped tests, assertions, a progress percentage ("[ 18%]"), part of
 # a name ("test_v18.py"), nor "Tests: 19 skipped" (Pest and Jest put skipped first), and not the lines that count
@@ -103,7 +144,7 @@ _BACKGROUND = re.compile(r"(?<![<>&|])&(?![&>])")
 # group 3 the flag cluster holding `c`. Wrappers (`sudo -n`, `env -i`, `nice -n 10`, `timeout -s KILL 60`) come first.
 _SHELL_C = re.compile(
     r"(^|[;&|(\n])\s*"
-    r"(?:(?:sudo(?:\s+-\S+(?:\s+[^-\s]\S*)?)*|env(?:\s+-\S+)*|nohup|time|nice(?:\s+-n\s+\S+)?"
+    rf"(?:(?:sudo(?:\s+-\S+(?:\s+[^-\s]\S*)?)*|{_ENV}|nohup|time|nice(?:\s+-n\s+\S+)?"
     r"|timeout(?:\s+-\S+\s+\S+)?\s+\S+)\s+)*"
     r"(?:[A-Za-z_]\w*=\S*\s+)*"
     r"(?:\S*[\\/])?(?:ba|z|da|k)?sh(?:\.exe)?\s+"
@@ -130,7 +171,7 @@ _GIT_VERB = (
     r"|--[\w-]+(?:=\S*)?\s+)*(?:commit|push|merge|rebase|cherry-pick|tag(?!\s+(?:-l|--list|-n\d*)(?!\S)))(?![\w-])"
     r"|gh\s+pr\s+(?:create|merge|close)(?![\w-]))")
 # `timeout 900 git push`, `GIT_EDITOR=true git cherry-pick`, `env X=1 git push`: wrappers seen in real sessions.
-_GIT_START = _COMMAND_START + r"(?:(?:timeout(?:\s+-\S+)*\s+\S+|nohup|env(?:\s+-\S+)*)\s+)*(?:[A-Za-z_]\w*=\S*\s+)*"
+_GIT_START = _COMMAND_START + rf"(?:(?:timeout(?:\s+-\S+)*\s+\S+|nohup|{_ENV})\s+)*(?:[A-Za-z_]\w*=\S*\s+)*"
 _GIT_STATE = re.compile(_GIT_START + _GIT_VERB)
 _GIT_SEGMENT = re.compile(_GIT_START + "(" + _GIT_VERB + r"[^;&|\n)]*)")
 _FILE_TOOLS = ("Edit", "MultiEdit", "Write", "NotebookEdit")
@@ -350,7 +391,10 @@ def _claimed_counts(quote: str) -> list[int]:
     counts: set[int] = set()
     # "3,477 個 0 失敗", "3477 tests, 0 failures": no failures says the count passed.
     quote = _ZERO_FAILED.sub(" 全過", quote)
-    for clause in _CLAUSE_BREAK.split(quote):
+    clauses = _CLAUSE_BREAK.split(quote)
+    for i, clause in enumerate(clauses):
+        if i and _ENDS_PASSING.search(clauses[i - 1]) and (alone := _COUNT_ALONE.match(clause)):
+            counts.add(int(alone.group(1).replace(",", "")))
         # "13/13 全過" is all of them passing; "3188／3169" and "3/3 review comments" are not.
         for m in _ALL_OF.finditer(clause):
             if (m.group(1).replace(",", "") == m.group(2).replace(",", "") and not _NOT_PASSING.match(clause, m.end())
@@ -427,7 +471,13 @@ def _matching_calls(calls: list, pattern: re.Pattern) -> list[tuple[ToolCall, st
 def _real_run(pattern: re.Pattern, code: str) -> re.Match | None:
     """The first run of the tool in the call that checks something: `ruff --version && ruff check .` is the
     second one."""
-    return next((m for m in pattern.finditer(code) if not _version_query(code, m)), None)
+    return next((m for m in pattern.finditer(code) if _checks(code, m)), None)
+
+
+def _checks(code: str, m: re.Match) -> bool:
+    """The tool ran to check something: not a version query, nor a script in tests/ that is not a test."""
+    script = m.groupdict().get("test_dir_script")
+    return not _version_query(code, m) and not (script and _TEST_HELPER.search(script))
 
 
 def _version_query(code: str, m: re.Match) -> bool:
@@ -435,6 +485,10 @@ def _version_query(code: str, m: re.Match) -> bool:
     (`ctest -V` is verbose, and `mvn test -V` prints the version and runs on.)"""
     segment = re.split(r"[;&|\n]", code[m.end():], maxsplit=1)[0]
     flags = r"--version|--help|-h" + ("" if re.search(r"\bctest$|\bmvnw?\s+\w+$", m.group(0)) else r"|-V")
+    # Each option matches one way (a listed one only with its value), or a failed match backtracks exponentially.
+    if m.group(0).endswith("--test") and re.match(
+            rf"(?:\s+(?:{_NODE_VALUE_OPTION}\s+\S+|(?!{_NODE_VALUE_OPTION})-\S+))*?\s+-v(?=[\s)]|$)", segment):
+        return True  # `node --test -v`: node's own -v, before any file, prints its version (a script's -v is its own)
     return re.search(rf"(?<=\s)(?:{flags})(?=[\s)]|$)", segment) is not None
 
 
@@ -628,7 +682,7 @@ def _other_runners(code: str, m: re.Match) -> set[tuple[str, str]]:
     markers."""
     return {(kind, _tool(o))
             for kind, pattern in (("tests", _TEST_COMMAND), ("lint", _LINT_COMMAND), ("build", _BUILD_COMMAND))
-            for o in pattern.finditer(code) if o.start() != m.start() and not _version_query(code, o)}
+            for o in pattern.finditer(code) if o.start() != m.start() and _checks(code, o)}
 
 
 def _tool(m: re.Match) -> str:
@@ -752,6 +806,11 @@ def _test_verdict(tc: ToolCall, code: str, match: re.Match) -> str:
     out = tc.output  # the whole output: a failure in the middle of a long run must not be lost
     if tc.status == "PENDING":
         return "⏳ no result recorded"
+    if match.groupdict().get("test_dir_script") and not _running(tc) and not (
+            _PASSED_COUNT.search(out) or _FAILURE.search(out)):
+        # Known to be a test only by its folder: a helper there (a mock server, a screenshot script) exits 0 too,
+        # or 124 under `timeout`. Without a test result its exit status backs or contradicts nothing.
+        return "⚠️ unclear: a script in tests/ that printed no test result"
     mentions_failure = bool(_FAILURE.search(out) or _DOUBT.search(out))
     clean_pass = bool(_PASSED_COUNT.search(out)) and not mentions_failure
     if tc.is_error:
@@ -774,7 +833,7 @@ def _test_verdict(tc: ToolCall, code: str, match: re.Match) -> str:
         return "✅ passed" if _PASSED_COUNT.search(out) else "✅ exit 0, no pass/fail summary seen"
     # The reported exit status belongs to whatever ran last, so only the output is left to read.
     echoed = _ECHOED_EXIT.findall(out)
-    runs = sum(1 for m in _TEST_COMMAND.finditer(code) if not _version_query(code, m))
+    runs = sum(1 for m in _TEST_COMMAND.finditer(code) if _checks(code, m))
     # `pytest; echo exit=$?`: the first `$?` echoed right after the test, with nothing between, is the test's.
     # `pytest | tail; echo exit=${PIPESTATUS[0]}`: so is the first pipeline status, when the test opens the pipeline.
     # (`code` has quoted strings blanked to "", so `echo "exit=$?"` shows as `echo ""`.)
@@ -813,6 +872,7 @@ def _echoed_status_var(tc: ToolCall, code: str, match: re.Match) -> str | None:
     # `pytest --version; echo $?; pytest tests/; echo $?` echoes the version query's status first.
     runners = re.compile(rf"(?:{_TEST_RUNNER})\b")
     nth = len(runners.findall(code[:match.end()]))
+    # The words `code` has (`node --require "./setup.js" tests/a.js` keeps its script), at the places of `raw`.
     found = [r for r, _ in zip(runners.finditer(_mask(raw)), range(nth), strict=False)]
     if len(found) < nth:
         return None
@@ -909,15 +969,15 @@ def _unwrap_shell_c(command: str, blank: bool = True) -> str:
 
 
 def _mask(command: str) -> str:
-    """The command with heredoc bodies, quoted strings and comments turned into spaces of the same length, so
-    that the rest sits where it does in the command as written (a quoted runner path keeps its name, as
-    _shell_code does)."""
+    """The command with heredoc bodies and comments turned into spaces of the same length, and quoted strings into
+    `"` of the same length, so that the rest sits where it does in the command as written and the words are those
+    _shell_code leaves (`"$PWD"/x.js` stays one word; a quoted runner path keeps its name)."""
     def quoted(m: re.Match) -> str:
         text = m.group(0)
         runner = _RUNNER_EXECUTABLE.search(text[1:-1])
         if runner:
             return " " * (len(text) - 1 - len(runner.group(1))) + runner.group(1) + " "
-        return " " * len(text)
+        return '"' * len(text)
 
     def heredoc(m: re.Match) -> str:
         first_line = m.group(0).index("\n") + 1

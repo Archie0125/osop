@@ -7,6 +7,7 @@ The package does not install it: wiring it into settings.json is the owner's dec
 import json
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -33,6 +34,9 @@ HOOK = Path(__file__).parent.parent / "hooks" / "osop-pipefail.py"
         "pytest -q 2>&1 | tee out.log | tail -3",  # tee in the middle passes everything through
         "go test ./... 2>&1 | tr -s ' ' | tail -20",
         "npx vitest run 2>&1 | tail -15; echo done",  # the pipe is in the runner's own command
+        "env -u FORCE_COLOR php artisan test 2>&1 | tail -4",
+        "node tests/js/run.mjs 2>&1 | tail -3",
+        'node --import "$PWD"/register.js --test 2>&1 | tail -4',  # the quoted part and the path are one word
     ],
 )
 def test_a_piped_runner_gets_pipefail(command):
@@ -73,6 +77,9 @@ def test_a_piped_runner_gets_pipefail(command):
         "pytest tests/ || ls | head -3",
         "pytest tests/ # see | head",  # a comment
         "echo 'running pytest' | cat",  # the runner is inside a string
+        "timeout 5 node tests/e2e/server.mjs 2>&1 | tail",  # a helper in tests/ is no runner: its status stays tail's
+        # A quoted option value is a word, as in the receipt: the server is the script, its `--test` its own.
+        'timeout 5 node --require "./register.js" tests/e2e/server.mjs --test 2>&1 | tail',
         "",
     ],
 )
@@ -143,3 +150,13 @@ def test_hook_is_silent_and_exits_zero_when_it_has_nothing_to_say(stdin):
     result = _run_hook(stdin)
     assert result.returncode == 0, result.stderr
     assert result.stdout == b""
+
+
+def test_env_options_are_read_in_linear_time():
+    """The hook runs before every Bash command: `env -ua …` or `node -r a …` repeated must not make it backtrack."""
+    for command in ("env " + "-ua " * 24 + "true | tail", "node " + "-r a " * 24 + "x | tail",
+                    "node " + "a/" * 20000 + "x.js | tail", "node x\n" * 5000 + "pytest | tail",
+                    "node --test " + "--require -r " * 16 + "x.js 2>&1 | tail"):
+        start = time.perf_counter()
+        with_pipefail(command)
+        assert time.perf_counter() - start < 0.5, command[:20]
