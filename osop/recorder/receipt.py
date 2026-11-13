@@ -485,8 +485,9 @@ def _version_query(code: str, m: re.Match) -> bool:
     (`ctest -V` is verbose, and `mvn test -V` prints the version and runs on.)"""
     segment = re.split(r"[;&|\n]", code[m.end():], maxsplit=1)[0]
     flags = r"--version|--help|-h" + ("" if re.search(r"\bctest$|\bmvnw?\s+\w+$", m.group(0)) else r"|-V")
-    if m.group(0).endswith("--test") and re.match(rf"(?:\s+(?:{_NODE_VALUE_OPTION}\s+\S+|-\S+))*?\s+-v(?=[\s)]|$)",
-                                                  segment):
+    # Each option matches one way (a listed one only with its value), or a failed match backtracks exponentially.
+    if m.group(0).endswith("--test") and re.match(
+            rf"(?:\s+(?:{_NODE_VALUE_OPTION}\s+\S+|(?!{_NODE_VALUE_OPTION})-\S+))*?\s+-v(?=[\s)]|$)", segment):
         return True  # `node --test -v`: node's own -v, before any file, prints its version (a script's -v is its own)
     return re.search(rf"(?<=\s)(?:{flags})(?=[\s)]|$)", segment) is not None
 
