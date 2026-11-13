@@ -23,19 +23,21 @@ _NODE_VALUE_OPTION = (r"(?:-r|-C|--(?:require|import|loader|experimental-loader|
 _SHELL_WORD = r"[^\s;&|<>()]"
 # Between node's words: spaces on one line, or a `\` that continues it. A newline starts another command.
 _GAP = r"(?:[ \t]|\\\n)+"
+# One of node's options before the script: a listed option and its value, or any other option with perhaps a
+# plain value (`--dns-result-order ipv4first`; a path or a file name is the script). Not `-e`, `-p` or `-c`:
+# inline code, or a syntax check that runs nothing; not `-v` or `-h`: node prints and exits.
+_NODE_OPTION = (rf"(?:{_NODE_VALUE_OPTION}{_GAP}{_SHELL_WORD}+|(?!{_NODE_VALUE_OPTION})"
+                rf"(?!-(?:[ecpvh]|-eval|-print|-check|-version|-help)\b)-{_SHELL_WORD}+(?:{_GAP}[^\s\-./;&|<>()]+)?)")
 _TEST_RUNNER = (
     r"pytest|py\.test|unittest|nosetests|phpunit|pest|artisan\s+test|manage\.py\s+test|tox|prove"
     r"|(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?test|make\s+test|go\s+test|cargo\s+test"
     r"|vitest|jest|rspec|mvn\s+test|gradlew?\s+test|dotnet\s+test"
     r"|playwright\s+test|cypress\s+run|mocha|ava\b|ctest|bats|flutter\s+test|mix\s+test|sbt\s+test"
     # Node's own runner, or node running a test file: `node --test`, `node tests/js/run.mjs`, `node test.js`,
-    # `node src/cart.spec.mjs`. Not `node -e`, `-p` or `--check`: inline code, or a syntax check that runs nothing.
-    # `--test` counts wherever it is among node's options, after the plain value of an option osop does not know
-    # (`--test-concurrency 1`), but not after the script: `node build.js --test` passes `--test` to build.js.
-    rf"|node(?:\.exe)?(?:{_GAP}(?:{_NODE_VALUE_OPTION}{_GAP}{_SHELL_WORD}+|(?!{_NODE_VALUE_OPTION})"
-    rf"(?!-(?:[ecp]|-eval|-print|-check)\b)-{_SHELL_WORD}+|[^\s\-./;&|<>()]+))*?{_GAP}--test(?![\w-])"
-    rf"|node(?:\.exe)?(?:{_GAP}(?:{_NODE_VALUE_OPTION}{_GAP}{_SHELL_WORD}+"
-    rf"|(?!{_NODE_VALUE_OPTION})(?!-(?:[ecp]|-eval|-print|-check)\b)-{_SHELL_WORD}+))*{_GAP}"
+    # `node src/cart.spec.mjs`. `--test` counts wherever it is among node's options, but not after the script:
+    # `node build.js --test` passes `--test` to build.js.
+    rf"|node(?:\.exe)?(?:{_GAP}{_NODE_OPTION})*?{_GAP}--test(?![\w-])"
+    rf"|node(?:\.exe)?(?:{_GAP}{_NODE_OPTION})*{_GAP}"
     rf"(?:(?:{_SHELL_WORD}*/)?(?:test\.[cm]?[jt]s|[^\s/;&|<>()]+\.(?:test|spec)\.[cm]?[jt]sx?)(?![\w.])"
     rf"|(?P<test_dir_script>(?:{_SHELL_WORD}*/)?tests?/{_SHELL_WORD}*))"
 )
@@ -481,6 +483,8 @@ def _version_query(code: str, m: re.Match) -> bool:
     (`ctest -V` is verbose, and `mvn test -V` prints the version and runs on.)"""
     segment = re.split(r"[;&|\n]", code[m.end():], maxsplit=1)[0]
     flags = r"--version|--help|-h" + ("" if re.search(r"\bctest$|\bmvnw?\s+\w+$", m.group(0)) else r"|-V")
+    if re.search(r"(?:^|[\s/])node(?:\.exe)?\s", m.group(0)):
+        flags += r"|-v"  # node's -v prints its version (pytest's is verbose)
     return re.search(rf"(?<=\s)(?:{flags})(?=[\s)]|$)", segment) is not None
 
 
@@ -859,7 +863,9 @@ def _echoed_status_var(tc: ToolCall, code: str, match: re.Match) -> str | None:
     # `pytest --version; echo $?; pytest tests/; echo $?` echoes the version query's status first.
     runners = re.compile(rf"(?:{_TEST_RUNNER})\b")
     nth = len(runners.findall(code[:match.end()]))
-    found = [r for r, _ in zip(runners.finditer(_mask(raw)), range(nth), strict=False)]
+    # Quoted strings as `""` and spaces, the words `code` has (`node --require "./setup.js" tests/a.js` keeps
+    # its script), at the places of `raw`.
+    found = [r for r, _ in zip(runners.finditer(_mask(raw, quotes='""')), range(nth), strict=False)]
     if len(found) < nth:
         return None
     runner = found[-1]
@@ -954,16 +960,16 @@ def _unwrap_shell_c(command: str, blank: bool = True) -> str:
     return command
 
 
-def _mask(command: str) -> str:
+def _mask(command: str, quotes: str = "") -> str:
     """The command with heredoc bodies, quoted strings and comments turned into spaces of the same length, so
     that the rest sits where it does in the command as written (a quoted runner path keeps its name, as
-    _shell_code does)."""
+    _shell_code does). `quotes` starts each quoted string's spaces (`""`: the word _shell_code leaves)."""
     def quoted(m: re.Match) -> str:
         text = m.group(0)
         runner = _RUNNER_EXECUTABLE.search(text[1:-1])
         if runner:
             return " " * (len(text) - 1 - len(runner.group(1))) + runner.group(1) + " "
-        return " " * len(text)
+        return quotes + " " * (len(text) - len(quotes))
 
     def heredoc(m: re.Match) -> str:
         first_line = m.group(0).index("\n") + 1

@@ -223,7 +223,9 @@ def test_node_running_a_test_file_is_a_test_run(tmp_path):
                     "node --test-concurrency 1 --test tests/smoke.js",
                     "node --env-file-if-exists .env tests/js/run.mjs",
                     # A `\` continues the command on the next line; `observer` is no helper name.
-                    "node \\\n  tests/js/run.mjs", "node tests/js/observer.mjs"]:
+                    "node \\\n  tests/js/run.mjs", "node tests/js/observer.mjs",
+                    # An option with a plain value osop does not list (`--dns-result-order ipv4first`).
+                    "node --dns-result-order ipv4first tests/http.js"]:
         assert "No test command ran." not in _verdicts(tmp_path, command), command
     # The path ends where the shell command does: `||true`, `;echo …` and `|tail` hide the script's exit status.
     for command in ["node tests/smoke.js||true", "node tests/js/run.mjs;echo done", "node tests/js/run.mjs|tail -3"]:
@@ -238,7 +240,9 @@ def test_node_running_a_test_file_is_a_test_run(tmp_path):
                     # An option osop does not know may take a value; only a JS or TS file under tests/ is a script.
                     "node --experimental-sea-config ./tests/sea.json scripts/build.js",
                     # `--test` after the script is the script's argument, not node's test runner.
-                    "node scripts/build.js --test", "node dist/cli.mjs --test",
+                    "node scripts/build.js --test", "node dist/cli.mjs --test", "node cli --test",
+                    # node's version and help print and exit.
+                    "node --version --test", "node --test -v", "node -h tests/x.js",
                     # node's words are on its own line: the next line is another command.
                     "node app\ncheck --test",
                     # Helpers by name: setup, server, seed, teardown, fixtures, mocks.
@@ -249,6 +253,10 @@ def test_node_running_a_test_file_is_a_test_run(tmp_path):
     row = _verdicts(tmp_path, 'pytest -q 2>&1 | tail -3; echo "exit=${PIPESTATUS[0]}"; node tests/helpers/cleanup.js',
                     "5 passed\nexit=0").splitlines()[2]
     assert "✅" in row and "test commands in one call" not in row
+    # A quoted option value: the `$?` echoed after a helper is the helper's, not the piped test's.
+    command = ('node --require "./tests/setup.js" tests/run.js 2>&1 | tail -20; '
+               'node tests/helpers/cleanup.js; echo "exit=$?"')
+    assert "✅" not in _verdicts(tmp_path, command, "AssertionError: x\nexit=0").splitlines()[2]
 
 
 def test_runner_failure_markers_beat_exit_zero(tmp_path):
