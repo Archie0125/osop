@@ -21,6 +21,8 @@ _NODE_VALUE_OPTION = (r"(?:-r|-C|--(?:require|import|loader|experimental-loader|
 # One word of a shell command: it ends where `;`, `&`, `|`, a redirect or a parenthesis starts the next part
 # (`node tests/a.js||true` runs `true` after the test, which hides its exit status).
 _SHELL_WORD = r"[^\s;&|<>()]"
+# Between node's words: spaces on one line, or a `\` that continues it. A newline starts another command.
+_GAP = r"(?:[ \t]|\\\n)+"
 _TEST_RUNNER = (
     r"pytest|py\.test|unittest|nosetests|phpunit|pest|artisan\s+test|manage\.py\s+test|tox|prove"
     r"|(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?test|make\s+test|go\s+test|cargo\s+test"
@@ -30,17 +32,20 @@ _TEST_RUNNER = (
     # `node src/cart.spec.mjs`. Not `node -e`, `-p` or `--check`: inline code, or a syntax check that runs nothing.
     # `--test` counts wherever it is among node's options, after the plain value of an option osop does not know
     # (`--test-concurrency 1`), but not after the script: `node build.js --test` passes `--test` to build.js.
-    rf"|node(?:\.exe)?(?:\s+(?:{_NODE_VALUE_OPTION}\s+{_SHELL_WORD}+|(?!{_NODE_VALUE_OPTION})"
-    rf"(?!-(?:[ecp]|-eval|-print|-check)\b)-{_SHELL_WORD}+|[^\s\-./;&|<>()]+))*?\s+--test(?![\w-])"
-    rf"|node(?:\.exe)?(?:\s+(?:{_NODE_VALUE_OPTION}\s+{_SHELL_WORD}+"
-    rf"|(?!{_NODE_VALUE_OPTION})(?!-(?:[ecp]|-eval|-print|-check)\b)-{_SHELL_WORD}+))*\s+"
+    rf"|node(?:\.exe)?(?:{_GAP}(?:{_NODE_VALUE_OPTION}{_GAP}{_SHELL_WORD}+|(?!{_NODE_VALUE_OPTION})"
+    rf"(?!-(?:[ecp]|-eval|-print|-check)\b)-{_SHELL_WORD}+|[^\s\-./;&|<>()]+))*?{_GAP}--test(?![\w-])"
+    rf"|node(?:\.exe)?(?:{_GAP}(?:{_NODE_VALUE_OPTION}{_GAP}{_SHELL_WORD}+"
+    rf"|(?!{_NODE_VALUE_OPTION})(?!-(?:[ecp]|-eval|-print|-check)\b)-{_SHELL_WORD}+))*{_GAP}"
     rf"(?:(?:{_SHELL_WORD}*/)?(?:test\.[cm]?[jt]s|[^\s/;&|<>()]+\.(?:test|spec)\.[cm]?[jt]sx?)(?![\w.])"
     rf"|(?P<test_dir_script>(?:{_SHELL_WORD}*/)?tests?/{_SHELL_WORD}*))"
 )
-# A script that lives in test/ or tests/ without being a test: a fixture server, a seed script, a setup file. And
-# only a JS or TS file is a script: `./tests/test.env` is the value of an option osop does not know.
+# A script that lives in test/ or tests/ without being a test: a fixture server, a seed script, a setup file, by
+# folder (`fixtures/`, `__mocks__/`) or by a part of its name (`global-setup.js`, `mock-server.js`, not
+# `observer.mjs`). And only a JS or TS file is a script: `./tests/test.env` is the value of an option osop does
+# not know.
 _TEST_HELPER = re.compile(
-    r"(?:^|/)(?:fixtures?|helpers?|support|mocks?|__mocks__)/|(?:^|/)(?:setup|server|serve|seed|teardown)[^/]*$"
+    r"(?:^|/)_*(?:fixtures?|helpers?|support|mocks?)_*/"
+    r"|(?:^|/)(?:[^/]*[-_.])?(?:setup|server|serve|seed|seeder|teardown|fixtures?|mocks?)(?:[-_.][^/]*)?$"
     r"|(?<!\.[cm][jt]s)(?<!\.[jt]sx)(?<!\.[jt]s)$", re.I)
 # `env -u FORCE_COLOR -u CLICOLOR`, `env -i`, `env --unset=CI`: env's options, some taking a value. Each option
 # has one way to match, or `env -ua -ua …` backtracks exponentially in the hook that runs before every command.

@@ -76,6 +76,7 @@ def test_a_piped_runner_gets_pipefail(command):
         "pytest tests/ || ls | head -3",
         "pytest tests/ # see | head",  # a comment
         "echo 'running pytest' | cat",  # the runner is inside a string
+        "timeout 5 node tests/e2e/server.mjs 2>&1 | tail",  # a helper in tests/ is no runner: its status stays tail's
         "",
     ],
 )
@@ -151,7 +152,7 @@ def test_hook_is_silent_and_exits_zero_when_it_has_nothing_to_say(stdin):
 def test_env_options_are_read_in_linear_time():
     """The hook runs before every Bash command: `env -ua …` or `node -r a …` repeated must not make it backtrack."""
     for command in ("env " + "-ua " * 24 + "true | tail", "node " + "-r a " * 24 + "x | tail",
-                    "node " + "a/" * 20000 + "x.js | tail"):
+                    "node " + "a/" * 20000 + "x.js | tail", "node x\n" * 5000 + "pytest | tail"):
         start = time.perf_counter()
         with_pipefail(command)
         assert time.perf_counter() - start < 0.5, command[:20]

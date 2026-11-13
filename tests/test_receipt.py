@@ -221,7 +221,9 @@ def test_node_running_a_test_file_is_a_test_run(tmp_path):
                     "node -r ts-node/register tests/api.test.ts", "node --import tsx --test test/a.test.ts",
                     # `--test` among node's options, whatever options with values come before it.
                     "node --test-concurrency 1 --test tests/smoke.js",
-                    "node --env-file-if-exists .env tests/js/run.mjs"]:
+                    "node --env-file-if-exists .env tests/js/run.mjs",
+                    # A `\` continues the command on the next line; `observer` is no helper name.
+                    "node \\\n  tests/js/run.mjs", "node tests/js/observer.mjs"]:
         assert "No test command ran." not in _verdicts(tmp_path, command), command
     # The path ends where the shell command does: `||true`, `;echo …` and `|tail` hide the script's exit status.
     for command in ["node tests/smoke.js||true", "node tests/js/run.mjs;echo done", "node tests/js/run.mjs|tail -3"]:
@@ -236,7 +238,12 @@ def test_node_running_a_test_file_is_a_test_run(tmp_path):
                     # An option osop does not know may take a value; only a JS or TS file under tests/ is a script.
                     "node --experimental-sea-config ./tests/sea.json scripts/build.js",
                     # `--test` after the script is the script's argument, not node's test runner.
-                    "node scripts/build.js --test", "node dist/cli.mjs --test"]:
+                    "node scripts/build.js --test", "node dist/cli.mjs --test",
+                    # node's words are on its own line: the next line is another command.
+                    "node app\ncheck --test",
+                    # Helpers by name: setup, server, seed, teardown, fixtures, mocks.
+                    "node tests/e2e/global-setup.js", "node test/__fixtures__/app.js", "node tests/mock-server.js",
+                    "node tests/e2e/start-server.mjs"]:
         assert "No test command ran." in _verdicts(tmp_path, command), command
     # A helper in the same call is not a second test command: the status echoed right after the test is the test's.
     row = _verdicts(tmp_path, 'pytest -q 2>&1 | tail -3; echo "exit=${PIPESTATUS[0]}"; node tests/helpers/cleanup.js',
