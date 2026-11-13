@@ -14,8 +14,10 @@ from osop.recorder.claims import Claim, find_claims
 from osop.recorder.transcript import ToolCall, _walk
 
 # Node options whose value is the next word: `-r ./tests/setup.js` loads that file, it is not the script that runs.
-_NODE_VALUE_OPTION = (r"(?:-r|-C|--(?:require|import|loader|experimental-loader|conditions|input-type|env-file|title"
-                      r"|test-reporter|test-reporter-destination|test-name-pattern|test-skip-pattern))(?!\S)")
+_NODE_VALUE_OPTION = (r"(?:-r|-C|--(?:require|import|loader|experimental-loader|conditions|input-type|env-file"
+                      r"|env-file-if-exists|title|disable-warning|redirect-warnings|watch-path|experimental-config-file"
+                      r"|test-reporter|test-reporter-destination|test-name-pattern|test-skip-pattern|test-concurrency"
+                      r"|test-timeout|test-shard|test-coverage-include|test-coverage-exclude|test-global-setup))(?!\S)")
 # One word of a shell command: it ends where `;`, `&`, `|`, a redirect or a parenthesis starts the next part
 # (`node tests/a.js||true` runs `true` after the test, which hides its exit status).
 _SHELL_WORD = r"[^\s;&|<>()]"
@@ -26,16 +28,20 @@ _TEST_RUNNER = (
     r"|playwright\s+test|cypress\s+run|mocha|ava\b|ctest|bats|flutter\s+test|mix\s+test|sbt\s+test"
     # Node's own runner, or node running a test file: `node --test`, `node tests/js/run.mjs`, `node test.js`,
     # `node src/cart.spec.mjs`. Not `node -e`, `-p` or `--check`: inline code, or a syntax check that runs nothing.
-    # `--test` counts wherever it is among the options, after options with values osop does not know.
-    rf"|node(?:\.exe)?(?:\s+(?!-(?:[ecp]|-eval|-print|-check)\b){_SHELL_WORD}+)*?\s+--test(?![\w-])"
+    # `--test` counts wherever it is among node's options, after the plain value of an option osop does not know
+    # (`--test-concurrency 1`), but not after the script: `node build.js --test` passes `--test` to build.js.
+    rf"|node(?:\.exe)?(?:\s+(?:{_NODE_VALUE_OPTION}\s+{_SHELL_WORD}+|(?!{_NODE_VALUE_OPTION})"
+    rf"(?!-(?:[ecp]|-eval|-print|-check)\b)-{_SHELL_WORD}+|[^\s\-./;&|<>()]+))*?\s+--test(?![\w-])"
     rf"|node(?:\.exe)?(?:\s+(?:{_NODE_VALUE_OPTION}\s+{_SHELL_WORD}+"
     rf"|(?!{_NODE_VALUE_OPTION})(?!-(?:[ecp]|-eval|-print|-check)\b)-{_SHELL_WORD}+))*\s+"
     rf"(?:(?:{_SHELL_WORD}*/)?(?:test\.[cm]?[jt]s|[^\s/;&|<>()]+\.(?:test|spec)\.[cm]?[jt]sx?)(?![\w.])"
     rf"|(?P<test_dir_script>(?:{_SHELL_WORD}*/)?tests?/{_SHELL_WORD}*))"
 )
-# A script that lives in test/ or tests/ without being a test: a fixture server, a seed script, a setup file.
+# A script that lives in test/ or tests/ without being a test: a fixture server, a seed script, a setup file. And
+# only a JS or TS file is a script: `./tests/test.env` is the value of an option osop does not know.
 _TEST_HELPER = re.compile(
-    r"(?:^|/)(?:fixtures?|helpers?|support|mocks?|__mocks__)/|(?:^|/)(?:setup|server|serve|seed|teardown)[^/]*$", re.I)
+    r"(?:^|/)(?:fixtures?|helpers?|support|mocks?|__mocks__)/|(?:^|/)(?:setup|server|serve|seed|teardown)[^/]*$"
+    r"|(?<!\.[cm][jt]s)(?<!\.[jt]sx)(?<!\.[jt]s)$", re.I)
 # `env -u FORCE_COLOR -u CLICOLOR`, `env -i`, `env --unset=CI`: env's options, some taking a value. Each option
 # has one way to match, or `env -ua -ua …` backtracks exponentially in the hook that runs before every command.
 _ENV = r"env(?:\s+(?:-[uC]\s*\S+|--[\w-]+=\S+|-(?![uC])[^\s=]*))*"
@@ -456,8 +462,13 @@ def _matching_calls(calls: list, pattern: re.Pattern) -> list[tuple[ToolCall, st
 def _real_run(pattern: re.Pattern, code: str) -> re.Match | None:
     """The first run of the tool in the call that checks something: `ruff --version && ruff check .` is the
     second one."""
-    return next((m for m in pattern.finditer(code) if not _version_query(code, m)
-                 and not _TEST_HELPER.search(m.groupdict().get("test_dir_script") or "")), None)
+    return next((m for m in pattern.finditer(code) if _checks(code, m)), None)
+
+
+def _checks(code: str, m: re.Match) -> bool:
+    """The tool ran to check something: not a version query, nor a script in tests/ that is not a test."""
+    script = m.groupdict().get("test_dir_script")
+    return not _version_query(code, m) and not (script and _TEST_HELPER.search(script))
 
 
 def _version_query(code: str, m: re.Match) -> bool:
@@ -658,7 +669,7 @@ def _other_runners(code: str, m: re.Match) -> set[tuple[str, str]]:
     markers."""
     return {(kind, _tool(o))
             for kind, pattern in (("tests", _TEST_COMMAND), ("lint", _LINT_COMMAND), ("build", _BUILD_COMMAND))
-            for o in pattern.finditer(code) if o.start() != m.start() and not _version_query(code, o)}
+            for o in pattern.finditer(code) if o.start() != m.start() and _checks(code, o)}
 
 
 def _tool(m: re.Match) -> str:
@@ -804,7 +815,7 @@ def _test_verdict(tc: ToolCall, code: str, match: re.Match) -> str:
         return "✅ passed" if _PASSED_COUNT.search(out) else "✅ exit 0, no pass/fail summary seen"
     # The reported exit status belongs to whatever ran last, so only the output is left to read.
     echoed = _ECHOED_EXIT.findall(out)
-    runs = sum(1 for m in _TEST_COMMAND.finditer(code) if not _version_query(code, m))
+    runs = sum(1 for m in _TEST_COMMAND.finditer(code) if _checks(code, m))
     # `pytest; echo exit=$?`: the first `$?` echoed right after the test, with nothing between, is the test's.
     # `pytest | tail; echo exit=${PIPESTATUS[0]}`: so is the first pipeline status, when the test opens the pipeline.
     # (`code` has quoted strings blanked to "", so `echo "exit=$?"` shows as `echo ""`.)
