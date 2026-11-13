@@ -36,7 +36,7 @@ def with_pipefail(command: str) -> str | None:
     uniq, sed, awk, …): a filter in the middle exits 1 when nothing comes through (`ruff check . | grep -E
     'error|warning' | tail`, or a `grep -v` that drops the only line), and pipefail would fail that too.
     """
-    masked = _mask(command, quotes='""')  # a quoted value stays a word, as the receipt reads it
+    masked = _mask(command)
     if _PIPEFAIL.search(masked):
         return None
     # A runner the receipt would judge: not a version query, nor a helper script in tests/ (a server under timeout).

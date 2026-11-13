@@ -485,7 +485,8 @@ def _version_query(code: str, m: re.Match) -> bool:
     (`ctest -V` is verbose, and `mvn test -V` prints the version and runs on.)"""
     segment = re.split(r"[;&|\n]", code[m.end():], maxsplit=1)[0]
     flags = r"--version|--help|-h" + ("" if re.search(r"\bctest$|\bmvnw?\s+\w+$", m.group(0)) else r"|-V")
-    if m.group(0).endswith("--test") and re.match(r"(?:\s+-\S+)*?\s+-v(?=[\s)]|$)", segment):
+    if m.group(0).endswith("--test") and re.match(rf"(?:\s+(?:{_NODE_VALUE_OPTION}\s+\S+|-\S+))*?\s+-v(?=[\s)]|$)",
+                                                  segment):
         return True  # `node --test -v`: node's own -v, before any file, prints its version (a script's -v is its own)
     return re.search(rf"(?<=\s)(?:{flags})(?=[\s)]|$)", segment) is not None
 
@@ -870,9 +871,8 @@ def _echoed_status_var(tc: ToolCall, code: str, match: re.Match) -> str | None:
     # `pytest --version; echo $?; pytest tests/; echo $?` echoes the version query's status first.
     runners = re.compile(rf"(?:{_TEST_RUNNER})\b")
     nth = len(runners.findall(code[:match.end()]))
-    # Quoted strings as `""` and spaces, the words `code` has (`node --require "./setup.js" tests/a.js` keeps
-    # its script), at the places of `raw`.
-    found = [r for r, _ in zip(runners.finditer(_mask(raw, quotes='""')), range(nth), strict=False)]
+    # The words `code` has (`node --require "./setup.js" tests/a.js` keeps its script), at the places of `raw`.
+    found = [r for r, _ in zip(runners.finditer(_mask(raw)), range(nth), strict=False)]
     if len(found) < nth:
         return None
     runner = found[-1]
@@ -967,16 +967,16 @@ def _unwrap_shell_c(command: str, blank: bool = True) -> str:
     return command
 
 
-def _mask(command: str, quotes: str = "") -> str:
-    """The command with heredoc bodies, quoted strings and comments turned into spaces of the same length, so
-    that the rest sits where it does in the command as written (a quoted runner path keeps its name, as
-    _shell_code does). `quotes` starts each quoted string's spaces (`""`: the word _shell_code leaves)."""
+def _mask(command: str) -> str:
+    """The command with heredoc bodies and comments turned into spaces of the same length, and quoted strings into
+    `"` of the same length, so that the rest sits where it does in the command as written and the words are those
+    _shell_code leaves (`"$PWD"/x.js` stays one word; a quoted runner path keeps its name)."""
     def quoted(m: re.Match) -> str:
         text = m.group(0)
         runner = _RUNNER_EXECUTABLE.search(text[1:-1])
         if runner:
             return " " * (len(text) - 1 - len(runner.group(1))) + runner.group(1) + " "
-        return quotes + " " * (len(text) - len(quotes))
+        return '"' * len(text)
 
     def heredoc(m: re.Match) -> str:
         first_line = m.group(0).index("\n") + 1

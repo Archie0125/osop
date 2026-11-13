@@ -251,6 +251,7 @@ def test_node_running_a_test_file_is_a_test_run(tmp_path):
                     "node --no-warnings app --test",  # a flag without a value: `app` is the script
                     # node's version and help print and exit.
                     "node --version --test", "node --test -v", "node -h tests/x.js",
+                    "node --test --test-concurrency 1 -v",
                     # Bundled short options: `-e1` is inline code, `-pe` prints.
                     "node -e1 --test", "node -pe 1 tests/a.js",
                     # node's words are on its own line: the next line is another command.
@@ -264,9 +265,12 @@ def test_node_running_a_test_file_is_a_test_run(tmp_path):
                     "5 passed\nexit=0").splitlines()[2]
     assert "✅" in row and "test commands in one call" not in row
     # A quoted option value: the `$?` echoed after a helper is the helper's, not the piped test's.
-    command = ('node --require "./tests/setup.js" tests/run.js 2>&1 | tail -20; '
-               'node tests/helpers/cleanup.js; echo "exit=$?"')
-    assert "✅" not in _verdicts(tmp_path, command, "AssertionError: x\nexit=0").splitlines()[2]
+    for command in ('node --require "./tests/setup.js" tests/run.js 2>&1 | tail -20; '
+                    'node tests/helpers/cleanup.js; echo "exit=$?"',
+                    # A quoted part glued to a path is one word, as the receipt reads it.
+                    'node --import "$PWD"/register.js --test 2>&1 | tail -4; '
+                    'node tests/helpers/cleanup.js; echo "exit=$?"'):
+        assert "✅" not in _verdicts(tmp_path, command, "AssertionError: x\nexit=0").splitlines()[2], command
 
 
 def test_runner_failure_markers_beat_exit_zero(tmp_path):

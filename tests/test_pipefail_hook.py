@@ -36,6 +36,7 @@ HOOK = Path(__file__).parent.parent / "hooks" / "osop-pipefail.py"
         "npx vitest run 2>&1 | tail -15; echo done",  # the pipe is in the runner's own command
         "env -u FORCE_COLOR php artisan test 2>&1 | tail -4",
         "node tests/js/run.mjs 2>&1 | tail -3",
+        'node --import "$PWD"/register.js --test 2>&1 | tail -4',  # the quoted part and the path are one word
     ],
 )
 def test_a_piped_runner_gets_pipefail(command):
