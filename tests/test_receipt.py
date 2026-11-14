@@ -984,3 +984,13 @@ def test_tokens_after_a_written_newline_in_a_cut_goal_and_encrypted_keys(tmp_pat
     events[0]["message"]["content"] = goal
     path.write_text("\n".join(json.dumps(e) for e in events) + "\n", encoding="utf-8")
     assert "ghp_AAAA" not in _receipt(path)
+
+
+def test_many_key_headers_without_an_end_line_are_masked_in_linear_time():
+    import time
+
+    text = "-----BEGIN PRIVATE KEY-----\nshort\n" * 20000
+    started = time.perf_counter()
+    masked = _SECRET.sub("[secret]", text)
+    assert time.perf_counter() - started < 1.0
+    assert "BEGIN" not in masked and masked.count("short") == 20000
