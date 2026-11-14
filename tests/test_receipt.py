@@ -8,7 +8,7 @@ from click.testing import CliRunner
 
 from osop.cli.main import cli
 from osop.recorder import parse_transcript
-from osop.recorder.receipt import render_brief, render_receipt
+from osop.recorder.receipt import _SECRET, render_brief, render_receipt
 
 MINIMAL_SESSION = Path(__file__).parent / "fixtures" / "minimal_session.jsonl"
 
@@ -963,3 +963,24 @@ def test_text_glued_to_a_token_stays_and_other_refusal_wordings_count(tmp_path):
     path = _session(tmp_path, [passed, tests, ("Bash", {"command": "ruff check . --fix"}, denied, True),
                                ("Bash", {"command": "python -m pytest -q -x"}, denied, True)])
     assert "❌" not in _section(_receipt(path), "Tests")
+
+
+def test_tokens_after_a_written_newline_in_a_cut_goal_and_encrypted_keys(tmp_path):
+    first, second = "ghp_" + "A" * 40, "ghp_" + "B" * 40
+    body = "Zm9v" * 16
+    pem = ("-----BEGIN RSA PRIVATE KEY-----\nProc-Type: 4,ENCRYPTED\nDEK-Info: AES-256-CBC,0123456789ABCDEF\n\n"
+           + body + "\n-----END RSA PRIVATE KEY-----\nthen the tests ran")
+    cut = "-----BEGIN PRIVATE KEY-----\n" + body + "\nand after that the build passed without the key"
+    path = _session(tmp_path, [
+        ("Bash", {"command": "printf '" + first + r"\n" + second + r"\n' > tokens.txt"}, "ok", False),
+        ("Bash", {"command": "cat key.pem"}, pem, False), ("Bash", {"command": "cat cut.pem"}, cut, False)])
+    receipt = _receipt(path)
+    assert first not in receipt and second not in receipt and body not in receipt
+    # The words after a key are kept, with or without its END line.
+    assert _SECRET.sub("[secret]", pem).endswith("then the tests ran")
+    assert _SECRET.sub("[secret]", cut).endswith("and after that the build passed without the key")
+    goal = "x" * 580 + " " + first
+    events = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+    events[0]["message"]["content"] = goal
+    path.write_text("\n".join(json.dumps(e) for e in events) + "\n", encoding="utf-8")
+    assert "ghp_AAAA" not in _receipt(path)

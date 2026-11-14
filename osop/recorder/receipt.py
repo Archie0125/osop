@@ -181,13 +181,16 @@ _REFUSED = re.compile(r"\s*(?:The user doesn't want to proceed with this tool us
                       r"|Permission for this (?:tool use|command|action) was denied"
                       r"|Permission to use \w+ (?:has been|was) denied)")
 # Token shapes that must not be copied into a receipt: commands and output are quoted there as they were.
-# A prefix must start a word ("task-<uuid>.json" holds no "sk-" key) and a token is ASCII (text glued to it
-# stays); a private key goes with its body, up to its END line or as far as the base64 runs when the text was cut.
+# A prefix must start a word ("task-<uuid>.json" holds no "sk-" key; after a written "\n" it does) and a token
+# is ASCII (text glued to it stays); a private key goes with its body.
 _SECRET = re.compile(
-    r"(?<![A-Za-z0-9])(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|glpat-[A-Za-z0-9_-]{16,}"
+    r"(?:(?<![A-Za-z0-9])|(?<=\\[nrt]))(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|glpat-[A-Za-z0-9_-]{16,}"
     r"|sk-ant-[A-Za-z0-9_-]{8,}|sk-[A-Za-z0-9_-]{24,}|[sr]k_(?:live|test)_[A-Za-z0-9]{16,}|AKIA[0-9A-Z]{16}"
     r"|AIza[A-Za-z0-9_-]{30,}|npm_[A-Za-z0-9]{30,}|hf_[A-Za-z0-9]{30,}|xox[abprs]-[A-Za-z0-9-]{10,})"
-    r"|-----BEGIN [A-Z ]*PRIVATE KEY-----(?:[A-Za-z0-9+/=\s]|\\n)*(?:-----END [A-Z ]*PRIVATE KEY-----)?")
+    # With its END line: everything between (an encrypted key has "Proc-Type:" and "DEK-Info:" lines). Cut
+    # before END: the header lines and the base64 lines that follow, not the prose after them.
+    r"|-----BEGIN [A-Z ]*PRIVATE KEY-----(?:(?:(?!-----BEGIN )[\s\S]){0,8000}?-----END [A-Z ]*PRIVATE KEY-----"
+    r"|(?:\s|\\n|(?:Proc-Type|DEK-Info):[^\n\\]*|[A-Za-z0-9+/=]{16,})*)")
 _CLAIM_LABEL = {"tests": "tests pass", "lint": "lint passes", "build": "build succeeds",
                 "commit": "committed", "push": "pushed", "merge": "merged"}
 _BACKED, _CONTRADICTED, _UNCLEAR, _NO_EVIDENCE = "✅ backed", "❌ contradicted", "⚠️ cannot tell", "❓ no evidence"
@@ -1260,7 +1263,7 @@ def _code(text: str, limit: int = 120, in_table: bool = True) -> str:
 
 
 def _quote(text: str) -> str:
-    text = _CONTROL.sub("", text).strip() or "(no prompt recorded)"
+    text = _SECRET.sub("[secret]", _CONTROL.sub("", text).strip()) or "(no prompt recorded)"
     if len(text) > 600:
         text = text[:599] + "…"
     return "\n".join(f"> {line}" if line else ">" for line in text.splitlines())
