@@ -993,6 +993,15 @@ def test_a_cut_encrypted_key_on_one_line_leaves_what_follows():
     assert _SECRET.sub("[secret]", flat) == "[secret]3 failed, 2 passed in 0.3s"
 
 
+def test_a_key_without_its_end_line_is_masked_as_far_as_its_lines_go():
+    head, line, bs = "-----BEGIN PRIVATE KEY-----", "Zm9v" * 16, chr(92)
+    error = "FileNotFoundError: key.pem"
+    assert _SECRET.sub("[secret]", f"{head}\n{line}\n{error}") == "[secret]" + error
+    assert _SECRET.sub("[secret]", f"{head}{bs}r{bs}n{line}{bs}r{bs}n") == "[secret]"
+    assert _SECRET.sub("[secret]", f"{head}\n{line}\nAQIDBA==\n") == "[secret]\n"
+    assert _SECRET.sub("[secret]", f"{head}\n{line}\nEXIT=1 after") == "[secret]EXIT=1 after"
+
+
 def test_many_key_headers_without_an_end_line_are_masked_in_linear_time():
     import time
 
