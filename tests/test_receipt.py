@@ -8,7 +8,7 @@ from click.testing import CliRunner
 
 from osop.cli.main import cli
 from osop.recorder import parse_transcript
-from osop.recorder.receipt import render_receipt
+from osop.recorder.receipt import _SECRET, _tail, render_brief, render_receipt
 
 MINIMAL_SESSION = Path(__file__).parent / "fixtures" / "minimal_session.jsonl"
 
@@ -898,3 +898,123 @@ def test_a_continued_line_or_a_paren_after_the_or_still_counts(tmp_path):
         receipt = _receipt(_session(tmp_path, [("Bash", {"command": command}, "", False)]))
         row = _table(_section(receipt, "Git"))[2].split(" | ")
         assert row[2] == f"⚠️ exit 0, but {escaped_or} before it: it ran only if the command before failed", command
+
+
+# --- colour codes, refused commands, secrets --------------------------------------------------------
+
+
+def test_a_refused_command_is_not_a_test_run(tmp_path):
+    """Refused by the permission system or by the user: nothing ran, so it neither fails nor replaces the run before."""
+    passed = ("Bash", {"command": "python -m pytest -q"}, "5 passed in 0.31s", False)
+    for refusal in ("Permission for this tool use was denied. It requires approval, and this session has none.",
+                    "The user doesn't want to proceed with this tool use. The tool use was rejected."):
+        refused = ("Bash", {"command": "python -m pytest -q tests/test_slow.py"}, refusal, True)
+        path = _session(tmp_path, [passed, refused])
+        tests = _section(_receipt(path), "Tests")
+        assert "❌" not in tests and tests.count("pytest") == 1, refusal
+
+
+def test_secrets_in_commands_and_output_are_masked(tmp_path):
+    key = "sk-ant-" + "a1B2" * 12
+    token = "ghp_" + "Z9y8" * 10
+    path = _session(tmp_path, [
+        ("Bash", {"command": f"printf '%s' '{key}' > key.txt; python -m pytest -q"}, "5 passed", False),
+        ("Bash", {"command": "env"}, f"GITHUB_TOKEN={token}\nExit code 1", True)])
+    receipt = _receipt(path)
+    assert key not in receipt and token not in receipt and key[:20] not in receipt
+    assert "[secret]" in receipt
+
+
+def test_a_private_key_is_masked_with_its_body_and_a_file_name_is_left_alone(tmp_path):
+    body = "MC4CAQAwBQYDK2VwBCIEIA" + "EB" * 20
+    pem = f"-----BEGIN PRIVATE KEY-----\n{body}\n-----END PRIVATE KEY-----"
+    gitlab = "glpat-" + "aB3d" * 5
+    name = "task-550e8400-e29b-41d4-a716-446655440000.json"
+    path = _session(tmp_path, [
+        ("Bash", {"command": f"git clone https://oauth2:{gitlab}@example.com/a.git"}, "done", False),
+        ("Bash", {"command": "cat key.pem"}, pem, False), ("Bash", {"command": f"ls {name}"}, name, False)])
+    receipt = _receipt(path)
+    assert body not in receipt and "END PRIVATE KEY" not in receipt and gitlab not in receipt
+    assert name in receipt
+
+
+def test_a_token_at_the_end_of_long_output_is_masked_before_the_cut(tmp_path):
+    """The Git table shows the end of the output: the tail of a token must not survive there."""
+    token = "ghp_" + "Z9y8" * 9
+    url = f"https://x-access-token:{token}@example.com/" + "r" * 62 + ".git"
+    output = "Exit code 128\n" + "remote: " + "x" * 200 + f" fatal: unable to access {url}"
+    receipt = _receipt(_session(tmp_path, [("Bash", {"command": "git push origin main"}, output, True)]))
+    assert token[-12:] not in receipt and "[secret]@example.com" in receipt
+
+
+def test_the_receipt_path_in_the_brief_is_never_masked(tmp_path):
+    path = _session(tmp_path, [("Bash", {"command": "python -m pytest -q"}, "5 passed", False)])
+    where = "C:/receipts/sk-" + "a" * 30 + "/2026-11-06-session.receipt.md"
+    assert render_brief(parse_transcript(path), where).endswith(f"receipt: {where}")
+
+
+def test_text_glued_to_a_token_stays_and_other_refusal_wordings_count(tmp_path):
+    key = "sk-ant-" + "a1B2" * 12
+    path = _session(tmp_path, [("Bash", {"command": f"echo {key}測試通過"}, "ok", False)])
+    assert "[secret]測試通過" in _receipt(path)
+    passed = ("Bash", {"command": "ruff check ."}, "All checks passed!", False)
+    denied = "Permission for this command was denied by a built-in Claude Code safety check."
+    tests = ("Bash", {"command": "python -m pytest -q"}, "5 passed", False)
+    path = _session(tmp_path, [passed, tests, ("Bash", {"command": "ruff check . --fix"}, denied, True),
+                               ("Bash", {"command": "python -m pytest -q -x"}, denied, True)])
+    assert "❌" not in _section(_receipt(path), "Tests")
+
+
+def test_tokens_after_a_written_newline_in_a_cut_goal_and_encrypted_keys(tmp_path):
+    first, second = "ghp_" + "A" * 40, "ghp_" + "B" * 40
+    body = "Zm9v" * 16
+    pem = ("-----BEGIN RSA PRIVATE KEY-----\nProc-Type: 4,ENCRYPTED\nDEK-Info: AES-256-CBC,0123456789ABCDEF\n\n"
+           + body + "\n-----END RSA PRIVATE KEY-----\nthen the tests ran")
+    cut = "-----BEGIN PRIVATE KEY-----\n" + body + "\nand after that the build passed without the key"
+    path = _session(tmp_path, [
+        ("Bash", {"command": "printf '" + first + r"\n" + second + r"\n' > tokens.txt"}, "ok", False),
+        ("Bash", {"command": "cat key.pem"}, pem, False), ("Bash", {"command": "cat cut.pem"}, cut, False)])
+    receipt = _receipt(path)
+    assert first not in receipt and second not in receipt and body not in receipt
+    # The words after a key are kept, with or without its END line.
+    assert _SECRET.sub("[secret]", pem).endswith("then the tests ran")
+    assert _SECRET.sub("[secret]", cut).endswith("and after that the build passed without the key")
+    goal = "x" * 580 + " " + first
+    events = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+    events[0]["message"]["content"] = goal
+    path.write_text("\n".join(json.dumps(e) for e in events) + "\n", encoding="utf-8")
+    assert "ghp_AAAA" not in _receipt(path)
+
+
+def test_a_cut_encrypted_key_on_one_line_leaves_what_follows():
+    body = "Zm9v" * 16
+    flat = ("-----BEGIN RSA PRIVATE KEY----- Proc-Type: 4,ENCRYPTED DEK-Info: AES-256-CBC,0123456789ABCDEF "
+            + body + " " + body + " 3 failed, 2 passed in 0.3s")
+    assert _SECRET.sub("[secret]", flat) == "[secret]3 failed, 2 passed in 0.3s"
+
+
+def test_a_key_without_its_end_line_is_masked_as_far_as_its_lines_go():
+    head, line, bs = "-----BEGIN PRIVATE KEY-----", "Zm9v" * 16, chr(92)
+    error = "FileNotFoundError: key.pem"
+    assert _SECRET.sub("[secret]", f"{head}\n{line}\n{error}") == "[secret]" + error
+    assert _SECRET.sub("[secret]", f"{head}{bs}r{bs}n{line}{bs}r{bs}n") == "[secret]"
+    assert _SECRET.sub("[secret]", f"{head}\n{line}\nAQIDBA==\n") == "[secret]\n"
+    assert _SECRET.sub("[secret]", f"{head}\n{line}\nEXIT=1 after") == "[secret]EXIT=1 after"
+
+
+def test_a_token_split_by_colour_codes_is_masked_before_the_cut(tmp_path):
+    token = "ghp_" + "Q7w3" * 9
+    coloured = chr(27) + "[01;31mghp_" + chr(27) + "[m" + token[4:]
+    output = f"Exit code 128\nfatal: unable to access https://u:{coloured}@example.com/" + "r" * 62 + ".git"
+    receipt = _receipt(_session(tmp_path, [("Bash", {"command": "git push origin main"}, output, True)]))
+    assert token[-10:] not in receipt and token[-10:] not in _tail(output)
+
+
+def test_many_key_headers_without_an_end_line_are_masked_in_linear_time():
+    import time
+
+    text = "-----BEGIN PRIVATE KEY-----\nshort\n" * 20000
+    started = time.perf_counter()
+    masked = _SECRET.sub("[secret]", text)
+    assert time.perf_counter() - started < 1.0
+    assert "BEGIN" not in masked and masked.count("short") == 20000

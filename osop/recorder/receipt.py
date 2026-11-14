@@ -176,6 +176,23 @@ _GIT_STATE = re.compile(_GIT_START + _GIT_VERB)
 _GIT_SEGMENT = re.compile(_GIT_START + "(" + _GIT_VERB + r"[^;&|\n)]*)")
 _FILE_TOOLS = ("Edit", "MultiEdit", "Write", "NotebookEdit")
 _MAIN = "main"
+# What Claude Code returns when a call never ran: the user said no, or a headless session had nobody to ask.
+_REFUSED = re.compile(r"\s*(?:The user doesn't want to proceed with this tool use"
+                      r"|Permission for this (?:tool use|command|action) was denied"
+                      r"|Permission to use \w+ (?:has been|was) denied)")
+# Token shapes that must not be copied into a receipt: commands and output are quoted there as they were.
+# A prefix must start a word ("task-<uuid>.json" holds no "sk-" key; after a written "\n" it does) and a token
+# is ASCII (text glued to it stays); a private key goes with its body.
+_SECRET = re.compile(
+    r"(?:(?<![A-Za-z0-9])|(?<=\\[nrt]))(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|glpat-[A-Za-z0-9_-]{16,}"
+    r"|sk-ant-[A-Za-z0-9_-]{8,}|sk-[A-Za-z0-9_-]{24,}|[sr]k_(?:live|test)_[A-Za-z0-9]{16,}|AKIA[0-9A-Z]{16}"
+    r"|AIza[A-Za-z0-9_-]{30,}|npm_[A-Za-z0-9]{30,}|hf_[A-Za-z0-9]{30,}|xox[abprs]-[A-Za-z0-9-]{10,})"
+    # With its END line: everything between (an encrypted key has "Proc-Type:" and "DEK-Info:" lines). Cut
+    # before END: the header lines, the full base64 lines (48 or more characters: a long word or a commit SHA is
+    # not one) and a padded last line, not the prose after them.
+    r"|-----BEGIN [A-Z ]*PRIVATE KEY-----(?:(?:(?!-----BEGIN )[\s\S]){0,8000}?-----END [A-Z ]*PRIVATE KEY-----"
+    r"|(?:\s|\\[nrt]|(?:Proc-Type|DEK-Info):[ \t]*[\w,-]+|[A-Za-z0-9+/]{48,}={0,2})*"
+    r"(?:[A-Za-z0-9+/]{1,47}={1,2}(?![^\s\\]))?)")
 _CLAIM_LABEL = {"tests": "tests pass", "lint": "lint passes", "build": "build succeeds",
                 "commit": "committed", "push": "pushed", "merge": "merged"}
 _BACKED, _CONTRADICTED, _UNCLEAR, _NO_EVIDENCE = "✅ backed", "❌ contradicted", "⚠️ cannot tell", "❓ no evidence"
@@ -207,7 +224,7 @@ def render_receipt(parsed: dict, source: Path | str) -> str:
         f"---\nBuilt by `osop log` from `{source}`: read from the transcript, not written by the agent. "
         "Results are the exit status each tool reported."
     )
-    return "\n\n".join(sections) + "\n"
+    return _SECRET.sub("[secret]", "\n\n".join(sections) + "\n")
 
 
 def render_brief(parsed: dict, receipt_path: Path | str) -> str:
@@ -231,8 +248,8 @@ def render_brief(parsed: dict, receipt_path: Path | str) -> str:
     skipped = parsed.get("skipped") or []
     if skipped:
         parts.append(f"⚠️ {_count(len(skipped), 'sub-agent transcript')} could not be read")
-    parts.append(f"receipt: {receipt_path}")
-    return "OSOP · " + " · ".join(parts)
+    # The path is where the receipt is: it is never masked, or the Stop hook could not find the file.
+    return _SECRET.sub("[secret]", "OSOP · " + " · ".join(parts)) + f" · receipt: {receipt_path}"
 
 
 def _collect(parsed: dict) -> tuple[dict[str, str], list, list, str]:
@@ -240,11 +257,16 @@ def _collect(parsed: dict) -> tuple[dict[str, str], list, list, str]:
     labels = _subagent_labels(parsed["nodes"])
     calls = [(_owner(node.node_id, labels), tc) for node in _walk(parsed["nodes"]) for tc in node.tool_calls]
     tests = [
-        (by, tc, code, m) for by, tc in calls if tc.tool == "Bash"
+        (by, tc, code, m) for by, tc in calls if tc.tool == "Bash" and not _refused(tc)
         and (m := _real_run(_TEST_COMMAND, code := _shell_code(_unwrap_shell_c(_command(tc)))))
     ]
     goal = next((n.user_prompt for n in parsed["nodes"] if n.user_prompt), "") or ""
     return labels, calls, tests, goal
+
+
+def _refused(tc: ToolCall) -> bool:
+    """The call was turned down before it ran: it is no test run, no commit and no push, passed or failed."""
+    return tc.is_error and _REFUSED.match(tc.output) is not None
 
 
 def _count(n: int, noun: str) -> str:
@@ -460,7 +482,7 @@ def _norm_path(path: str) -> str:
 def _matching_calls(calls: list, pattern: re.Pattern) -> list[tuple[ToolCall, str, re.Match]]:
     found = []
     for _, tc in calls:
-        if tc.tool == "Bash":
+        if tc.tool == "Bash" and not _refused(tc):
             code = _shell_code(_unwrap_shell_c(_command(tc)))
             m = _real_run(pattern, code)
             if m:
@@ -497,7 +519,7 @@ def _git_calls(calls: list, verb: str) -> list[tuple[ToolCall, str, re.Match]]:
     call: `git push; git pull --rebase; git push` is judged by the second push."""
     found = []
     for _, tc in calls:
-        if tc.tool != "Bash":
+        if tc.tool != "Bash" or _refused(tc):
             continue
         code = _shell_code(_unwrap_shell_c(_command(tc)))
         last = None
@@ -1218,11 +1240,13 @@ def _subject(tc: ToolCall) -> str:
 
 
 def _tail(text: str, limit: int = 90) -> str:
+    # Before the cut: the end of a token is as secret as its start. Colour codes inside a token go first.
+    text = _SECRET.sub("[secret]", _CONTROL.sub("", text))
     return text if len(text) <= limit else "…" + text[-(limit - 1):]
 
 
 def _cell(text: str, limit: int = 120, in_table: bool = True) -> str:
-    text = re.sub(r"\s+", " ", _CONTROL.sub("", str(text))).strip()
+    text = _SECRET.sub("[secret]", re.sub(r"\s+", " ", _CONTROL.sub("", str(text))).strip())
     if len(text) > limit:
         text = text[: limit - 1] + "…"
     if not in_table:
@@ -1242,7 +1266,7 @@ def _code(text: str, limit: int = 120, in_table: bool = True) -> str:
 
 
 def _quote(text: str) -> str:
-    text = _CONTROL.sub("", text).strip() or "(no prompt recorded)"
+    text = _SECRET.sub("[secret]", _CONTROL.sub("", text).strip()) or "(no prompt recorded)"
     if len(text) > 600:
         text = text[:599] + "…"
     return "\n".join(f"> {line}" if line else ">" for line in text.splitlines())
