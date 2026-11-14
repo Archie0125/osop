@@ -140,6 +140,51 @@ def test_not_claims(text):
     assert _kinds(text) == [], text
 
 
+@pytest.mark.parametrize("text", [
+    # what comes after the tests pass is a plan: the pass has not happened
+    "測試過了之後：先備份再部署", "測試過了之後照原訂步驟做", "測試全綠後再 push",
+    # somebody's words in quotes, or the phrase itself being discussed
+    "另一個視窗回報「整套測試通過，4120 個」", "報表把每一句「測試過了」都算進去",
+    "In \"all tests passed, 4120 tests\", the count comes after the pass word", "這一欄顯示「誰推了什麼」",
+    # negated with a modal
+    "只換文案，不用重新 build", "你沒同意之前，我不會 merge 到 main、不會 push",
+    "這支工具裡都沒有任何 git、push 或上線指令", "不需要重新 build",
+    # needs the owner, or is still to do
+    "commit、push、merge 到 main 都要你逐項同意", "分支比 main 舊，所以要 rebase 重新 build",
+    # 推 that is not git
+    "可以比較各業務推了什麼、哪些有成交",
+    # still running, or about another time
+    "CI 還在跑 pytest（目前都 PASS）", "那個分支上週完成，測試當時都過",
+    "只改說明文件，不用再重新 build", "報表已列出誰 commit、推了什麼",
+])
+def test_plans_quotes_and_negations_are_not_claims(text):
+    assert _kinds(text) == [], text
+
+
+@pytest.mark.parametrize("text, kind", [
+    ("測試全過後已 push", "push"), ("測試通過，之後又補了兩條", "tests"), ("輸出是「245 passed」，測試全過", "tests"),
+    ("重新 build 完成", "build"), ("已 merge 到 main", "merge"), ("已經推了，CI 在跑", "push"),
+    ("前端：重 build 之後輸出沒有任何變動", "build"),
+    ("我不確定的部分已標出；其餘已 commit", "commit"),
+    ("測試全過後才完成部署", "tests"), ("「LoginTest」已重跑並通過", "tests"), ("本機測試全過（CI 還在跑）", "tests"),
+    ("剛才跑了 pytest，當時 37 passed", "tests"),
+    # told in order, or already done: what happened
+    ("遠端機器上型別檢查和測試通過後才 build", "tests"), ("全套測試通過後才 push 到 main，CI 也綠了", "tests"),
+    ("pytest 551 passed 之後才 commit", "tests"), ("我已 push 之後才發現漏了一個檔", "push"),
+    ("已 commit 之後照你的要求改了標題", "commit"), ("已 commit（push 要你點頭）", "commit"),
+    ("修好後當時就已 push 了", "push"),
+    # the agent's own words around a quoted command or name
+    ("I ran \"npm test\" and all 12 tests passed.", "tests"), ("Ran \"pytest -q\": 245 passed.", "tests"),
+    ("The note says \"all tests pass, 4120 tests\". I re-ran pytest here: all 3 tests pass.", "tests"),
+    # 不 / 沒 / 無 inside a word is no negation
+    ("已移除不用的檔案並 push", "push"), ("已修正無效的連結、push", "push"), ("已刪掉沒用到的 import 並 push", "push"),
+    # something else still running does not undo what is done
+    ("已 push 到 origin（CI 還在跑）", "push"), ("已 merge 到 main（部署正在跑）", "merge"),
+])
+def test_claims_next_to_those_shapes_stay_claims(text, kind):
+    assert kind in _kinds(text), text
+
+
 def test_code_blocks_are_not_claims_but_inline_code_is_read():
     assert _kinds("Run it:\n```\npytest -q\n3 passed\n```\nthen decide.") == []
     assert _kinds("`php artisan test` 201 passed") == ["tests"]

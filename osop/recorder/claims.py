@@ -43,6 +43,8 @@ _CONDITIONAL = re.compile(
     r"|就好|就可以|就能|我就|我會"
     r"|(?:了|完|後|綠|過|好)就|依序"
     r"|要(?:先|再|重新|用|全綠|通過|全過|都過|綠)|會(?:跑|做|先|再|觸發|一起)|再\s*(?:commit|push|merge|推|提交|合併|跑)"
+    # "要 rebase 再 build": a step still to do
+    r"|要\s*rebase"
     r"|\b(?:if|once|when|unless|until|will|would|should|must|need(?:s)? to|to be|going to)\b"
     r"|\b(?:can|could|may|might)(?:not)?\s+(?:now\s+|then\s+|also\s+)?be\b", re.I)
 # "Verify that all tests pass before merging", "make sure the tests pass before you push": an instruction, not a
@@ -65,7 +67,22 @@ _PRESENT_PASSIVE = re.compile(
 _NEGATED_EN_BEFORE = re.compile(r"(?:\b(?:not|nothing|never|no|without|cannot)\b|n't\b)[^,.;]{0,40}$", re.I)
 _NEGATED_EN_AFTER = re.compile(r"^[^,.;]{0,12}\b(?:yet|not)\b", re.I)
 # Chinese negation right before the claim, a quote or bracket allowed in between: 未 push, 沒有「已 commit.
-_NEGATED_ZH_BEFORE = re.compile(r"(?:沒有|沒|未|不|非|無|尚未|還沒|並未|無法|別|不是)\s*[「“\"(（『]?\s*$")
+# A modal may follow the negation: 不會 merge, 不用重新 build ("重新 build" is the claim's own start).
+_NEGATED_ZH_BEFORE = re.compile(
+    r"(?:沒有|沒|未|不|非|無|尚未|還沒|並未|無法|別|不是)(?:會|用|必|須|能|可以|要|准|得|該)?再?\s*[「“\"(（『]?\s*$")
+# "測試過了之後：先備份", "通過後才 build": what follows the pass is the plan, the pass has not happened.
+# "測試全過後已 push" and "重 build 之後輸出沒變" have happened.
+# "測試通過後才 build" tells what was done, in order.
+_THEN_AFTER = re.compile(r"\s*(?:之後|以後)\s*(?:[:：]|照)|\s*後\s*再")
+# "commit、push、merge 到 main 都要你同意" waits for the owner; "已 commit（push 要你點頭）" has committed.
+_OWNER_GO_AHEAD = re.compile(r"要你")
+# Before the claim in its clause: "CI 還在跑（目前都 PASS）" is not over ("本機測試全過（CI 還在跑）" is).
+# "當時都過" is about another time, unless the sentence says it was just now ("剛才跑 pytest，當時 37 passed").
+_STILL_RUNNING = re.compile(r"還在跑|正在跑")
+_ANOTHER_TIME = re.compile(r"當時")
+_JUST_NOW = re.compile(r"剛才|剛剛")
+# Words in quotes are somebody else's, or the phrase itself: 別人回報「整套測試通過」, 每一句「測試過了」.
+_QUOTE_PAIRS = (("「", "」"), ("『", "』"), ("“", "”"), ('"', '"'))
 # Inside a claim's own clause nothing may be negated or failing: "測試沒通過" and "tests did not pass" are
 # not "tests pass".
 _SPAN = r"(?:(?!沒|未|不|非|無|失敗|fail|\bnot\b|n't\b|\bnever\b|\bno\b|\bcannot\b)[^，。；]){0,200}?"
@@ -111,11 +128,12 @@ _PATTERNS = {
         re.I),
     "push": re.compile(
         rf"{_DONE}push(?:ed)?(?!\s*{_NOUN})|\bpush\s*(?:了|完成|完\b|好了|成功|上去了|到了)|^pushed\.?$"
-        rf"|{_DONE}(?:推送(?:到|上|至)?|推上去|推上|推到|推了|推(?=\s|$|[，。；、！!）)]))(?![去上到\s]*的)"
-        r"|推上去了|推上了|推到了|推送了|推了(?!\s*的)"
-        # "已 commit 並 push", "已合進 main、push": the second verb of a done list, never a bare list
-        rf"|{_DONE}[^，。；]{{0,24}}?(?:並|及|和|跟|、)\s*(?:push(?:ed)?\b(?!\s*{_NOUN})(?!\s*(?:失敗|fail))"
-        r"|(?:推送(?:到|上|至)?|推上去|推上|推到|推了|推(?=\s|$|[，。；、！!）)]))(?![去上到\s]*的))"
+        rf"|{_DONE}(?:推送(?:到|上|至)?|推上去|推上|推到|推了(?!\s*(?:什麼|甚麼|哪))|推(?=\s|$|[，。；、！!）)]))(?![去上到\s]*的)"
+        r"|推上去了|推上了|推到了|推送了|推了(?!\s*的)(?!\s*(?:什麼|甚麼|哪))"
+        # "已 commit 並 push", "已合進 main、push": the second verb of a done list, never a bare list, and
+        # nothing negated between ("都沒有 git、push 指令")
+        rf"|{_DONE}(?:(?!沒有|不會|並未|尚未|還沒)[^，。；]){{0,24}}?(?:並|及|和|跟|、)\s*(?:push(?:ed)?\b(?!\s*{_NOUN})(?!\s*(?:失敗|fail))"
+        r"|(?:推送(?:到|上|至)?|推上去|推上|推到|推了(?!\s*(?:什麼|甚麼|哪))|推(?=\s|$|[，。；、！!）)]))(?![去上到\s]*的))"
         r"|\b(?:is|are|was|were|has been|have been|got|now|already)\s+pushed\b|\bi(?:'ve| have)?\s+pushed\b"
         r"|\bpushed\s+(?:to|the|it|them|everything|both)\b|\b(?:and|,)\s*pushed\b(?!\s+(?:to|the|it|them|everything|both)\b)",
         re.I),
@@ -177,7 +195,9 @@ def find_claims(message: str, session_days: Collection[str] | None = None) -> li
         if session_days is not None and dates and not any(d in session_days for d in dates):
             continue
         for kind in KINDS:
-            m = _PATTERNS[kind].search(sentence)
+            # The first one outside quotes: "輸出是「245 passed」，測試全過" still says the tests pass. One that only
+            # starts in quotes ("「LoginTest」已重跑並通過") is a claim too, unless another sits wholly inside them.
+            m = _outside_quotes(_PATTERNS[kind], sentence)
             if m is None:
                 continue
             seps = list(_CLAUSE_END.finditer(sentence, 0, m.start()))
@@ -200,6 +220,14 @@ def find_claims(message: str, session_days: Collection[str] | None = None) -> li
                 continue
             if _NEGATED_ZH_BEFORE.search(sentence[max(0, m.start() - 8):m.start()]):
                 continue
+            done = "已" in m.group(0)
+            if not done and (_THEN_AFTER.match(sentence, m.end()) or _OWNER_GO_AHEAD.search(own)):
+                continue
+            lead = sentence[own_start:m.start()]
+            another_time = (not done and _ANOTHER_TIME.search(sentence[own_start:m.end()])
+                            and not _JUST_NOW.search(sentence))
+            if _STILL_RUNNING.search(lead) or another_time:
+                continue
             if _PLAN_AHEAD.search(sentence[:m.start()]) and (not _PAST.search(m.group(0)) or _passive_at(sentence, m)):
                 continue
             if _INSTRUCTION.search(sentence[:m.start()]):
@@ -220,6 +248,37 @@ def find_claims(message: str, session_days: Collection[str] | None = None) -> li
                 continue
             claims.append(Claim(kind, sentence))
     return claims
+
+
+def _outside_quotes(pattern: re.Pattern, sentence: str) -> re.Match | None:
+    """The first match that is not somebody's quoted words.
+
+    A match wholly inside quotes is skipped and the search goes on after the closing quote, so the quoted words
+    cannot swallow a claim that follows them ('says "all tests pass". I re-ran: all 3 tests pass'). A match that
+    starts in quotes and ends after them ("「LoginTest」已重跑並通過", 'ran "pytest -q": 245 passed') is the
+    agent's own claim, unless the sentence also quotes a whole claim.
+    """
+    pos, straddling, whole = 0, None, False
+    while (m := pattern.search(sentence, pos)) is not None:
+        close = _closing_quote(sentence, m.start())
+        if close < 0:
+            return m
+        if close >= m.end():
+            whole = True
+        elif straddling is None:
+            straddling = m
+        pos = close + 1
+    return None if whole else straddling
+
+
+def _closing_quote(sentence: str, at: int) -> int:
+    """Where the quotes that `at` sits in close, or -1 when it is not inside quotes."""
+    before = sentence[:at]
+    for opening, closing in _QUOTE_PAIRS:
+        inside = before.count(opening) % 2 if opening == closing else before.rfind(opening) > before.rfind(closing)
+        if inside and (close := sentence.find(closing, at)) >= 0:
+            return close
+    return -1
 
 
 def _passive_at(sentence: str, m: re.Match) -> bool:
