@@ -262,9 +262,9 @@ def _outside_quotes(pattern: re.Pattern, sentence: str) -> re.Match | None:
     A match wholly inside quotes is skipped and the search goes on after the closing quote, so the quoted words
     cannot swallow a claim that follows them ('says "all tests pass". I re-ran: all 3 tests pass'). A match that
     starts in quotes and ends after them ("「LoginTest」已重跑並通過", 'ran "pytest -q": 245 passed') is the
-    agent's own claim, unless the sentence also quotes a whole claim.
+    agent's own claim.
     """
-    pos, straddling, whole = 0, None, False
+    pos, straddling = 0, None
     while (m := pattern.search(sentence, pos)) is not None:
         close = _closing_quote(sentence, m.start())
         if close < 0:
@@ -272,11 +272,10 @@ def _outside_quotes(pattern: re.Pattern, sentence: str) -> re.Match | None:
         if close >= m.end():
             if _RUNNER_SUMMARY.fullmatch(m.group(0).strip()):
                 return m
-            whole = True
         elif straddling is None:
             straddling = m
         pos = close + 1
-    return None if whole else straddling
+    return straddling
 
 
 def _closing_quote(sentence: str, at: int) -> int:
