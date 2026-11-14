@@ -178,14 +178,15 @@ _FILE_TOOLS = ("Edit", "MultiEdit", "Write", "NotebookEdit")
 _MAIN = "main"
 # What Claude Code returns when a call never ran: the user said no, or a headless session had nobody to ask.
 _REFUSED = re.compile(r"\s*(?:The user doesn't want to proceed with this tool use"
-                      r"|Permission for this tool use was denied|Permission to use \w+ (?:has been|was) denied)")
+                      r"|Permission for this (?:tool use|command|action) was denied"
+                      r"|Permission to use \w+ (?:has been|was) denied)")
 # Token shapes that must not be copied into a receipt: commands and output are quoted there as they were.
-# A prefix must start a word ("task-<uuid>.json" holds no "sk-" key); a private key goes with its body, up to
-# its END line or as far as the base64 runs when the text was cut.
+# A prefix must start a word ("task-<uuid>.json" holds no "sk-" key) and a token is ASCII (text glued to it
+# stays); a private key goes with its body, up to its END line or as far as the base64 runs when the text was cut.
 _SECRET = re.compile(
-    r"(?<![A-Za-z0-9])(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_\w{20,}|glpat-[\w-]{16,}|sk-ant-[\w-]{8,}"
-    r"|sk-[A-Za-z0-9_-]{24,}|[sr]k_(?:live|test)_[A-Za-z0-9]{16,}|AKIA[0-9A-Z]{16}|AIza[\w-]{30,}"
-    r"|npm_[A-Za-z0-9]{30,}|hf_[A-Za-z0-9]{30,}|xox[abprs]-[\w-]{10,})"
+    r"(?<![A-Za-z0-9])(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|glpat-[A-Za-z0-9_-]{16,}"
+    r"|sk-ant-[A-Za-z0-9_-]{8,}|sk-[A-Za-z0-9_-]{24,}|[sr]k_(?:live|test)_[A-Za-z0-9]{16,}|AKIA[0-9A-Z]{16}"
+    r"|AIza[A-Za-z0-9_-]{30,}|npm_[A-Za-z0-9]{30,}|hf_[A-Za-z0-9]{30,}|xox[abprs]-[A-Za-z0-9-]{10,})"
     r"|-----BEGIN [A-Z ]*PRIVATE KEY-----(?:[A-Za-z0-9+/=\s]|\\n)*(?:-----END [A-Z ]*PRIVATE KEY-----)?")
 _CLAIM_LABEL = {"tests": "tests pass", "lint": "lint passes", "build": "build succeeds",
                 "commit": "committed", "push": "pushed", "merge": "merged"}
@@ -242,8 +243,8 @@ def render_brief(parsed: dict, receipt_path: Path | str) -> str:
     skipped = parsed.get("skipped") or []
     if skipped:
         parts.append(f"⚠️ {_count(len(skipped), 'sub-agent transcript')} could not be read")
-    parts.append(f"receipt: {receipt_path}")
-    return _SECRET.sub("[secret]", "OSOP · " + " · ".join(parts))
+    # The path is where the receipt is: it is never masked, or the Stop hook could not find the file.
+    return _SECRET.sub("[secret]", "OSOP · " + " · ".join(parts)) + f" · receipt: {receipt_path}"
 
 
 def _collect(parsed: dict) -> tuple[dict[str, str], list, list, str]:
@@ -1234,11 +1235,12 @@ def _subject(tc: ToolCall) -> str:
 
 
 def _tail(text: str, limit: int = 90) -> str:
+    text = _SECRET.sub("[secret]", text)  # before the cut: the end of a token is as secret as its start
     return text if len(text) <= limit else "…" + text[-(limit - 1):]
 
 
 def _cell(text: str, limit: int = 120, in_table: bool = True) -> str:
-    text = re.sub(r"\s+", " ", _CONTROL.sub("", str(text))).strip()
+    text = _SECRET.sub("[secret]", re.sub(r"\s+", " ", _CONTROL.sub("", str(text))).strip())
     if len(text) > limit:
         text = text[: limit - 1] + "…"
     if not in_table:

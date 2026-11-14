@@ -8,7 +8,7 @@ from click.testing import CliRunner
 
 from osop.cli.main import cli
 from osop.recorder import parse_transcript
-from osop.recorder.receipt import render_receipt
+from osop.recorder.receipt import render_brief, render_receipt
 
 MINIMAL_SESSION = Path(__file__).parent / "fixtures" / "minimal_session.jsonl"
 
@@ -936,3 +936,30 @@ def test_a_private_key_is_masked_with_its_body_and_a_file_name_is_left_alone(tmp
     receipt = _receipt(path)
     assert body not in receipt and "END PRIVATE KEY" not in receipt and gitlab not in receipt
     assert name in receipt
+
+
+def test_a_token_at_the_end_of_long_output_is_masked_before_the_cut(tmp_path):
+    """The Git table shows the end of the output: the tail of a token must not survive there."""
+    token = "ghp_" + "Z9y8" * 9
+    url = f"https://x-access-token:{token}@example.com/" + "r" * 62 + ".git"
+    output = "Exit code 128\n" + "remote: " + "x" * 200 + f" fatal: unable to access {url}"
+    receipt = _receipt(_session(tmp_path, [("Bash", {"command": "git push origin main"}, output, True)]))
+    assert token[-12:] not in receipt and "[secret]@example.com" in receipt
+
+
+def test_the_receipt_path_in_the_brief_is_never_masked(tmp_path):
+    path = _session(tmp_path, [("Bash", {"command": "python -m pytest -q"}, "5 passed", False)])
+    where = "C:/receipts/sk-" + "a" * 30 + "/2026-11-06-session.receipt.md"
+    assert render_brief(parse_transcript(path), where).endswith(f"receipt: {where}")
+
+
+def test_text_glued_to_a_token_stays_and_other_refusal_wordings_count(tmp_path):
+    key = "sk-ant-" + "a1B2" * 12
+    path = _session(tmp_path, [("Bash", {"command": f"echo {key}測試通過"}, "ok", False)])
+    assert "[secret]測試通過" in _receipt(path)
+    passed = ("Bash", {"command": "ruff check ."}, "All checks passed!", False)
+    denied = "Permission for this command was denied by a built-in Claude Code safety check."
+    tests = ("Bash", {"command": "python -m pytest -q"}, "5 passed", False)
+    path = _session(tmp_path, [passed, tests, ("Bash", {"command": "ruff check . --fix"}, denied, True),
+                               ("Bash", {"command": "python -m pytest -q -x"}, denied, True)])
+    assert "❌" not in _section(_receipt(path), "Tests")

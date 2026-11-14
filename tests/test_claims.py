@@ -1159,3 +1159,10 @@ def test_a_refused_push_is_no_evidence_and_a_refused_test_does_not_contradict(tm
              ("Bash", {"command": "git push origin main"}, denied, True)]
     claims = _claims(_session(tmp_path, calls, "The tests pass. Pushed to origin."))
     assert "✅ backed" in claims and "❌ contradicted" not in claims and "❓ no evidence" in claims
+
+
+def test_a_refused_lint_run_does_not_contradict_the_one_that_passed(tmp_path):
+    denied = "Permission for this tool use was denied. It requires approval, and this session has none."
+    calls = [("Bash", {"command": "ruff check ."}, "All checks passed!", False),
+             ("Bash", {"command": "ruff check . --fix"}, denied, True)]
+    assert "✅ backed" in _claims(_session(tmp_path, calls, "Lint passes."))
