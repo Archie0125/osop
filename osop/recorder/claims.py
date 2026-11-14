@@ -43,6 +43,10 @@ _CONDITIONAL = re.compile(
     r"|就好|就可以|就能|我就|我會"
     r"|(?:了|完|後|綠|過|好)就|依序"
     r"|要(?:先|再|重新|用|全綠|通過|全過|都過|綠)|會(?:跑|做|先|再|觸發|一起)|再\s*(?:commit|push|merge|推|提交|合併|跑)"
+    # "都要你同意", "要 rebase 再 build": the owner's go-ahead or a step still to do
+    r"|要你|要\s*rebase"
+    # "還在跑（目前都 PASS）" is not over; "當時都過" is about another time
+    r"|還在跑|正在跑|當時"
     r"|\b(?:if|once|when|unless|until|will|would|should|must|need(?:s)? to|to be|going to)\b"
     r"|\b(?:can|could|may|might)(?:not)?\s+(?:now\s+|then\s+|also\s+)?be\b", re.I)
 # "Verify that all tests pass before merging", "make sure the tests pass before you push": an instruction, not a
@@ -65,7 +69,14 @@ _PRESENT_PASSIVE = re.compile(
 _NEGATED_EN_BEFORE = re.compile(r"(?:\b(?:not|nothing|never|no|without|cannot)\b|n't\b)[^,.;]{0,40}$", re.I)
 _NEGATED_EN_AFTER = re.compile(r"^[^,.;]{0,12}\b(?:yet|not)\b", re.I)
 # Chinese negation right before the claim, a quote or bracket allowed in between: 未 push, 沒有「已 commit.
-_NEGATED_ZH_BEFORE = re.compile(r"(?:沒有|沒|未|不|非|無|尚未|還沒|並未|無法|別|不是)\s*[「“\"(（『]?\s*$")
+# A modal may follow the negation: 不會 merge, 不用重新 build ("重新 build" is the claim's own start).
+_NEGATED_ZH_BEFORE = re.compile(
+    r"(?:沒有|沒|未|不|非|無|尚未|還沒|並未|無法|別|不是)(?:會|用|必|須|能|可以|要|准|得|該)?\s*[「“\"(（『]?\s*$")
+# "測試過了之後：先備份", "通過後才 build": what follows the pass is the plan, the pass has not happened.
+# "測試全過後已 push" and "重 build 之後輸出沒變" have happened.
+_THEN_AFTER = re.compile(r"\s*(?:之後|以後)\s*(?:[:：]|照|再|才)|\s*後\s*(?:才|再)")
+# Words in quotes are somebody else's, or the phrase itself: 別人回報「整套測試通過」, 每一句「測試過了」.
+_QUOTE_PAIRS = (("「", "」"), ("『", "』"), ("“", "”"), ('"', '"'))
 # Inside a claim's own clause nothing may be negated or failing: "測試沒通過" and "tests did not pass" are
 # not "tests pass".
 _SPAN = r"(?:(?!沒|未|不|非|無|失敗|fail|\bnot\b|n't\b|\bnever\b|\bno\b|\bcannot\b)[^，。；]){0,200}?"
@@ -111,10 +122,11 @@ _PATTERNS = {
         re.I),
     "push": re.compile(
         rf"{_DONE}push(?:ed)?(?!\s*{_NOUN})|\bpush\s*(?:了|完成|完\b|好了|成功|上去了|到了)|^pushed\.?$"
-        rf"|{_DONE}(?:推送(?:到|上|至)?|推上去|推上|推到|推了|推(?=\s|$|[，。；、！!）)]))(?![去上到\s]*的)"
-        r"|推上去了|推上了|推到了|推送了|推了(?!\s*的)"
-        # "已 commit 並 push", "已合進 main、push": the second verb of a done list, never a bare list
-        rf"|{_DONE}[^，。；]{{0,24}}?(?:並|及|和|跟|、)\s*(?:push(?:ed)?\b(?!\s*{_NOUN})(?!\s*(?:失敗|fail))"
+        rf"|{_DONE}(?:推送(?:到|上|至)?|推上去|推上|推到|推了(?!\s*(?:什麼|甚麼|哪))|推(?=\s|$|[，。；、！!）)]))(?![去上到\s]*的)"
+        r"|推上去了|推上了|推到了|推送了|推了(?!\s*的)(?!\s*(?:什麼|甚麼|哪))"
+        # "已 commit 並 push", "已合進 main、push": the second verb of a done list, never a bare list, and
+        # nothing negated between ("都沒有 git、push 指令")
+        rf"|{_DONE}(?:(?!沒|未|不|非|無)[^，。；]){{0,24}}?(?:並|及|和|跟|、)\s*(?:push(?:ed)?\b(?!\s*{_NOUN})(?!\s*(?:失敗|fail))"
         r"|(?:推送(?:到|上|至)?|推上去|推上|推到|推了|推(?=\s|$|[，。；、！!）)]))(?![去上到\s]*的))"
         r"|\b(?:is|are|was|were|has been|have been|got|now|already)\s+pushed\b|\bi(?:'ve| have)?\s+pushed\b"
         r"|\bpushed\s+(?:to|the|it|them|everything|both)\b|\b(?:and|,)\s*pushed\b(?!\s+(?:to|the|it|them|everything|both)\b)",
@@ -177,7 +189,8 @@ def find_claims(message: str, session_days: Collection[str] | None = None) -> li
         if session_days is not None and dates and not any(d in session_days for d in dates):
             continue
         for kind in KINDS:
-            m = _PATTERNS[kind].search(sentence)
+            # The first one outside quotes: "輸出是「245 passed」，測試全過" still says the tests pass.
+            m = next((x for x in _PATTERNS[kind].finditer(sentence) if not _quoted(sentence, x)), None)
             if m is None:
                 continue
             seps = list(_CLAUSE_END.finditer(sentence, 0, m.start()))
@@ -200,6 +213,8 @@ def find_claims(message: str, session_days: Collection[str] | None = None) -> li
                 continue
             if _NEGATED_ZH_BEFORE.search(sentence[max(0, m.start() - 8):m.start()]):
                 continue
+            if _THEN_AFTER.match(sentence, m.end()):
+                continue
             if _PLAN_AHEAD.search(sentence[:m.start()]) and (not _PAST.search(m.group(0)) or _passive_at(sentence, m)):
                 continue
             if _INSTRUCTION.search(sentence[:m.start()]):
@@ -220,6 +235,18 @@ def find_claims(message: str, session_days: Collection[str] | None = None) -> li
                 continue
             claims.append(Claim(kind, sentence))
     return claims
+
+
+def _quoted(sentence: str, m: re.Match) -> bool:
+    """Whether the claim's words start inside a pair of quotes (one that closes later in the sentence)."""
+    before, after = sentence[:m.start()], sentence[m.start():]
+    for opening, closing in _QUOTE_PAIRS:
+        if opening == closing:
+            if before.count(opening) % 2 and closing in after:
+                return True
+        elif before.rfind(opening) > before.rfind(closing) and closing in after:
+            return True
+    return False
 
 
 def _passive_at(sentence: str, m: re.Match) -> bool:

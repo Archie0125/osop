@@ -140,6 +140,36 @@ def test_not_claims(text):
     assert _kinds(text) == [], text
 
 
+@pytest.mark.parametrize("text", [
+    # what comes after the tests pass is a plan: the pass has not happened
+    "測試過了之後：先備份再部署", "測試過了之後照原訂步驟做", "遠端機器上型別檢查和測試通過後才 build",
+    # somebody's words in quotes, or the phrase itself being discussed
+    "另一個視窗回報「整套測試通過，4120 個」", "報表把每一句「測試過了」都算進去",
+    "In \"all tests passed, 4120 tests\", the count comes after the pass word", "這一欄顯示「誰推了什麼」",
+    # negated with a modal
+    "只換文案，不用重新 build", "你沒同意之前，我不會 merge 到 main、不會 push",
+    "這支工具裡都沒有任何 git、push 或上線指令", "不需要重新 build",
+    # needs the owner, or is still to do
+    "commit、push、merge 到 main 都要你逐項同意", "分支比 main 舊，所以要 rebase 重新 build",
+    # 推 that is not git
+    "可以比較各業務推了什麼、哪些有成交",
+    # still running, or about another time
+    "CI 還在跑（目前都 PASS）", "那個分支上週完成，測試當時都過",
+])
+def test_plans_quotes_and_negations_are_not_claims(text):
+    assert _kinds(text) == [], text
+
+
+@pytest.mark.parametrize("text, kind", [
+    ("測試全過後已 push", "push"), ("測試通過，之後又補了兩條", "tests"), ("輸出是「245 passed」，測試全過", "tests"),
+    ("重新 build 完成", "build"), ("已 merge 到 main", "merge"), ("已經推了，CI 在跑", "push"),
+    ("前端：重 build 之後輸出沒有任何變動", "build"),
+    ("我不確定的部分已標出；其餘已 commit", "commit"),
+])
+def test_claims_next_to_those_shapes_stay_claims(text, kind):
+    assert kind in _kinds(text), text
+
+
 def test_code_blocks_are_not_claims_but_inline_code_is_read():
     assert _kinds("Run it:\n```\npytest -q\n3 passed\n```\nthen decide.") == []
     assert _kinds("`php artisan test` 201 passed") == ["tests"]
