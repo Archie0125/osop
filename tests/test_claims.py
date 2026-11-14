@@ -155,6 +155,7 @@ def test_not_claims(text):
     "可以比較各業務推了什麼、哪些有成交",
     # still running, or about another time
     "CI 還在跑（目前都 PASS）", "那個分支上週完成，測試當時都過",
+    "只改說明文件，不用再重新 build", "報表已列出誰 commit、推了什麼",
 ])
 def test_plans_quotes_and_negations_are_not_claims(text):
     assert _kinds(text) == [], text
@@ -165,6 +166,8 @@ def test_plans_quotes_and_negations_are_not_claims(text):
     ("重新 build 完成", "build"), ("已 merge 到 main", "merge"), ("已經推了，CI 在跑", "push"),
     ("前端：重 build 之後輸出沒有任何變動", "build"),
     ("我不確定的部分已標出；其餘已 commit", "commit"),
+    ("測試全過後才完成部署", "tests"), ("「LoginTest」已重跑並通過", "tests"), ("本機測試全過（CI 還在跑）", "tests"),
+    ("剛才跑了 pytest，當時 37 passed", "tests"),
 ])
 def test_claims_next_to_those_shapes_stay_claims(text, kind):
     assert kind in _kinds(text), text
