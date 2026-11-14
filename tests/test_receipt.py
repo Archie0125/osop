@@ -923,3 +923,16 @@ def test_secrets_in_commands_and_output_are_masked(tmp_path):
     receipt = _receipt(path)
     assert key not in receipt and token not in receipt and key[:20] not in receipt
     assert "[secret]" in receipt
+
+
+def test_a_private_key_is_masked_with_its_body_and_a_file_name_is_left_alone(tmp_path):
+    body = "MC4CAQAwBQYDK2VwBCIEIA" + "EB" * 20
+    pem = f"-----BEGIN PRIVATE KEY-----\n{body}\n-----END PRIVATE KEY-----"
+    gitlab = "glpat-" + "aB3d" * 5
+    name = "task-550e8400-e29b-41d4-a716-446655440000.json"
+    path = _session(tmp_path, [
+        ("Bash", {"command": f"git clone https://oauth2:{gitlab}@example.com/a.git"}, "done", False),
+        ("Bash", {"command": "cat key.pem"}, pem, False), ("Bash", {"command": f"ls {name}"}, name, False)])
+    receipt = _receipt(path)
+    assert body not in receipt and "END PRIVATE KEY" not in receipt and gitlab not in receipt
+    assert name in receipt

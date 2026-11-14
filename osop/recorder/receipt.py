@@ -180,8 +180,13 @@ _MAIN = "main"
 _REFUSED = re.compile(r"\s*(?:The user doesn't want to proceed with this tool use"
                       r"|Permission for this tool use was denied|Permission to use \w+ (?:has been|was) denied)")
 # Token shapes that must not be copied into a receipt: commands and output are quoted there as they were.
-_SECRET = re.compile(r"gh[pousr]_[A-Za-z0-9]{20,}|github_pat_\w{20,}|sk-ant-[\w-]{8,}|sk-[A-Za-z0-9_-]{24,}"
-                     r"|AKIA[0-9A-Z]{16}|xox[abprs]-[\w-]{10,}|-----BEGIN [A-Z ]*PRIVATE KEY-----")
+# A prefix must start a word ("task-<uuid>.json" holds no "sk-" key); a private key goes with its body, up to
+# its END line or as far as the base64 runs when the text was cut.
+_SECRET = re.compile(
+    r"(?<![A-Za-z0-9])(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_\w{20,}|glpat-[\w-]{16,}|sk-ant-[\w-]{8,}"
+    r"|sk-[A-Za-z0-9_-]{24,}|[sr]k_(?:live|test)_[A-Za-z0-9]{16,}|AKIA[0-9A-Z]{16}|AIza[\w-]{30,}"
+    r"|npm_[A-Za-z0-9]{30,}|hf_[A-Za-z0-9]{30,}|xox[abprs]-[\w-]{10,})"
+    r"|-----BEGIN [A-Z ]*PRIVATE KEY-----(?:[A-Za-z0-9+/=\s]|\\n)*(?:-----END [A-Z ]*PRIVATE KEY-----)?")
 _CLAIM_LABEL = {"tests": "tests pass", "lint": "lint passes", "build": "build succeeds",
                 "commit": "committed", "push": "pushed", "merge": "merged"}
 _BACKED, _CONTRADICTED, _UNCLEAR, _NO_EVIDENCE = "✅ backed", "❌ contradicted", "⚠️ cannot tell", "❓ no evidence"
