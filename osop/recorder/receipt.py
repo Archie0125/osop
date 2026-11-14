@@ -1240,7 +1240,8 @@ def _subject(tc: ToolCall) -> str:
 
 
 def _tail(text: str, limit: int = 90) -> str:
-    text = _SECRET.sub("[secret]", text)  # before the cut: the end of a token is as secret as its start
+    # Before the cut: the end of a token is as secret as its start. Colour codes inside a token go first.
+    text = _SECRET.sub("[secret]", _CONTROL.sub("", text))
     return text if len(text) <= limit else "…" + text[-(limit - 1):]
 
 

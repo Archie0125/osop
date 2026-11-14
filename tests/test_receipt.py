@@ -8,7 +8,7 @@ from click.testing import CliRunner
 
 from osop.cli.main import cli
 from osop.recorder import parse_transcript
-from osop.recorder.receipt import _SECRET, render_brief, render_receipt
+from osop.recorder.receipt import _SECRET, _tail, render_brief, render_receipt
 
 MINIMAL_SESSION = Path(__file__).parent / "fixtures" / "minimal_session.jsonl"
 
@@ -1000,6 +1000,14 @@ def test_a_key_without_its_end_line_is_masked_as_far_as_its_lines_go():
     assert _SECRET.sub("[secret]", f"{head}{bs}r{bs}n{line}{bs}r{bs}n") == "[secret]"
     assert _SECRET.sub("[secret]", f"{head}\n{line}\nAQIDBA==\n") == "[secret]\n"
     assert _SECRET.sub("[secret]", f"{head}\n{line}\nEXIT=1 after") == "[secret]EXIT=1 after"
+
+
+def test_a_token_split_by_colour_codes_is_masked_before_the_cut(tmp_path):
+    token = "ghp_" + "Q7w3" * 9
+    coloured = chr(27) + "[01;31mghp_" + chr(27) + "[m" + token[4:]
+    output = f"Exit code 128\nfatal: unable to access https://u:{coloured}@example.com/" + "r" * 62 + ".git"
+    receipt = _receipt(_session(tmp_path, [("Bash", {"command": "git push origin main"}, output, True)]))
+    assert token[-10:] not in receipt and token[-10:] not in _tail(output)
 
 
 def test_many_key_headers_without_an_end_line_are_masked_in_linear_time():
