@@ -73,13 +73,18 @@ _NEGATED_ZH_BEFORE = re.compile(
 # "測試過了之後：先備份", "通過後才 build": what follows the pass is the plan, the pass has not happened.
 # "測試全過後已 push" and "重 build 之後輸出沒變" have happened.
 # "測試通過後才 build" tells what was done, in order.
-_THEN_AFTER = re.compile(r"\s*(?:之後|以後)\s*(?:[:：]|照)|\s*後\s*再")
+# "通過後再補跑了 smoke test" is told as done too.
+_THEN_AFTER = re.compile(r"\s*(?:之後|以後)\s*(?:[:：]|照)|\s*後\s*再(?![^，。；]*了)")
+# Words in brackets are about something else: "測試全過（部署要你點頭）", "CI 還在跑（本機測試全過）".
+_BRACKETED = re.compile(r"（[^（）]*）|\([^()]*\)")
 # "commit、push、merge 到 main 都要你同意" waits for the owner; "已 commit（push 要你點頭）" has committed.
 _OWNER_GO_AHEAD = re.compile(r"要你")
 # Before the claim in its clause: "CI 還在跑（目前都 PASS）" is not over ("本機測試全過（CI 還在跑）" is).
 # "當時都過" is about another time, unless the sentence says it was just now ("剛才跑 pytest，當時 37 passed").
 _STILL_RUNNING = re.compile(r"還在跑|正在跑")
-_ANOTHER_TIME = re.compile(r"當時")
+_ANOTHER_TIME = re.compile(r"當時(?!一樣)")  # "和當時一樣全過" compares, the pass is now
+# What a runner printed, quoted: "執行結果為「37 passed」" reports this turn's run.
+_RUNNER_SUMMARY = re.compile(r"\d[\d,]*\s*passed\b", re.I)
 _JUST_NOW = re.compile(r"剛才|剛剛")
 # Words in quotes are somebody else's, or the phrase itself: 別人回報「整套測試通過」, 每一句「測試過了」.
 _QUOTE_PAIRS = (("「", "」"), ("『", "』"), ("“", "”"), ('"', '"'))
@@ -132,7 +137,7 @@ _PATTERNS = {
         r"|推上去了|推上了|推到了|推送了|推了(?!\s*的)(?!\s*(?:什麼|甚麼|哪))"
         # "已 commit 並 push", "已合進 main、push": the second verb of a done list, never a bare list, and
         # nothing negated between ("都沒有 git、push 指令")
-        rf"|{_DONE}(?:(?!沒有|不會|並未|尚未|還沒)[^，。；]){{0,24}}?(?:並|及|和|跟|、)\s*(?:push(?:ed)?\b(?!\s*{_NOUN})(?!\s*(?:失敗|fail))"
+        rf"|{_DONE}(?:(?!沒有任何|不會|並未|尚未|還沒)[^，。；]){{0,24}}?(?:並|及|和|跟|、)\s*(?:push(?:ed)?\b(?!\s*{_NOUN})(?!\s*(?:失敗|fail))"
         r"|(?:推送(?:到|上|至)?|推上去|推上|推到|推了(?!\s*(?:什麼|甚麼|哪))|推(?=\s|$|[，。；、！!）)]))(?![去上到\s]*的))"
         r"|\b(?:is|are|was|were|has been|have been|got|now|already)\s+pushed\b|\bi(?:'ve| have)?\s+pushed\b"
         r"|\bpushed\s+(?:to|the|it|them|everything|both)\b|\b(?:and|,)\s*pushed\b(?!\s+(?:to|the|it|them|everything|both)\b)",
@@ -221,9 +226,10 @@ def find_claims(message: str, session_days: Collection[str] | None = None) -> li
             if _NEGATED_ZH_BEFORE.search(sentence[max(0, m.start() - 8):m.start()]):
                 continue
             done = "已" in m.group(0)
-            if not done and (_THEN_AFTER.match(sentence, m.end()) or _OWNER_GO_AHEAD.search(own)):
+            if not done and (_THEN_AFTER.match(sentence, m.end())
+                             or _OWNER_GO_AHEAD.search(_BRACKETED.sub("", own))):
                 continue
-            lead = sentence[own_start:m.start()]
+            lead = re.split(r"[（(]", sentence[own_start:m.start()])[-1]
             another_time = (not done and _ANOTHER_TIME.search(sentence[own_start:m.end()])
                             and not _JUST_NOW.search(sentence))
             if _STILL_RUNNING.search(lead) or another_time:
@@ -264,6 +270,8 @@ def _outside_quotes(pattern: re.Pattern, sentence: str) -> re.Match | None:
         if close < 0:
             return m
         if close >= m.end():
+            if _RUNNER_SUMMARY.fullmatch(m.group(0).strip()):
+                return m
             whole = True
         elif straddling is None:
             straddling = m

@@ -178,6 +178,9 @@ def test_plans_quotes_and_negations_are_not_claims(text):
     ("The note says \"all tests pass, 4120 tests\". I re-ran pytest here: all 3 tests pass.", "tests"),
     # 不 / 沒 / 無 inside a word is no negation
     ("已移除不用的檔案並 push", "push"), ("已修正無效的連結、push", "push"), ("已刪掉沒用到的 import 並 push", "push"),
+    ("已刪除沒有用到的 import 並 push", "push"), ("測試全過（部署要你點頭）", "tests"),
+    ("全套測試通過後再補跑了 smoke test，也通過了", "tests"), ("這次重跑的測試和當時一樣全過", "tests"),
+    ("CI 還在跑（本機測試全過）", "tests"), ("本次執行結果為「37 passed」", "tests"),
     # something else still running does not undo what is done
     ("已 push 到 origin（CI 還在跑）", "push"), ("已 merge 到 main（部署正在跑）", "merge"),
 ])
