@@ -986,6 +986,13 @@ def test_tokens_after_a_written_newline_in_a_cut_goal_and_encrypted_keys(tmp_pat
     assert "ghp_AAAA" not in _receipt(path)
 
 
+def test_a_cut_encrypted_key_on_one_line_leaves_what_follows():
+    body = "Zm9v" * 16
+    flat = ("-----BEGIN RSA PRIVATE KEY----- Proc-Type: 4,ENCRYPTED DEK-Info: AES-256-CBC,0123456789ABCDEF "
+            + body + " " + body + " 3 failed, 2 passed in 0.3s")
+    assert _SECRET.sub("[secret]", flat) == "[secret]3 failed, 2 passed in 0.3s"
+
+
 def test_many_key_headers_without_an_end_line_are_masked_in_linear_time():
     import time
 

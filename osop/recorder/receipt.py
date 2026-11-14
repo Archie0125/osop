@@ -190,7 +190,7 @@ _SECRET = re.compile(
     # With its END line: everything between (an encrypted key has "Proc-Type:" and "DEK-Info:" lines). Cut
     # before END: the header lines and the base64 lines that follow, not the prose after them.
     r"|-----BEGIN [A-Z ]*PRIVATE KEY-----(?:(?:(?!-----BEGIN )[\s\S]){0,8000}?-----END [A-Z ]*PRIVATE KEY-----"
-    r"|(?:\s|\\n|(?:Proc-Type|DEK-Info):[^\n\\]*|[A-Za-z0-9+/=]{16,})*)")
+    r"|(?:\s|\\n|(?:Proc-Type|DEK-Info):[ \t]*[\w,-]+|[A-Za-z0-9+/=]{16,})*)")
 _CLAIM_LABEL = {"tests": "tests pass", "lint": "lint passes", "build": "build succeeds",
                 "commit": "committed", "push": "pushed", "merge": "merged"}
 _BACKED, _CONTRADICTED, _UNCLEAR, _NO_EVIDENCE = "✅ backed", "❌ contradicted", "⚠️ cannot tell", "❓ no evidence"
