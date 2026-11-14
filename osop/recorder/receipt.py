@@ -176,6 +176,12 @@ _GIT_STATE = re.compile(_GIT_START + _GIT_VERB)
 _GIT_SEGMENT = re.compile(_GIT_START + "(" + _GIT_VERB + r"[^;&|\n)]*)")
 _FILE_TOOLS = ("Edit", "MultiEdit", "Write", "NotebookEdit")
 _MAIN = "main"
+# What Claude Code returns when a call never ran: the user said no, or a headless session had nobody to ask.
+_REFUSED = re.compile(r"\s*(?:The user doesn't want to proceed with this tool use"
+                      r"|Permission for this tool use was denied|Permission to use \w+ (?:has been|was) denied)")
+# Token shapes that must not be copied into a receipt: commands and output are quoted there as they were.
+_SECRET = re.compile(r"gh[pousr]_[A-Za-z0-9]{20,}|github_pat_\w{20,}|sk-ant-[\w-]{8,}|sk-[A-Za-z0-9_-]{24,}"
+                     r"|AKIA[0-9A-Z]{16}|xox[abprs]-[\w-]{10,}|-----BEGIN [A-Z ]*PRIVATE KEY-----")
 _CLAIM_LABEL = {"tests": "tests pass", "lint": "lint passes", "build": "build succeeds",
                 "commit": "committed", "push": "pushed", "merge": "merged"}
 _BACKED, _CONTRADICTED, _UNCLEAR, _NO_EVIDENCE = "✅ backed", "❌ contradicted", "⚠️ cannot tell", "❓ no evidence"
@@ -207,7 +213,7 @@ def render_receipt(parsed: dict, source: Path | str) -> str:
         f"---\nBuilt by `osop log` from `{source}`: read from the transcript, not written by the agent. "
         "Results are the exit status each tool reported."
     )
-    return "\n\n".join(sections) + "\n"
+    return _SECRET.sub("[secret]", "\n\n".join(sections) + "\n")
 
 
 def render_brief(parsed: dict, receipt_path: Path | str) -> str:
@@ -232,7 +238,7 @@ def render_brief(parsed: dict, receipt_path: Path | str) -> str:
     if skipped:
         parts.append(f"⚠️ {_count(len(skipped), 'sub-agent transcript')} could not be read")
     parts.append(f"receipt: {receipt_path}")
-    return "OSOP · " + " · ".join(parts)
+    return _SECRET.sub("[secret]", "OSOP · " + " · ".join(parts))
 
 
 def _collect(parsed: dict) -> tuple[dict[str, str], list, list, str]:
@@ -240,11 +246,16 @@ def _collect(parsed: dict) -> tuple[dict[str, str], list, list, str]:
     labels = _subagent_labels(parsed["nodes"])
     calls = [(_owner(node.node_id, labels), tc) for node in _walk(parsed["nodes"]) for tc in node.tool_calls]
     tests = [
-        (by, tc, code, m) for by, tc in calls if tc.tool == "Bash"
+        (by, tc, code, m) for by, tc in calls if tc.tool == "Bash" and not _refused(tc)
         and (m := _real_run(_TEST_COMMAND, code := _shell_code(_unwrap_shell_c(_command(tc)))))
     ]
     goal = next((n.user_prompt for n in parsed["nodes"] if n.user_prompt), "") or ""
     return labels, calls, tests, goal
+
+
+def _refused(tc: ToolCall) -> bool:
+    """The call was turned down before it ran: it is no test run, no commit and no push, passed or failed."""
+    return tc.is_error and _REFUSED.match(tc.output) is not None
 
 
 def _count(n: int, noun: str) -> str:
@@ -460,7 +471,7 @@ def _norm_path(path: str) -> str:
 def _matching_calls(calls: list, pattern: re.Pattern) -> list[tuple[ToolCall, str, re.Match]]:
     found = []
     for _, tc in calls:
-        if tc.tool == "Bash":
+        if tc.tool == "Bash" and not _refused(tc):
             code = _shell_code(_unwrap_shell_c(_command(tc)))
             m = _real_run(pattern, code)
             if m:
@@ -497,7 +508,7 @@ def _git_calls(calls: list, verb: str) -> list[tuple[ToolCall, str, re.Match]]:
     call: `git push; git pull --rebase; git push` is judged by the second push."""
     found = []
     for _, tc in calls:
-        if tc.tool != "Bash":
+        if tc.tool != "Bash" or _refused(tc):
             continue
         code = _shell_code(_unwrap_shell_c(_command(tc)))
         last = None

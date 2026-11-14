@@ -898,3 +898,28 @@ def test_a_continued_line_or_a_paren_after_the_or_still_counts(tmp_path):
         receipt = _receipt(_session(tmp_path, [("Bash", {"command": command}, "", False)]))
         row = _table(_section(receipt, "Git"))[2].split(" | ")
         assert row[2] == f"⚠️ exit 0, but {escaped_or} before it: it ran only if the command before failed", command
+
+
+# --- colour codes, refused commands, secrets --------------------------------------------------------
+
+
+def test_a_refused_command_is_not_a_test_run(tmp_path):
+    """Refused by the permission system or by the user: nothing ran, so it neither fails nor replaces the run before."""
+    passed = ("Bash", {"command": "python -m pytest -q"}, "5 passed in 0.31s", False)
+    for refusal in ("Permission for this tool use was denied. It requires approval, and this session has none.",
+                    "The user doesn't want to proceed with this tool use. The tool use was rejected."):
+        refused = ("Bash", {"command": "python -m pytest -q tests/test_slow.py"}, refusal, True)
+        path = _session(tmp_path, [passed, refused])
+        tests = _section(_receipt(path), "Tests")
+        assert "❌" not in tests and tests.count("pytest") == 1, refusal
+
+
+def test_secrets_in_commands_and_output_are_masked(tmp_path):
+    key = "sk-ant-" + "a1B2" * 12
+    token = "ghp_" + "Z9y8" * 10
+    path = _session(tmp_path, [
+        ("Bash", {"command": f"printf '%s' '{key}' > key.txt; python -m pytest -q"}, "5 passed", False),
+        ("Bash", {"command": "env"}, f"GITHUB_TOKEN={token}\nExit code 1", True)])
+    receipt = _receipt(path)
+    assert key not in receipt and token not in receipt and key[:20] not in receipt
+    assert "[secret]" in receipt

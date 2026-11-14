@@ -1150,3 +1150,12 @@ def test_a_modal_before_and_covers_both_verbs():
     assert _kinds("The changes still need to be committed and pushed to origin.") == []
     assert _kinds("I will commit and push after the review.") == []
     assert _kinds("Committed and pushed to origin.") == ["commit", "push"]
+
+
+def test_a_refused_push_is_no_evidence_and_a_refused_test_does_not_contradict(tmp_path):
+    denied = "Permission for this tool use was denied. It requires approval, and this session has none."
+    passed = ("Bash", {"command": "python -m pytest -q"}, "5 passed in 0.31s", False)
+    calls = [passed, ("Bash", {"command": "python -m pytest -q"}, denied, True),
+             ("Bash", {"command": "git push origin main"}, denied, True)]
+    claims = _claims(_session(tmp_path, calls, "The tests pass. Pushed to origin."))
+    assert "✅ backed" in claims and "❌ contradicted" not in claims and "❓ no evidence" in claims
