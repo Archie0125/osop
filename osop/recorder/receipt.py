@@ -11,7 +11,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from osop.recorder.claims import Claim, find_claims
-from osop.recorder.transcript import ToolCall, _walk
+from osop.recorder.transcript import ToolCall, _summarize_output, _walk
 
 # Node options whose value is the next word: `-r ./tests/setup.js` loads that file, it is not the script that runs.
 _NODE_VALUE_OPTION = (r"(?:-r|-C|--(?:require|import|loader|experimental-loader|conditions|input-type|env-file"
@@ -818,7 +818,7 @@ def _tests_table(tests: list) -> str:
         return "**No test command ran.**"
     rows = [
         f"| {_cell(by)} | {_code(_command(tc))} | {_cell(_test_verdict(tc, code, m) + _background_note(tc), 260)} "
-        f"| {_cell(_tail(tc.output_summary), 90)} |"
+        f"| {_cell(_tail(_summary(tc)), 90)} |"
         for by, tc, code, m in tests
     ]
     return "| By | Command | Result | Output (end) |\n|---|---|---|---|\n" + "\n".join(rows)
@@ -1071,7 +1071,7 @@ def _git_table(calls: list) -> str:
         segments = _git_segments(_unwrap_shell_c(_command(tc), blank=False))
         _, result = _judge(tc, code, m, _verb(m))
         rows.append(f"| {_cell(by)} | {_code('; '.join(segments) or _command(tc))} | {_cell(result, 200)} "
-                    f"| {_cell(_tail(_EXIT_CODE.sub('', tc.output_summary).strip(), 90), 90)} |")
+                    f"| {_cell(_tail(_EXIT_CODE.sub('', _summary(tc)).strip(), 90), 90)} |")
     if not rows:
         return ""
     return "| By | Command | Result | Output (end) |\n|---|---|---|---|\n" + "\n".join(rows)
@@ -1165,7 +1165,7 @@ def _errors_list(calls: list) -> str:
         return "**No tool call failed.**"
     return "\n".join(
         f"- **{_cell(by, in_table=False)}** · {tc.tool} {_code(_subject(tc), 100, in_table=False)} "
-        f"→ {_cell(_EXIT_CODE.sub('', tc.output_summary), 160, in_table=False)}"
+        f"→ {_cell(_EXIT_CODE.sub('', _summary(tc)), 160, in_table=False)}"
         for by, tc in errors
     )
 
@@ -1223,8 +1223,13 @@ def _failed(tc: ToolCall) -> str:
     return f"❌ {_exit_text(tc)}"
 
 
+def _summary(tc: ToolCall) -> str:
+    """The two ends of the output, masked before the cut: a token across the cut would leave its tail."""
+    return _summarize_output(_SECRET.sub("[secret]", _CONTROL.sub("", tc.output)))
+
+
 def _exit_text(tc: ToolCall) -> str:
-    m = _EXIT_CODE.match(tc.output_summary)
+    m = _EXIT_CODE.match(_summary(tc))
     return f"exit {m.group(1)}" if m else "failed"
 
 

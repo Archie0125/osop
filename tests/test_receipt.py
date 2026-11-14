@@ -1010,6 +1010,15 @@ def test_a_token_split_by_colour_codes_is_masked_before_the_cut(tmp_path):
     assert token[-10:] not in receipt and token[-10:] not in _tail(output)
 
 
+def test_a_token_in_the_middle_of_long_output_is_masked_before_the_summary_is_cut(tmp_path):
+    """A long output is shown by its two ends: a token across the cut must not leave its tail there."""
+    key = "sk-proj-" + "Ab3d" * 39
+    for is_error in (False, True):
+        output = ("Exit code 1\n" if is_error else "") + "x" * 300 + " " + key + " " + "z" * 50
+        receipt = _receipt(_session(tmp_path, [("Bash", {"command": "python -m pytest -q"}, output, is_error)]))
+        assert "Ab3dAb3d" not in receipt, is_error
+
+
 def test_many_key_headers_without_an_end_line_are_masked_in_linear_time():
     import time
 
