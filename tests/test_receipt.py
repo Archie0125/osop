@@ -998,8 +998,8 @@ def test_a_key_without_its_end_line_is_masked_as_far_as_its_lines_go():
     error = "FileNotFoundError: key.pem"
     assert _SECRET.sub("[secret]", f"{head}\n{line}\n{error}") == "[secret]" + error
     assert _SECRET.sub("[secret]", f"{head}{bs}r{bs}n{line}{bs}r{bs}n") == "[secret]"
-    assert _SECRET.sub("[secret]", f"{head}\n{line}\nAQIDBA==\n") == "[secret]\n"
     assert _SECRET.sub("[secret]", f"{head}\n{line}\nEXIT=1 after") == "[secret]EXIT=1 after"
+    assert _SECRET.sub("[secret]", f"{head}\n{line}\nSTATUS= \n") == "[secret]STATUS= \n"
 
 
 def test_a_token_split_by_colour_codes_is_masked_before_the_cut(tmp_path):

@@ -189,10 +189,9 @@ _SECRET = re.compile(
     r"|AIza[A-Za-z0-9_-]{30,}|npm_[A-Za-z0-9]{30,}|hf_[A-Za-z0-9]{30,}|xox[abprs]-[A-Za-z0-9-]{10,})"
     # With its END line: everything between (an encrypted key has "Proc-Type:" and "DEK-Info:" lines). Cut
     # before END: the header lines, the full base64 lines (48 or more characters: a long word or a commit SHA is
-    # not one) and a padded last line, not the prose after them.
+    # not one), not the prose after them. A shorter last line stays: whatever follows a key has the same shape.
     r"|-----BEGIN [A-Z ]*PRIVATE KEY-----(?:(?:(?!-----BEGIN )[\s\S]){0,8000}?-----END [A-Z ]*PRIVATE KEY-----"
-    r"|(?:\s|\\[nrt]|(?:Proc-Type|DEK-Info):[ \t]*[\w,-]+|[A-Za-z0-9+/]{48,}={0,2})*"
-    r"(?:[A-Za-z0-9+/]{1,47}={1,2}(?![^\s\\]))?)")
+    r"|(?:\s|\\[nrt]|(?:Proc-Type|DEK-Info):[ \t]*[\w,-]+|[A-Za-z0-9+/]{48,}={0,2})*)")
 _CLAIM_LABEL = {"tests": "tests pass", "lint": "lint passes", "build": "build succeeds",
                 "commit": "committed", "push": "pushed", "merge": "merged"}
 _BACKED, _CONTRADICTED, _UNCLEAR, _NO_EVIDENCE = "✅ backed", "❌ contradicted", "⚠️ cannot tell", "❓ no evidence"
