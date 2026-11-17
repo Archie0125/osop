@@ -1019,6 +1019,13 @@ def test_a_token_in_the_middle_of_long_output_is_masked_before_the_summary_is_cu
         assert "Ab3dAb3d" not in receipt, is_error
 
 
+def test_a_token_across_the_cut_of_a_table_cell_leaves_no_head(tmp_path):
+    token = "ghp_" + "Zq" * 20
+    command = "echo " + "w" * 100 + f" {token} && python -m pytest -q"
+    receipt = _receipt(_session(tmp_path, [("Bash", {"command": command}, "5 passed", False)]))
+    assert "ghp_Zq" not in receipt
+
+
 def test_many_key_headers_without_an_end_line_are_masked_in_linear_time():
     import time
 
