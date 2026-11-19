@@ -289,3 +289,23 @@ def test_a_finished_run_that_printed_another_count_does_not_back_it(tmp_path):
 def test_a_failed_finished_run_does_not_contradict_while_a_rerun_still_runs(tmp_path):
     claims = _claims(_session(tmp_path, [FULL_SUITE_FAILED, FULL_SUITE_RUNNING], "Full suite: 3477 tests passed."))
     assert "⚠️ cannot tell" in claims and "❌ contradicted" not in claims and "still running" in claims
+
+
+def test_a_finished_run_that_printed_no_count_does_not_back_a_count(tmp_path):
+    claims = _claims(_session(tmp_path, [
+        ("Bash", {"command": "go test ./..."}, "ok  \texample.com/demo\t0.123s", False), FULL_SUITE_RUNNING],
+        "All 999 tests passed."))
+    assert "✅ backed" not in claims and "still running" not in claims
+
+
+def test_a_background_launch_that_failed_is_not_still_running(tmp_path):
+    claims = _claims(_session(tmp_path, [MAP_TESTS, (
+        "Bash", {"command": "php artisan test", "run_in_background": True}, "Error: failed to start background command",
+        True)], "All 18 tests passed."))
+    assert "✅ backed" not in claims and "still running" not in claims
+
+
+def test_a_count_only_the_running_suite_could_answer_is_not_backed(tmp_path):
+    claims = _claims(_session(tmp_path, [MAP_TESTS, FULL_SUITE_RUNNING],
+                              "18 tests pass and all 3477 tests in the full suite pass."))
+    assert "✅ backed" not in claims and "still running" not in claims

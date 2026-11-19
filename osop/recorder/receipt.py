@@ -372,20 +372,23 @@ def _tests_evidence(parsed: dict, calls: list, tests: list, quote: str = "") -> 
     command (a pre-push hook runs it). So this only ever moves a verdict to ⚠️, never to ✅ or ❌.
 
     One exception: when the last run is still going in the background, it has printed nothing and so can show no
-    failure. A sentence with a count is then judged by the last run that finished, which must have printed that
-    count; a sentence without one may be about the run still going, and stays ⚠️. That run can back the sentence
-    but not contradict it: the run still going may be the rerun that passes.
+    failure. A sentence with a count is then judged by the last run that finished, if that run printed every count
+    the sentence gives; otherwise, or without a count (the sentence may be about the run still going), it stays as
+    before. That run can
+    back the sentence but not contradict it: the run still going may be the rerun that passes.
     """
     if not tests:
         return _NO_EVIDENCE, "no test command ran"
     by, tc, code, m = max(tests, key=lambda t: t[1].started_at)
     counts = _claimed_counts(quote)
     where = f"last test run {_code(_command(tc), 80)} at {_clock(tc.started_at)}{_background_note(tc)}"
-    finished = [t for t in tests if not _running(t[1])]
-    still_running = bool(counts and _running(tc) and finished)
+    # A background launch that failed is not running: it is a failed run, judged as it is.
+    finished = max((t for t in tests if not _running(t[1])), key=lambda t: t[1].started_at, default=None)
+    still_running = bool(counts and _running(tc) and not tc.is_error and finished
+                         and set(counts) <= _printed_counts(finished[1].output))
     if still_running:
         still = f"a later run {_code(_command(tc), 60)} at {_clock(tc.started_at)} is still running in the background"
-        by, tc, code, m = max(finished, key=lambda t: t[1].started_at)
+        by, tc, code, m = finished
         where = (f"{still}; last finished test run {_code(_command(tc), 80)} at {_clock(tc.started_at)}"
                  f"{_background_note(tc)}")
     verdict = _test_verdict(tc, code, m)
