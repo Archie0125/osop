@@ -2,7 +2,8 @@
 
 The runs that did print the count are named, never used: an older pass cannot back the claim (the last run may be
 the same tests with a failure in a format read short) and an older failure cannot contradict it (a pre-push hook
-may have run the suite again). So the count only ever moves a verdict to ⚠️.
+may have run the suite again). So the count only ever moves a verdict to ⚠️, with one exception: a last run still
+going in the background has printed nothing, so the last run that finished judges a sentence with a count.
 """
 
 from tests.test_claims import _claims, _session
@@ -256,3 +257,35 @@ def test_a_fraction_needs_a_pass_word_too(tmp_path):
         "Addressed 3/3 review comments, and all tests pass."))
     assert "✅ backed" in claims and "printed 3" not in claims
 
+
+
+FULL_SUITE_RUNNING = ("Bash", {"command": "php artisan test", "run_in_background": True},
+                      "Command running in background with ID: b1", False)
+
+
+def test_a_finished_subset_judges_its_count_while_the_full_suite_still_runs(tmp_path):
+    claims = _claims(_session(tmp_path, [MAP_TESTS, FULL_SUITE_RUNNING], "地圖測試 18 個通過，完整套件還在背景執行。"))
+    assert "✅ backed" in claims and "still running in the background" in claims
+    assert "last finished test run `php artisan test tests/Feature/MapTest.php`" in claims
+
+
+def test_an_edit_after_the_finished_subset_still_makes_it_unclear(tmp_path):
+    claims = _claims(_session(tmp_path, [
+        MAP_TESTS, ("Edit", {"file_path": "/work/demo/app/Map.php", "old_string": "a", "new_string": "b"}, "ok", False),
+        FULL_SUITE_RUNNING], "地圖測試 18 個通過。"))
+    assert "⚠️ cannot tell" in claims and "Map.php" in claims and "✅ backed" not in claims
+
+
+def test_without_a_count_the_running_suite_leaves_it_unclear(tmp_path):
+    claims = _claims(_session(tmp_path, [MAP_TESTS, FULL_SUITE_RUNNING], "All tests pass."))
+    assert "⚠️ cannot tell" in claims and "✅ backed" not in claims
+
+
+def test_a_finished_run_that_printed_another_count_does_not_back_it(tmp_path):
+    claims = _claims(_session(tmp_path, [SUBSET_PASSED, FULL_SUITE_RUNNING], "地圖測試 18 個通過。"))
+    assert "⚠️ cannot tell" in claims and "✅ backed" not in claims
+
+
+def test_a_failed_finished_run_does_not_contradict_while_a_rerun_still_runs(tmp_path):
+    claims = _claims(_session(tmp_path, [FULL_SUITE_FAILED, FULL_SUITE_RUNNING], "Full suite: 3477 tests passed."))
+    assert "⚠️ cannot tell" in claims and "❌ contradicted" not in claims and "still running" in claims

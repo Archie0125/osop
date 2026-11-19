@@ -370,18 +370,30 @@ def _tests_evidence(parsed: dict, calls: list, tests: list, quote: str = "") -> 
     be the same tests with a failure in a format read short (Mocha prints "4 passing" and "1 failing" on two
     lines); an older failure cannot contradict it, because the suite may have passed later outside a test
     command (a pre-push hook runs it). So this only ever moves a verdict to ⚠️, never to ✅ or ❌.
+
+    One exception: when the last run is still going in the background, it has printed nothing and so can show no
+    failure. A sentence with a count is then judged by the last run that finished, which must have printed that
+    count; a sentence without one may be about the run still going, and stays ⚠️. That run can back the sentence
+    but not contradict it: the run still going may be the rerun that passes.
     """
     if not tests:
         return _NO_EVIDENCE, "no test command ran"
     by, tc, code, m = max(tests, key=lambda t: t[1].started_at)
-    verdict = _test_verdict(tc, code, m)
-    where = f"last test run {_code(_command(tc), 80)} at {_clock(tc.started_at)}{_background_note(tc)}"
     counts = _claimed_counts(quote)
+    where = f"last test run {_code(_command(tc), 80)} at {_clock(tc.started_at)}{_background_note(tc)}"
+    finished = [t for t in tests if not _running(t[1])]
+    still_running = bool(counts and _running(tc) and finished)
+    if still_running:
+        still = f"a later run {_code(_command(tc), 60)} at {_clock(tc.started_at)} is still running in the background"
+        by, tc, code, m = max(finished, key=lambda t: t[1].started_at)
+        where = (f"{still}; last finished test run {_code(_command(tc), 80)} at {_clock(tc.started_at)}"
+                 f"{_background_note(tc)}")
+    verdict = _test_verdict(tc, code, m)
     printed = _printed_counts(tc.output)
     # A run that printed no count at all (only an exit status came back) cannot be told apart; it judges as before.
     if counts and printed and not printed & set(counts):
         return _UNCLEAR, f"{_where_counts_were_printed(tests, counts)}; {where} printed other counts → {verdict}"
-    if verdict.startswith("❌"):
+    if verdict.startswith("❌") and not still_running:
         return _CONTRADICTED, f"{where} → {verdict}"
     if not verdict.startswith(("✅", "🟡")):
         return _UNCLEAR, f"{where} → {verdict}"
