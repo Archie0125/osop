@@ -373,8 +373,8 @@ def _tests_evidence(parsed: dict, calls: list, tests: list, quote: str = "") -> 
 
     One exception: when the last run is still going in the background, it has printed nothing and so can show no
     failure. A sentence with a count is then judged by the last run that finished, if that run printed every count
-    the sentence gives; otherwise, or without a count (the sentence may be about the run still going), it stays as
-    before. That run can
+    the sentence gives and no later call read the running one's output; otherwise, or without a count (the sentence
+    may be about the run still going), it stays as before. That run can
     back the sentence but not contradict it: the run still going may be the rerun that passes.
     """
     if not tests:
@@ -382,10 +382,10 @@ def _tests_evidence(parsed: dict, calls: list, tests: list, quote: str = "") -> 
     by, tc, code, m = max(tests, key=lambda t: t[1].started_at)
     counts = _claimed_counts(quote)
     where = f"last test run {_code(_command(tc), 80)} at {_clock(tc.started_at)}{_background_note(tc)}"
-    # A background launch that failed is not running: it is a failed run, judged as it is.
+    # A background launch that failed, or got no reply at all, is not known to be running: judged as it is.
     finished = max((t for t in tests if not _running(t[1])), key=lambda t: t[1].started_at, default=None)
-    still_running = bool(counts and _running(tc) and not tc.is_error and finished
-                         and set(counts) <= _printed_counts(finished[1].output))
+    still_running = bool(counts and _running(tc) and not tc.is_error and tc.status != "PENDING" and finished
+                         and set(counts) <= _printed_counts(finished[1].output) and _unread_so_far(tc, calls))
     if still_running:
         still = f"a later run {_code(_command(tc), 60)} at {_clock(tc.started_at)} is still running in the background"
         by, tc, code, m = finished
@@ -1217,6 +1217,19 @@ def _status(tc: ToolCall) -> str:
         return "⏳ started in background"
     # No ✅ here: exit 0 is only what the tool reported; the Tests section judges test runs.
     return "exit 0"
+
+
+def _unread_so_far(tc: ToolCall, calls: list) -> bool:
+    """No later call named this background run's id or output file, so nothing it printed so far was read (a `tail`
+    of that file may show a failure). A launch reply naming neither cannot be told apart, and counts as read."""
+    names = [m.group(1) for m in (_BACKGROUND_ID.search(tc.output),) if m]
+    names += [re.split(r"[\\/]", m.group(1))[-1] for m in (_BACKGROUND_FILE.search(tc.output),) if m]
+    return bool(names) and not any(
+        c.started_at > tc.started_at and any(name in str(c.input) for name in names) for _, c in calls)
+
+
+_BACKGROUND_ID = re.compile(r"running in background with ID: (\w+)")
+_BACKGROUND_FILE = re.compile(r"Output is being written to: (.+?\.output)")
 
 
 def _running(tc: ToolCall) -> bool:

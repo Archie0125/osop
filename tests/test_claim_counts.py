@@ -6,6 +6,8 @@ may have run the suite again). So the count only ever moves a verdict to ⚠️,
 going in the background has printed nothing, so the last run that finished judges a sentence with a count.
 """
 
+import json
+
 from tests.test_claims import _claims, _session
 
 MAP_TESTS = ("Bash", {"command": "php artisan test tests/Feature/MapTest.php"},
@@ -308,4 +310,22 @@ def test_a_background_launch_that_failed_is_not_still_running(tmp_path):
 def test_a_count_only_the_running_suite_could_answer_is_not_backed(tmp_path):
     claims = _claims(_session(tmp_path, [MAP_TESTS, FULL_SUITE_RUNNING],
                               "18 tests pass and all 3477 tests in the full suite pass."))
+    assert "✅ backed" not in claims and "still running" not in claims
+
+
+def test_a_background_call_with_no_reply_is_not_still_running(tmp_path):
+    path = _session(tmp_path, [MAP_TESTS], "18 tests pass.")
+    events = path.read_text(encoding="utf-8").splitlines()
+    events.insert(-1, json.dumps({"type": "assistant", "timestamp": "2026-11-06T10:30:00Z", "message": {
+        "model": "m", "content": [{"type": "tool_use", "id": "t9", "name": "Bash",
+                                   "input": {"command": "php artisan test", "run_in_background": True}}]}}))
+    path.write_text("\n".join(events) + "\n", encoding="utf-8")
+    claims = _claims(path)
+    assert "✅ backed" not in claims and "still running" not in claims
+
+
+def test_a_finished_subset_does_not_back_it_once_the_running_suites_output_was_read(tmp_path):
+    claims = _claims(_session(tmp_path, [MAP_TESTS, FULL_SUITE_RUNNING, (
+        "Bash", {"command": "tail -5 /tmp/tasks/b1.output"}, "FAILED MapTest::test_route", False)],
+        "18 tests pass."))
     assert "✅ backed" not in claims and "still running" not in claims
