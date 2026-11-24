@@ -77,8 +77,14 @@ def main() -> int:
     if run.returncode == 0 and line.startswith("OSOP"):
         _say(_logged(line, data, str(transcript)))
         return 0
-    reason = next((ln.strip() for ln in (run.stdout + run.stderr).decode("utf-8", "replace").splitlines()
-                   if ln.strip()), f"osop log exited {run.returncode}")
+    # Rich wraps a long path at 80 columns when stdout is a pipe, even if COLUMNS is set;
+    # joining lines keeps the file name. The hook also names the path itself, so a
+    # message that lost it still reports which transcript failed.
+    combined = (run.stdout + run.stderr).decode("utf-8", "replace")
+    reason = " ".join(ln.strip() for ln in combined.splitlines() if ln.strip()) or f"osop log exited {run.returncode}"
+    path_name = Path(str(transcript)).name
+    if path_name and path_name not in reason:
+        reason = f"{reason} {transcript}"
     if len(reason) > 300:
         reason = reason[:100] + " … " + reason[-180:]  # keep the end: that is where a path's file name is
     _say(f"OSOP · no receipt: {reason}")
