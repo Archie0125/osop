@@ -83,10 +83,11 @@ def main() -> int:
     combined = (run.stdout + run.stderr).decode("utf-8", "replace")
     reason = " ".join(ln.strip() for ln in combined.splitlines() if ln.strip()) or f"osop log exited {run.returncode}"
     path_name = Path(str(transcript)).name
+    if len(reason) > 300:
+        # Keep both ends, then put the file name after the cut so a UUID basename is never sliced.
+        reason = reason[:100] + " … " + reason[-180:]
     if path_name and path_name not in reason:
         reason = f"{reason} {transcript}"
-    if len(reason) > 300:
-        reason = reason[:100] + " … " + reason[-180:]  # keep the end: that is where a path's file name is
     _say(f"OSOP · no receipt: {reason}")
     return 0
 
