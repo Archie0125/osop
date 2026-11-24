@@ -129,3 +129,21 @@ class TestReceiptsDir:
         monkeypatch.chdir(tmp_path / "home" / "x")
         target = _receipts_dir({"cwd": "D:\\"}, Path("../s.jsonl"))
         assert target.name == "home" and target.parent == tmp_path / "home" / ".osop" / "receipts"
+
+
+class TestMissingTranscript:
+    def test_log_missing_long_path_keeps_the_filename(self, tmp_path):
+        """A long path used to wrap at 80 columns and drop the file name from the first line."""
+        import subprocess
+        import sys
+
+        missing = tmp_path / ("a-directory-name-long-enough-to-wrap-an-80-column-console" * 2) / "missing.jsonl"
+        result = subprocess.run(
+            [sys.executable, "-m", "osop", "log", str(missing), "--brief"],
+            capture_output=True,
+            timeout=60,
+        )
+        assert result.returncode != 0
+        text = (result.stdout + result.stderr).decode("utf-8", "replace")
+        assert "missing.jsonl" in text
+        assert "Error: No transcript found for:" in text
