@@ -3,10 +3,10 @@
 **What an AI agent actually did — read from its transcript, not its own report.**
 
 ```bash
-pip install git+https://github.com/Archie0125/osop
+pip install git+https://github.com/Archie0125/osop.git@614ea028de98b7caf44c6a2032473ee930c2a15d
 ```
 
-> Not on PyPI yet. `pip install osop` installs an unrelated package with the same name.
+> Not on PyPI yet. Do not install the unrelated package of the same name from PyPI. The command above pins this commit.
 
 Agents say "done" and "tests pass". OSOP checks the Claude Code session
 transcript instead: every command the agent ran, what came back, and

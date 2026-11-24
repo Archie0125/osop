@@ -122,10 +122,13 @@ def log_cmd(source, short_desc, out_dir, stdout, brief, last_message):
     try:
         path = resolve_transcript_path(source, cwd=Path.cwd())
     except FileNotFoundError as e:
-        console.print(f"[red]Error:[/red] {e}")
-        console.print("  Cause: No transcript matched the given source.")
-        console.print("  Fix: Pass a session id or full transcript path, "
-                      "or run from a project directory that has a transcript.")
+        # Write one logical line, no Rich wrap: a Stop hook used to keep only the first
+        # line of a pipe, and a long path was broken at 80 columns.
+        sys.stderr.write(f"Error: {e}\n")
+        sys.stderr.write("  Cause: No transcript matched the given source.\n")
+        sys.stderr.write("  Fix: Pass a session id or full transcript path, "
+                         "or run from a project directory that has a transcript.\n")
+        sys.stderr.flush()
         raise SystemExit(1) from None
 
     try:

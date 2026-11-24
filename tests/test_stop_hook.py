@@ -204,3 +204,15 @@ def test_brief_log_append_waits_for_another_writer_holding_the_lock(tmp_path):
     _hook_module()._append(log, "second\n")
     assert holder.wait(timeout=30) == 0
     assert log.read_text(encoding="utf-8") == "first\nsecond\n"
+
+
+def test_stop_hook_keeps_a_uuid_filename_after_a_long_error(tmp_path):
+    # Cause/Fix text after a long directory can push a UUID basename out of the 300-character cut.
+    long_dir = "a-directory-name-long-enough-to-wrap-an-80-column-console" * 2
+    missing = tmp_path / long_dir / "130fbd5c-b7d8-47bb-88b3-3eb9f91fba27.jsonl"
+    result = _run_hook({"hook_event_name": "Stop", "stop_hook_active": False,
+                        "transcript_path": str(missing)}, tmp_path)
+    assert result.returncode == 0
+    message = __import__("json").loads(result.stdout.decode("utf-8"))["systemMessage"]
+    assert message.startswith("OSOP") and "no receipt" in message
+    assert "130fbd5c-b7d8-47bb-88b3-3eb9f91fba27.jsonl" in message
