@@ -35,6 +35,11 @@ HOOK = Path(__file__).parent.parent / "hooks" / "osop-pipefail.py"
         "go test ./... 2>&1 | tr -s ' ' | tail -20",
         "npx vitest run 2>&1 | tail -15; echo done",  # the pipe is in the runner's own command
         "env -u FORCE_COLOR php artisan test 2>&1 | tail -4",
+        "/c/xampp/php/php.exe artisan test 2>&1 | tail -40",  # php by its full path, as on Windows
+        '"C:/xampp/php/php.exe" vendor/bin/phpunit --filter Login 2>&1 | tail -20',
+        "C:/xampp/php/php.exe vendor/bin/pint --test 2>&1 | tail -5",
+        '"C:\\xampp\\php\\php.exe" artisan test 2>&1 | tail -3',  # inside double quotes bash keeps the `\`
+        './"packages/php"/vendor/bin/phpunit 2>&1 | tail -5',  # a quoted folder named php is no launcher
         "node tests/js/run.mjs 2>&1 | tail -3",
         'node --import "$PWD"/register.js --test 2>&1 | tail -4',  # the quoted part and the path are one word
     ],
@@ -77,6 +82,10 @@ def test_a_piped_runner_gets_pipefail(command):
         "pytest tests/ || ls | head -3",
         "pytest tests/ # see | head",  # a comment
         "echo 'running pytest' | cat",  # the runner is inside a string
+        "C:/xampp/php/php.exe -l app/Models/User.php | tail -1",  # php itself is a launcher, not a runner
+        "C:\\xampp\\php\\php.exe artisan test 2>&1 | tail -1",  # unquoted, bash drops the `\`: no such command
+        "false<<</usr/bin/php artisan test | tail -1",  # the path is the here-string, not a command
+        '"/usr/bin/php"artisan test | tail -1',  # one word: /usr/bin/phpartisan
         "timeout 5 node tests/e2e/server.mjs 2>&1 | tail",  # a helper in tests/ is no runner: its status stays tail's
         # A quoted option value is a word, as in the receipt: the server is the script, its `--test` its own.
         'timeout 5 node --require "./register.js" tests/e2e/server.mjs --test 2>&1 | tail',

@@ -207,6 +207,16 @@ def test_more_runner_forms_are_detected(tmp_path):
         assert "No test command ran." not in _verdicts(tmp_path, command), command
 
 
+def test_php_called_by_its_full_path_is_a_launcher(tmp_path):
+    for command in ["C:/xampp/php/php.exe artisan test", "/c/xampp/php/php.exe vendor/bin/phpunit --filter Login",
+                    '"C:/Program Files/php/php.exe" artisan test tests/Feature', "/usr/bin/php artisan test",
+                    'cd "C:/work/app" && /c/xampp/php/php.exe artisan test 2>&1 | tail -5']:
+        assert "No test command ran." not in _verdicts(tmp_path, command), command
+    for command in ["C:/xampp/php/php.exe -l app/Models/User.php", "C:/xampp/php/php.exe -v",
+                    "echo C:/xampp/php/php.exe artisan test"]:
+        assert "No test command ran." in _verdicts(tmp_path, command), command
+
+
 def test_env_that_unsets_or_clears_variables_is_a_wrapper(tmp_path):
     for command in ["env -u FORCE_COLOR php artisan test tests/Feature/PdfTest.php",
                     "env -u FORCE_COLOR -u CLICOLOR php vendor/bin/phpunit --no-progress tests/Feature",
