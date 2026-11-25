@@ -55,12 +55,14 @@ _TEST_HELPER = re.compile(
 _ENV = r"env(?:\s+(?:-[uC]\s*\S+|--[\w-]+=\S+|-(?![uC])[^\s=]*))*"
 # A runner only counts at the start of a shell command, optionally behind wrappers (sudo, env, timeout N),
 # VAR=x, a launcher (php, npx, python, `<interpreter> -m`) and a path. PHP is often called by its full path on
-# Windows (`C:/xampp/php/php.exe artisan test`, `/c/xampp/php/php.exe vendor/bin/phpunit`). Run on code with
-# quotes and heredocs removed.
+# Windows (`C:/xampp/php/php.exe artisan test`, `/c/xampp/php/php.exe vendor/bin/phpunit`); unquoted, only `/`
+# separates its folders (bash drops a bare `\`) and the path holds no shell operator. Run on code with quotes and
+# heredocs removed.
 _RUN_WRAPPERS = (
     rf"(?:(?:sudo(?:\s+-\S+)*|time|nice|{_ENV}|nohup|timeout\s+\S+)\s+)*"
     r"(?:[A-Za-z_]\w*=\S*\s+)*"
-    r"(?:(?:(?:\S*[\\/])?php(?:\.exe)?|npx|bunx|uv\s+run|poetry\s+run|python[\d.]*(?:\.exe)?|py)\s+|\S+\s+-m\s+)?"
+    r"(?:(?:(?:[^\s;&|<>()'\"]*/)?php(?:\.exe)?|npx|bunx|uv\s+run|poetry\s+run|python[\d.]*(?:\.exe)?|py)\s+"
+    r"|\S+\s+-m\s+)?"
     r"(?:\S*/)?"
 )
 _RUN_PREFIX = r"(?:^|[;&|(\n])\s*" + _RUN_WRAPPERS
@@ -84,6 +86,16 @@ _QUOTED = re.compile(r"'[^']*'|\"(?:\\.|[^\"\\])*\"")
 # "C:/xampp/php/php.exe".
 _RUNNER_EXECUTABLE = re.compile(
     r"[\\/](pytest|py\.test|nosetests|phpunit|pest|tox|prove|vitest|jest|rspec|php)(?:\.exe)?$")
+
+
+def _quoted_runner(m: re.Match) -> str | None:
+    """The runner a quoted string names, or `php` when the quoted string is a whole word: `./"lib/php"/vendor/bin/x`
+    is one word whose php is a folder, not the launcher."""
+    runner = _RUNNER_EXECUTABLE.search(m.group(0)[1:-1])
+    if not runner or runner.group(1) != "php":
+        return runner.group(1) if runner else None
+    before, after = m.string[max(m.start() - 1, 0):m.start()], m.string[m.end():m.end() + 1]
+    return "php" if before in ("", " ", "\t", "\n", ";", "&", "|", "(") and after in ("", " ", "\t", "\n") else None
 _FAILURE = re.compile(
     r"(?i:\b[1-9]\d*\s+(?:failed|failures?|errors?)\b|\bfail(?:ed|ures?):\s*[1-9])"
     r"|(?<![\w\[])FAILED\b|--- FAIL|(?<![\w\[])FAIL\s+\S*[/\\.]|FAILURES!|BUILD FAILURE|\bnot ok\b"
@@ -998,9 +1010,9 @@ def _mask(command: str) -> str:
     _shell_code leaves (`"$PWD"/x.js` stays one word; a quoted runner path keeps its name)."""
     def quoted(m: re.Match) -> str:
         text = m.group(0)
-        runner = _RUNNER_EXECUTABLE.search(text[1:-1])
+        runner = _quoted_runner(m)
         if runner:
-            return " " * (len(text) - 1 - len(runner.group(1))) + runner.group(1) + " "
+            return " " * (len(text) - 1 - len(runner)) + runner + " "
         return '"' * len(text)
 
     def heredoc(m: re.Match) -> str:
@@ -1015,8 +1027,8 @@ def _mask(command: str) -> str:
 def _shell_code(command: str) -> str:
     """The command with heredoc bodies, quoted strings and comments blanked out."""
     def blank(m: re.Match) -> str:
-        runner = _RUNNER_EXECUTABLE.search(m.group(0)[1:-1])
-        return f"/{runner.group(1)}" if runner else '""'
+        runner = _quoted_runner(m)
+        return f"/{runner}" if runner else '""'
 
     code = _QUOTED.sub(blank, _HEREDOC.sub(lambda m: "<<heredoc" + m.group(3), command))
     return re.sub(r"(?m)(^|[\s;&|(])#[^\n]*", r"\1", code)
