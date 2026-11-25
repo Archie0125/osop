@@ -54,12 +54,13 @@ _TEST_HELPER = re.compile(
 # has one way to match, or `env -ua -ua …` backtracks exponentially in the hook that runs before every command.
 _ENV = r"env(?:\s+(?:-[uC]\s*\S+|--[\w-]+=\S+|-(?![uC])[^\s=]*))*"
 # A runner only counts at the start of a shell command, optionally behind wrappers (sudo, env, timeout N),
-# VAR=x, a launcher (php, npx, python, `<interpreter> -m`) and a path. Run on code with quotes and
-# heredocs removed.
+# VAR=x, a launcher (php, npx, python, `<interpreter> -m`) and a path. PHP is often called by its full path on
+# Windows (`C:/xampp/php/php.exe artisan test`, `/c/xampp/php/php.exe vendor/bin/phpunit`). Run on code with
+# quotes and heredocs removed.
 _RUN_WRAPPERS = (
     rf"(?:(?:sudo(?:\s+-\S+)*|time|nice|{_ENV}|nohup|timeout\s+\S+)\s+)*"
     r"(?:[A-Za-z_]\w*=\S*\s+)*"
-    r"(?:(?:php|npx|bunx|uv\s+run|poetry\s+run|python[\d.]*(?:\.exe)?|py)\s+|\S+\s+-m\s+)?"
+    r"(?:(?:(?:\S*[\\/])?php(?:\.exe)?|npx|bunx|uv\s+run|poetry\s+run|python[\d.]*(?:\.exe)?|py)\s+|\S+\s+-m\s+)?"
     r"(?:\S*/)?"
 )
 _RUN_PREFIX = r"(?:^|[;&|(\n])\s*" + _RUN_WRAPPERS
@@ -79,8 +80,10 @@ _BUILD_COMMAND = re.compile(_RUN_PREFIX + rf"(?:{_BUILD_RUNNER})\b")
 # The heredoc body is blanked; the rest of its first line stays, so `cat <<EOF > file` keeps its redirect.
 _HEREDOC = re.compile(r"<<-?\s*(['\"]?)(\w+)\1([^\n]*)\n.*?\n\s*\2\b", re.DOTALL)
 _QUOTED = re.compile(r"'[^']*'|\"(?:\\.|[^\"\\])*\"")
-# Runners that can be called as a quoted executable path: "/my venv/bin/pytest".
-_RUNNER_EXECUTABLE = re.compile(r"[\\/](pytest|py\.test|nosetests|phpunit|pest|tox|prove|vitest|jest|rspec)(?:\.exe)?$")
+# Runners, and the php launcher, that can be called as a quoted executable path: "/my venv/bin/pytest",
+# "C:/xampp/php/php.exe".
+_RUNNER_EXECUTABLE = re.compile(
+    r"[\\/](pytest|py\.test|nosetests|phpunit|pest|tox|prove|vitest|jest|rspec|php)(?:\.exe)?$")
 _FAILURE = re.compile(
     r"(?i:\b[1-9]\d*\s+(?:failed|failures?|errors?)\b|\bfail(?:ed|ures?):\s*[1-9])"
     r"|(?<![\w\[])FAILED\b|--- FAIL|(?<![\w\[])FAIL\s+\S*[/\\.]|FAILURES!|BUILD FAILURE|\bnot ok\b"
