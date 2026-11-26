@@ -1182,6 +1182,8 @@ def test_failures_passed_on_by_tail_under_the_hook_are_the_tests(tmp_path):
 
 def test_exit_zero_with_failures_another_command_printed_is_unclear(tmp_path):
     # Under pipefail exit 0 is the test's; the failures come from the old log the same call printed.
-    tests = _section(_receipt(_hooked(tmp_path, "tail -2 old.log && python -m pytest -q | tail -1",
-                                      "2 failed, 3 passed\n5 passed in 0.1s")), "Tests")
-    assert "⚠️ unclear: exit 0, but output reports failures" in tests and "❌" not in tests
+    old, new = "2 failed, 3 passed", "5 passed in 0.1s"
+    for command, output in (("tail -2 old.log && python -m pytest -q | tail -1", f"{old}\n{new}"),
+                            ("python -m pytest -q | tail -1 && tail -2 old.log", f"{new}\n{old}")):
+        tests = _section(_receipt(_hooked(tmp_path, command, output)), "Tests")
+        assert "⚠️ unclear: exit 0, but output reports failures" in tests and "❌" not in tests, command
