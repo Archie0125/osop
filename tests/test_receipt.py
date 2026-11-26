@@ -776,6 +776,23 @@ def test_brief_leads_with_the_last_test_run_and_counts_earlier_failures(tmp_path
         ("Bash", {"command": "pytest -q"}, "3 passed in 0.1s", False),
         ("Bash", {"command": "pytest -q | tail -1"}, "3 passed in 0.1s", False)])
     assert "tests: last 🟡 probably passed (2 runs) ·" in render_brief(parse_transcript(piped), "r.md")
+    # Failed is the receipt's ❌, not is_error: these two exit 0 with failures in the output.
+    swallowed = _session(tmp_path, [
+        ("Bash", {"command": "npm test"}, "Tests: 2 failed, 10 passed", False),
+        ("Bash", {"command": "npm test"}, "Tests: 1 failed, 11 passed", False),
+        ("Bash", {"command": "npm test"}, "Tests: 12 passed", False)])
+    assert "tests: last ✅ passed (3 runs, 2 failed) ·" in render_brief(parse_transcript(swallowed), "r.md")
+
+
+def test_brief_without_a_timestamp_on_a_run_still_renders(tmp_path):
+    path = _session(tmp_path, [("Bash", {"command": "pytest -q"}, "3 passed in 0.1s", False)])
+    events = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+    events.append({"type": "assistant", "timestamp": None, "message": {"model": "m", "content": [
+        {"type": "tool_use", "id": "t9", "name": "Bash", "input": {"command": "pytest -q"}}]}})
+    events.append({"type": "assistant", "timestamp": "2026-10-23T10:01:00Z",
+                   "message": {"model": "m", "content": [{"type": "text", "text": "All tests pass."}]}})
+    path.write_text("\n".join(json.dumps(e) for e in events) + "\n", encoding="utf-8")
+    assert "tests: last ✅ passed (2 runs) ·" in render_brief(parse_transcript(path), "r.md")
 
 
 def test_brief_takes_the_last_test_run_by_time_not_by_who_ran_it(tmp_path):
@@ -794,6 +811,33 @@ def test_brief_takes_the_last_test_run_by_time_not_by_who_ran_it(tmp_path):
             {"type": "tool_result", "tool_use_id": "s1", "content": "Exit code 1\n1 failed", "is_error": True}]}},
     ]) + "\n", encoding="utf-8")
     assert "tests: last ✅ passed (2 runs, 1 failed) ·" in render_brief(parse_transcript(session), "r.md")
+
+
+def test_brief_takes_the_run_that_started_last_even_if_another_ended_later(tmp_path):
+    # As the claim check: the main run started at :03 and ended at :40; the sub-agent's started at :10.
+    from osop.recorder.receipt import render_brief
+    events = [{"type": "user", "timestamp": "2026-10-23T10:00:00Z", "sessionId": "s",
+               "message": {"role": "user", "content": "do the task"}}]
+    for tid, tool, inp, out, err, start, end in [
+            ("t0", "Agent", {"description": "Check"}, "done", False, "01", "02"),
+            ("t1", "Bash", {"command": "pytest -q"}, "3 passed in 30s", False, "03", "40")]:
+        events.append({"type": "assistant", "timestamp": f"2026-10-23T10:00:{start}Z", "message": {
+            "model": "m", "content": [{"type": "tool_use", "id": tid, "name": tool, "input": inp}]}})
+        events.append({"type": "user", "timestamp": f"2026-10-23T10:00:{end}Z", "message": {
+            "role": "user", "content": [{"type": "tool_result", "tool_use_id": tid, "content": out, "is_error": err}]}})
+    session = tmp_path / "s.jsonl"
+    session.write_text("\n".join(json.dumps(e) for e in events) + "\n", encoding="utf-8")
+    subagents = tmp_path / "s" / "subagents"
+    subagents.mkdir(parents=True)
+    (subagents / "agent-x1.meta.json").write_text(json.dumps({"toolUseId": "t0"}), encoding="utf-8")
+    (subagents / "agent-x1.jsonl").write_text("\n".join(json.dumps(e) for e in [
+        {"type": "user", "timestamp": "2026-10-23T10:00:09Z", "message": {"role": "user", "content": "check"}},
+        {"type": "assistant", "timestamp": "2026-10-23T10:00:10Z", "message": {"content": [
+            {"type": "tool_use", "id": "s1", "name": "Bash", "input": {"command": "pytest -q"}}]}},
+        {"type": "user", "timestamp": "2026-10-23T10:00:11Z", "message": {"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": "s1", "content": "Exit code 1\n1 failed", "is_error": True}]}},
+    ]) + "\n", encoding="utf-8")
+    assert "tests: last ❌ failed (2 runs, 1 failed) ·" in render_brief(parse_transcript(session), "r.md")
 
 
 def test_git_row_shows_the_git_command_not_the_start_of_the_script(tmp_path):
