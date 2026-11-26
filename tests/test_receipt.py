@@ -1044,3 +1044,113 @@ def test_many_key_headers_without_an_end_line_are_masked_in_linear_time():
     masked = _SECRET.sub("[secret]", text)
     assert time.perf_counter() - started < 1.0
     assert "BEGIN" not in masked and masked.count("short") == 20000
+
+
+def _hooked(tmp_path, command, output, *, rewrites=None, note=None, is_error=False, final=None) -> Path:
+    """One Bash call as Claude Code records it when PreToolUse hooks replace its command: a hook_success
+    attachment per hook, and Claude Code's reading of a non-zero exit it does not flag (returnCodeInterpretation)."""
+    rewrites = ["set -o pipefail; " + command] if rewrites is None else rewrites
+    events = [{"type": "user", "timestamp": "2026-11-26T10:00:00Z", "sessionId": "s",
+               "message": {"role": "user", "content": "do the task"}},
+              {"type": "assistant", "timestamp": "2026-11-26T10:00:01Z", "message": {"model": "m", "content": [
+                  {"type": "tool_use", "id": "t0", "name": "Bash", "input": {"command": command}}]}}]
+    for rewrite in rewrites:
+        stdout = json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse",
+                                                    "updatedInput": {"command": rewrite}}})
+        events.append({"type": "attachment", "timestamp": "2026-11-26T10:00:01Z", "attachment": {
+            "type": "hook_success", "hookName": "PreToolUse:Bash", "hookEvent": "PreToolUse",
+            "toolUseID": "t0", "stdout": stdout, "exitCode": 0}})
+    result = {"type": "user", "timestamp": "2026-11-26T10:00:02Z", "message": {"role": "user", "content": [
+        {"type": "tool_result", "tool_use_id": "t0", "content": output, "is_error": is_error}]}}
+    if note:
+        result["toolUseResult"] = {"stdout": output, "stderr": "", "returnCodeInterpretation": note}
+    events.append(result)
+    if final:
+        events.append({"type": "assistant", "timestamp": "2026-11-26T10:00:03Z",
+                       "message": {"model": "m", "content": [{"type": "text", "text": final}]}})
+    path = tmp_path / "s.jsonl"
+    path.write_text("\n".join(json.dumps(e) for e in events) + "\n", encoding="utf-8")
+    return path
+
+
+def test_a_pipe_the_pipefail_hook_rewrote_reports_the_tests_own_status(tmp_path):
+    command = "python -m pytest -q | tail -3"
+    hooked = _section(_receipt(_hooked(tmp_path, command, "3 passed in 0.1s")), "Tests")
+    assert "✅ passed" in hooked and "set -o pipefail; python -m pytest" in hooked
+    written = _section(_receipt(_hooked(tmp_path, command, "3 passed in 0.1s", rewrites=[])), "Tests")
+    assert "🟡" in written and "✅" not in written
+
+
+def test_a_tests_pass_claim_is_backed_by_a_run_the_hook_rewrote(tmp_path):
+    path = _hooked(tmp_path, "python -m pytest -q | tail -3", "3 passed in 0.1s", final="All 3 tests pass.")
+    brief = render_brief(parse_transcript(path), "r.md")
+    assert "claims: 1 backed ·" in brief and "tests: 1 run: 1 passed ·" in brief
+
+
+def test_a_failing_run_under_pipefail_that_ends_in_grep_is_a_failure(tmp_path):
+    # pytest exits 1 and pipefail reports it; Claude Code reads exit 1 of a grep as "No matches found", not an error.
+    tests = _section(_receipt(_hooked(tmp_path, 'python -m pytest -q 2>&1 | grep -E "passed|failed"',
+                                      "1 failed, 2 passed in 0.2s", note="No matches found")), "Tests")
+    assert "❌" in tests and "No matches found" in tests and "✅" not in tests
+
+
+def test_a_non_zero_exit_claude_code_did_not_flag_is_never_a_pass(tmp_path):
+    # Written by the agent, no hook: the grep found nothing, so the tests may have passed or failed.
+    tests = _section(_receipt(_hooked(tmp_path, "set -o pipefail; python -m pytest -q | grep FAILED", "",
+                                      rewrites=[], note="No matches found")), "Tests")
+    assert "⚠️ unclear: a non-zero exit" in tests and "✅" not in tests
+    commands = _section(_receipt(_hooked(tmp_path, "grep -n x f.py", "", rewrites=[], note="No matches found")),
+                        "Commands")
+    assert "non-zero exit, not flagged (Claude Code: No matches found)" in commands and "exit 0" not in commands
+
+
+def test_a_build_claim_is_not_backed_by_a_non_zero_exit_claude_code_did_not_flag(tmp_path):
+    # The agent's own pipefail: the build's failure or grep finding no "error" both give exit 1.
+    path = _hooked(tmp_path, "set -o pipefail; npm run build 2>&1 | grep -i error", "", rewrites=[],
+                   note="No matches found", final="The build succeeded.")
+    brief = render_brief(parse_transcript(path), "r.md")
+    assert "claims: 1 unclear ⚠️ (build succeeds)" in brief
+
+
+def test_a_flag_on_a_status_that_something_else_hides_is_not_read(tmp_path):
+    # `;` gives the call the grep's status, not the test's: the test's status stays hidden.
+    tests = _section(_receipt(_hooked(tmp_path, "python -m pytest -q; grep -c x f.py", "3 passed in 0.1s",
+                                      rewrites=[], note="No matches found")), "Tests")
+    assert "🟡 probably passed: `;`" in tests
+
+
+def test_a_flag_on_an_event_with_two_results_is_not_given_to_either(tmp_path):
+    events = [{"type": "user", "timestamp": "2026-11-26T10:00:00Z", "sessionId": "s",
+               "message": {"role": "user", "content": "do the task"}},
+              {"type": "assistant", "timestamp": "2026-11-26T10:00:01Z", "message": {"model": "m", "content": [
+                  {"type": "tool_use", "id": "t0", "name": "Bash", "input": {"command": "python -m pytest -q"}},
+                  {"type": "tool_use", "id": "t1", "name": "Bash", "input": {"command": "grep -c x f.py"}}]}},
+              {"type": "user", "timestamp": "2026-11-26T10:00:02Z", "message": {"role": "user", "content": [
+                  {"type": "tool_result", "tool_use_id": "t0", "content": "3 passed in 0.1s", "is_error": False},
+                  {"type": "tool_result", "tool_use_id": "t1", "content": "0", "is_error": False}]},
+               "toolUseResult": {"stdout": "0", "stderr": "", "returnCodeInterpretation": "No matches found"}}]
+    path = tmp_path / "s.jsonl"
+    path.write_text("\n".join(json.dumps(e) for e in events) + "\n", encoding="utf-8")
+    assert "✅ passed" in _section(_receipt(path), "Tests")
+
+
+def test_hooks_that_disagree_leave_the_command_as_written(tmp_path):
+    command = "python -m pytest -q | tail -3"
+    # Either would give the pipe the test's status, but which one ran is not recorded.
+    tests = _section(_receipt(_hooked(tmp_path, command, "3 passed in 0.1s",
+                                      rewrites=["set -o pipefail; " + command, "set -o pipefail;  " + command])),
+                     "Tests")
+    assert "🟡" in tests and "✅" not in tests
+
+
+def test_a_separator_after_the_test_still_hides_it_under_the_hook(tmp_path):
+    tests = _section(_receipt(_hooked(tmp_path, "python -m pytest -q | tail -3; echo done", "3 passed\ndone")),
+                     "Tests")
+    assert "🟡 probably passed: `;`" in tests and "✅" not in tests
+
+
+def test_exit_zero_with_failures_another_command_printed_is_unclear(tmp_path):
+    # Under pipefail exit 0 is the test's; the failures come from the old log the same call printed.
+    tests = _section(_receipt(_hooked(tmp_path, "tail -2 old.log && python -m pytest -q | tail -1",
+                                      "2 failed, 3 passed\n5 passed in 0.1s")), "Tests")
+    assert "⚠️ unclear: exit 0, but output reports failures" in tests and "❌" not in tests

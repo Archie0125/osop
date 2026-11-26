@@ -675,6 +675,14 @@ def _judge(tc: ToolCall, code: str, m: re.Match, verb: str | None = None) -> tup
         why = "`||` before it: it ran only if the command before failed"
     elif hidden:
         why = f"{hidden} after it hides its exit status"
+    elif tc.exit_note:
+        # Not exit 0: Claude Code read the status as the trailing grep's or diff's and did not flag it.
+        why = f"a non-zero exit that Claude Code read as \"{tc.exit_note}\""
+        if fail:
+            return "failed", f"❌ {why}; output says {_code(fail.group(0), 60)}"
+        if done and verb in _GIT_PAST and verb not in ("lint", "build"):
+            return "probably", f"🟡 probably {_GIT_PAST[verb]}: {why}; output shows {_code(done.group(0).strip(), 60)}"
+        return "unclear", f"⚠️ {why}"
     else:
         return "ok", "exit 0"
     if fail:
@@ -849,9 +857,9 @@ def _test_verdict(tc: ToolCall, code: str, match: re.Match) -> str:
         return "⚠️ unclear: a script in tests/ that printed no test result"
     mentions_failure = bool(_FAILURE.search(out) or _DOUBT.search(out))
     clean_pass = bool(_PASSED_COUNT.search(out)) and not mentions_failure
+    # `set -o pipefail`, separators and group brackets are not steps that can fail.
+    before = bool(re.sub(rf"[\s;&|(){_NEW_SHELL}]+", "", _PIPEFAIL.sub("", code[:match.start()])))
     if tc.is_error:
-        # `set -o pipefail`, separators and group brackets are not steps that can fail.
-        before = bool(re.sub(rf"[\s;&|(){_NEW_SHELL}]+", "", _PIPEFAIL.sub("", code[:match.start()])))
         after = _hidden_status(code, match.end()) is not None or "&&" in code[match.end():]
         which = "an earlier or later" if before and after else "an earlier" if before else "a later"
         if after and clean_pass:
@@ -864,7 +872,18 @@ def _test_verdict(tc: ToolCall, code: str, match: re.Match) -> str:
         return "⏳ started in background; no exit status in the transcript"
     hidden = _hidden_status(code, match.end())
     if hidden is None:
+        if tc.exit_note:
+            # Nothing hides the test's status, so the non-zero exit Claude Code did not flag may be the test's,
+            # or the trailing grep's (no match) or diff's (a difference).
+            if _FAILURE.search(out):
+                return f"❌ failed: a non-zero exit (Claude Code: {tc.exit_note}) and output reports failures"
+            return (f"⚠️ unclear: a non-zero exit that Claude Code read as \"{tc.exit_note}\"; "
+                    "the test or a later step returned it")
         if _FAILURE.search(out):
+            if before or re.search(r"&&|\|", code[match.end():]):
+                # A mutation run or a log excerpt in the same call prints failures of its own.
+                return ("⚠️ unclear: exit 0, but output reports failures; "
+                        "another command in the call may have printed them")
             return "❌ exit 0 but output reports failures"
         return "✅ passed" if _PASSED_COUNT.search(out) else "✅ exit 0, no pass/fail summary seen"
     # The reported exit status belongs to whatever ran last, so only the output is left to read.
@@ -1215,13 +1234,15 @@ def _status(tc: ToolCall) -> str:
         return _failed(tc)
     if _running(tc):
         return "⏳ started in background"
+    if tc.exit_note:
+        return f"non-zero exit, not flagged (Claude Code: {tc.exit_note})"
     # No ✅ here: exit 0 is only what the tool reported; the Tests section judges test runs.
     return "exit 0"
 
 
 def _running(tc: ToolCall) -> bool:
     """Started in the background and no completion notice has arrived: there is no exit status yet."""
-    return bool(tc.input.get("run_in_background")) and not tc.background
+    return (bool(tc.input.get("run_in_background")) or tc.moved_to_background) and not tc.background
 
 
 def _background_note(tc: ToolCall) -> str:
@@ -1248,7 +1269,8 @@ def _exit_text(tc: ToolCall) -> str:
 
 
 def _command(tc: ToolCall) -> str:
-    return str(tc.input.get("command", ""))
+    """The command that ran: a PreToolUse hook's replacement (the pipefail hook's `set -o pipefail; …`) if any."""
+    return tc.hook_command or str(tc.input.get("command", ""))
 
 
 def _subject(tc: ToolCall) -> str:

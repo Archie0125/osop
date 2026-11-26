@@ -43,6 +43,14 @@ class ToolCall:
     output: str = ""  # full result text; verdicts read this, never the truncated summary
     # A background command: "" until its completion notice arrives, then "read" or "unread" (its output file).
     background: str = ""
+    # The command a PreToolUse hook put in place of the agent's (its updatedInput): the one that ran.
+    hook_command: str = ""
+    # Claude Code's reading of a non-zero exit it does not flag as an error: "No matches found" when the
+    # command ends in grep, "Files differ" when it ends in diff. is_error is False, yet the call did not exit 0.
+    exit_note: str = ""
+    # Claude Code moved the call to the background when its timeout ran out: the reply was the launch notice,
+    # and the result comes in a completion notice, as for run_in_background.
+    moved_to_background: bool = False
 
 
 @dataclass
@@ -198,6 +206,19 @@ _OUTPUT_FILE_LIMIT = 20_000_000  # bytes; a bigger output file is not read rathe
 def _notice_tag(block: str, name: str) -> str:
     m = re.search(rf"<{name}>(.*?)</{name}>", block, re.S)
     return html.unescape(m.group(1).strip()) if m else ""
+
+
+def _hook_command(event: dict) -> tuple[str, str] | None:
+    """(tool_use id, command) when a PreToolUse hook replaced a call's command, from its hook_success attachment."""
+    hook = event.get("attachment")
+    if not (isinstance(hook, dict) and hook.get("type") == "hook_success" and hook.get("hookEvent") == "PreToolUse"):
+        return None
+    try:
+        updated = json.loads(hook.get("stdout") or "")["hookSpecificOutput"]["updatedInput"]["command"]
+    except (ValueError, TypeError, KeyError):
+        return None
+    tool_use_id = _id(hook.get("toolUseID"))
+    return (tool_use_id, updated) if tool_use_id and isinstance(updated, str) else None
 
 
 def _apply_notices(event: dict, background: dict[str, ToolCall], ts: str) -> None:
@@ -375,6 +396,9 @@ def parse_transcript(path: Path, subagent_root: Path | None = None, _state: _Par
     pending: dict[str, ToolCall] = {}
     # Background commands, by tool_use id, until their completion notice arrives.
     background: dict[str, ToolCall] = {}
+    # Every call by tool_use id, and the commands PreToolUse hooks put in place of each.
+    calls: dict[str, ToolCall] = {}
+    hook_commands: dict[str, set[str]] = {}
     phase_counter = 0
     agent_counter = 0
     # The agent's final message: its text since the last user event (a prompt or a tool result).
@@ -426,16 +450,25 @@ def parse_transcript(path: Path, subagent_root: Path | None = None, _state: _Par
                     status="COMPLETED",
                 )
             else:
-                for tr in _extract_tool_results(ev):
-                    tc = pending.pop(_id(tr.get("tool_use_id")), None)
+                results = _extract_tool_results(ev)
+                # The event's toolUseResult describes its one result; with several it is not clear whose it is.
+                extra = ev.get("toolUseResult") if len(results) == 1 else None
+                note = extra.get("returnCodeInterpretation") if isinstance(extra, dict) else None
+                for tr in results:
+                    tid = _id(tr.get("tool_use_id"))
+                    tc = pending.pop(tid, None)
                     if tc is None or tc.background:
                         continue  # a launch reply written after the completion notice must not undo its result
+                    if isinstance(extra, dict) and extra.get("timedOutAfterMs") and extra.get("backgroundTaskId"):
+                        tc.moved_to_background = True
+                        background[tid] = tc
                     tc.ended_at = ts
                     tc.duration_ms = _ms_between(tc.started_at, ts)
                     tc.output = _output_text(tr.get("content"))
                     tc.output_summary = _summarize_output(tc.output)
                     tc.is_error = bool(tr.get("is_error"))
                     tc.status = "FAILED" if tc.is_error else "COMPLETED"
+                    tc.exit_note = note if isinstance(note, str) and not tc.is_error else ""
                 _apply_notices(ev, background, ts)
 
         elif ev_type == "assistant":
@@ -485,16 +518,26 @@ def parse_transcript(path: Path, subagent_root: Path | None = None, _state: _Par
                 current.tool_calls.append(tc)
                 if tid:
                     pending[tid] = tc
+                    calls[tid] = tc
                     if inp.get("run_in_background"):
                         background[tid] = tc
 
         # A completion notice queued while the agent works. It is not a user turn, so the final message goes on.
         elif ev_type == "attachment":
             _apply_notices(ev, background, ts)
+            replaced = _hook_command(ev)
+            if replaced:
+                hook_commands.setdefault(replaced[0], set()).add(replaced[1])
 
         # permission-mode / system events: ignored for node graph
         else:
             continue
+
+    for tid, commands in hook_commands.items():
+        tc = calls.get(tid)
+        # Two hooks that each put a different command: which one ran is not recorded, so neither is taken.
+        if tc is not None and tc.tool == "Bash" and len(commands) == 1:
+            tc.hook_command = next(iter(commands))
 
     # Close trailing phase
     _close(current, last_ts)
