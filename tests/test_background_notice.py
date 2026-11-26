@@ -8,23 +8,33 @@ from osop.recorder.receipt import render_receipt
 
 
 def _session(tmp_path: Path, command: str, summary: str | None, printed: str | None,
-             status: str = "completed", final: str = "All 5 tests pass.") -> Path:
+             status: str = "completed", final: str = "All 5 tests pass.", moved: bool | str = False) -> Path:
     """A background Bash run, its completion notice (None: none arrived) and the agent's final message.
 
     `printed` is what the output file holds; None leaves no file behind (Claude Code cleans them up after days).
+    `moved`: the call was not started in the background; Claude Code moved it there when its timeout ran out.
     """
     out = tmp_path / "b1.output"
     if printed is not None:
         out.write_text(printed, encoding="utf-8")
+    if moved:
+        inp = {"command": command, "timeout": 300000}
+        reply = (f"Command did not complete within its 300s timeout and was moved to the background (ID: b1). "
+                 f"Output is being written to: {out}. You will be notified when it completes.")
+        why = {"timedOutAfterMs": 300000} if moved is True else {moved: True}
+        extra = {"toolUseResult": {"stdout": "", "stderr": "", "interrupted": False, "backgroundTaskId": "b1",
+                                   **why}}
+    else:
+        inp = {"command": command, "run_in_background": True}
+        reply = f"Command running in background with ID: b1. Output is being written to: {out}"
+        extra = {}
     events = [
         {"type": "user", "timestamp": "2026-11-06T10:00:00Z", "sessionId": "s", "cwd": "/work/demo",
          "origin": {"kind": "human"}, "message": {"role": "user", "content": "run the tests"}},
         {"type": "assistant", "timestamp": "2026-11-06T10:01:00Z", "message": {"model": "m", "content": [
-            {"type": "tool_use", "id": "t1", "name": "Bash",
-             "input": {"command": command, "run_in_background": True}}]}},
+            {"type": "tool_use", "id": "t1", "name": "Bash", "input": inp}]}},
         {"type": "user", "timestamp": "2026-11-06T10:01:01Z", "message": {"role": "user", "content": [
-            {"type": "tool_result", "tool_use_id": "t1", "is_error": False,
-             "content": f"Command running in background with ID: b1. Output is being written to: {out}"}]}},
+            {"type": "tool_result", "tool_use_id": "t1", "is_error": False, "content": reply}]}, **extra},
     ]
     if summary is not None:
         notice = (f"<task-notification>\n<task-id>b1</task-id>\n<tool-use-id>t1</tool-use-id>\n"
@@ -46,6 +56,25 @@ def _section(path: Path, title: str) -> str:
 
 # The notice's exit code is `tail`'s; the test's own `exit=0` is only in the output file.
 LOGGED = 'pytest -q > log.txt 2>&1; echo "exit=$?"; tail -3 log.txt'
+
+
+def test_a_run_moved_to_the_background_by_its_timeout_has_no_result_yet(tmp_path):
+    # The reply is the launch notice: exit 0 and no failure in it say nothing about the tests.
+    path = _session(tmp_path, "pytest -q", None, None, moved=True)
+    tests = _section(path, "Tests")
+    assert "⏳" in tests and "✅" not in tests
+    assert "✅ backed" not in _section(path, "Claims")
+
+
+def test_a_run_moved_to_the_background_for_any_reason_has_no_result_yet(tmp_path):
+    path = _session(tmp_path, "pytest -q", None, None, moved="backgroundedToDeliverMessage")
+    assert "⏳" in _section(path, "Tests") and "✅" not in _section(path, "Tests")
+
+
+def test_a_run_moved_to_the_background_takes_its_completion_notice(tmp_path):
+    path = _session(tmp_path, "pytest -q", 'Background command "Run the tests" failed with exit code 1',
+                    "1 failed, 4 passed in 1.30s\n", moved=True)
+    assert "❌ contradicted" in _section(path, "Claims")
 
 
 def test_a_passing_background_run_backs_the_claim(tmp_path):
