@@ -220,11 +220,13 @@ def test_stop_hook_keeps_a_uuid_filename_after_a_long_error(tmp_path):
 
 def test_stop_hook_keeps_every_line_of_a_failing_osop_log(tmp_path):
     # A traceback's first line says nothing; the exception that explains it is on the last line.
-    # The hook runs `python -m osop` in its working directory, so a stand-in package there answers.
+    # Some errors go to stdout (Rich), others to stderr. The hook runs `python -m osop` in its
+    # working directory, so a stand-in package there answers.
     (tmp_path / "osop").mkdir()
     (tmp_path / "osop" / "__init__.py").write_text("", encoding="utf-8")  # else the installed package wins
     (tmp_path / "osop" / "__main__.py").write_text(textwrap.dedent("""\
         import sys
+        sys.stdout.write("Error: on stdout\\n")
         sys.stderr.write("Traceback (most recent call last):\\n  File \\"x.py\\", line 1\\nValueError: the cause\\n")
         sys.exit(1)
     """), encoding="utf-8")
@@ -235,4 +237,5 @@ def test_stop_hook_keeps_every_line_of_a_failing_osop_log(tmp_path):
     assert result.returncode == 0
     message = json.loads(result.stdout.decode("utf-8"))["systemMessage"]
     assert message.startswith(
-        'OSOP · no receipt: Traceback (most recent call last): File "x.py", line 1 ValueError: the cause ')
+        'OSOP · no receipt: Error: on stdout Traceback (most recent call last): File "x.py", line 1 '
+        'ValueError: the cause ')
