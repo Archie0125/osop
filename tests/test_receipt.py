@@ -782,6 +782,11 @@ def test_brief_leads_with_the_last_test_run_and_counts_earlier_failures(tmp_path
         ("Bash", {"command": "npm test"}, "Tests: 1 failed, 11 passed", False),
         ("Bash", {"command": "npm test"}, "Tests: 12 passed", False)])
     assert "tests: last ✅ passed (3 runs, 2 failed) ·" in render_brief(parse_transcript(swallowed), "r.md")
+    # An unclear last run is never shown as passed, and an unclear earlier run is not counted as failed.
+    unclear = _session(tmp_path, [
+        ("Bash", {"command": "pytest -q; echo done"}, "collected 3 items\ndone", False),
+        ("Bash", {"command": "pytest -q | tail -1"}, "collected 3 items", False)])
+    assert "tests: last ⚠️ unclear (2 runs) ·" in render_brief(parse_transcript(unclear), "r.md")
 
 
 def test_brief_without_a_timestamp_on_a_run_still_renders(tmp_path):
