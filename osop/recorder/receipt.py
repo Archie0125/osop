@@ -328,7 +328,7 @@ def _tests_brief(tests: list) -> str:
     if not tests:
         return "none ran"
     verdicts = [_test_verdict(tc, code, m) for _, tc, code, m in tests]
-    _, tc, code, m = max(tests, key=lambda t: t[1].started_at or "")
+    _, tc, code, m = max(tests, key=lambda t: t[1].started_at)
     last = _test_verdict(tc, code, m)
     label = next(text for mark, text in (("✅", "✅ passed"), ("🟡", "🟡 probably passed"), ("❌", "❌ failed"),
                                          ("⚠️", "⚠️ unclear"), ("⏳", "⏳ no result yet")) if last.startswith(mark))
@@ -402,7 +402,7 @@ def _tests_evidence(parsed: dict, calls: list, tests: list, quote: str = "") -> 
     """
     if not tests:
         return _NO_EVIDENCE, "no test command ran"
-    by, tc, code, m = max(tests, key=lambda t: t[1].started_at or "")
+    by, tc, code, m = max(tests, key=lambda t: t[1].started_at)
     verdict = _test_verdict(tc, code, m)
     where = f"last test run {_code(_command(tc), 80)} at {_clock(tc.started_at)}{_background_note(tc)}"
     counts = _claimed_counts(quote)

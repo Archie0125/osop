@@ -793,6 +793,17 @@ def test_brief_without_a_timestamp_on_a_run_still_renders(tmp_path):
                    "message": {"model": "m", "content": [{"type": "text", "text": "All tests pass."}]}})
     path.write_text("\n".join(json.dumps(e) for e in events) + "\n", encoding="utf-8")
     assert "tests: last ✅ passed (2 runs) ·" in render_brief(parse_transcript(path), "r.md")
+    # The only run has no timestamp and no result; then a result arrives with one.
+    only = [events[0], events[-2], events[-1]]
+    path.write_text("\n".join(json.dumps(e) for e in only) + "\n", encoding="utf-8")
+    brief = render_brief(parse_transcript(path), "r.md")
+    assert "claims: 1 unclear ⚠️ (tests pass)" in brief and "tests: last ⏳ no result yet (1 run) ·" in brief
+    result = {"type": "user", "timestamp": "2026-10-23T10:00:30Z", "message": {"role": "user", "content": [
+        {"type": "tool_result", "tool_use_id": "t9", "content": "3 passed in 0.1s", "is_error": False}]}}
+    answered = [*only[:2], result, only[2]]
+    path.write_text("\n".join(json.dumps(e) for e in answered) + "\n", encoding="utf-8")
+    assert "tests: last ✅ passed (1 run) ·" in render_brief(parse_transcript(path), "r.md")
+    assert "✅ passed" in _section(_receipt(path), "Tests")
 
 
 def test_brief_takes_the_last_test_run_by_time_not_by_who_ran_it(tmp_path):
