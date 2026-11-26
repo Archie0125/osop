@@ -859,8 +859,11 @@ def _test_verdict(tc: ToolCall, code: str, match: re.Match) -> str:
     clean_pass = bool(_PASSED_COUNT.search(out)) and not mentions_failure
     # `set -o pipefail`, separators and group brackets are not steps that can fail.
     before = bool(re.sub(rf"[\s;&|(){_NEW_SHELL}]+", "", _PIPEFAIL.sub("", code[:match.start()])))
+    rest = code[match.end():]
     if tc.is_error:
-        after = _hidden_status(code, match.end()) is not None or "&&" in code[match.end():]
+        # Under pipefail a later segment of the pipe reports its failure too (`pytest | tee /dev/full`).
+        after = (_hidden_status(code, match.end()) is not None or "&&" in rest
+                 or bool(re.search(r"(?<!\|)\|(?!\|)", rest)))
         which = "an earlier or later" if before and after else "an earlier" if before else "a later"
         if after and clean_pass:
             return (f"⚠️ unclear: {_exit_text(tc)}, but output shows tests passing; "
@@ -871,6 +874,11 @@ def _test_verdict(tc: ToolCall, code: str, match: re.Match) -> str:
     if _running(tc):
         return "⏳ started in background; no exit status in the transcript"
     hidden = _hidden_status(code, match.end())
+    lead = re.match(r"[\s;&|(]*", match.group(0)).group(0)
+    if re.sub(r"[\s(]+$", "", code[:match.start()] + lead).endswith("||") and not (
+            _PASSED_COUNT.search(out) or _FAILURE.search(out)):
+        # `x || pytest`: the test ran only if x failed, and its output does not show that it ran.
+        return "⚠️ unclear: `||` before it: it ran only if the command before failed, and no test result was printed"
     if hidden is None:
         if tc.exit_note:
             # Nothing hides the test's status, so the non-zero exit Claude Code did not flag may be the test's,
@@ -880,8 +888,9 @@ def _test_verdict(tc: ToolCall, code: str, match: re.Match) -> str:
             return (f"⚠️ unclear: a non-zero exit that Claude Code read as \"{tc.exit_note}\"; "
                     "the test or a later step returned it")
         if _FAILURE.search(out):
-            if before or re.search(r"&&|\|", code[match.end():]):
-                # A mutation run or a log excerpt in the same call prints failures of its own.
+            if before or "&&" in rest:
+                # A mutation run or a log excerpt in the same call prints failures of its own; a pipe after the
+                # test only passes the test's output on.
                 return ("⚠️ unclear: exit 0, but output reports failures; "
                         "another command in the call may have printed them")
             return "❌ exit 0 but output reports failures"

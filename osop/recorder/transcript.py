@@ -48,7 +48,7 @@ class ToolCall:
     # Claude Code's reading of a non-zero exit it does not flag as an error: "No matches found" when the
     # command ends in grep, "Files differ" when it ends in diff. is_error is False, yet the call did not exit 0.
     exit_note: str = ""
-    # Claude Code moved the call to the background when its timeout ran out: the reply was the launch notice,
+    # Claude Code moved the call to the background (its timeout ran out, say): the reply was the launch notice,
     # and the result comes in a completion notice, as for run_in_background.
     moved_to_background: bool = False
 
@@ -215,7 +215,7 @@ def _hook_command(event: dict) -> tuple[str, str] | None:
         return None
     try:
         updated = json.loads(hook.get("stdout") or "")["hookSpecificOutput"]["updatedInput"]["command"]
-    except (ValueError, TypeError, KeyError):
+    except (ValueError, TypeError, KeyError, RecursionError):
         return None
     tool_use_id = _id(hook.get("toolUseID"))
     return (tool_use_id, updated) if tool_use_id and isinstance(updated, str) else None
@@ -459,7 +459,9 @@ def parse_transcript(path: Path, subagent_root: Path | None = None, _state: _Par
                     tc = pending.pop(tid, None)
                     if tc is None or tc.background:
                         continue  # a launch reply written after the completion notice must not undo its result
-                    if isinstance(extra, dict) and extra.get("timedOutAfterMs") and extra.get("backgroundTaskId"):
+                    # Its timeout ran out, a message had to be delivered, or the user sent it there: either way the
+                    # reply is a launch notice.
+                    if isinstance(extra, dict) and extra.get("backgroundTaskId"):
                         tc.moved_to_background = True
                         background[tid] = tc
                     tc.ended_at = ts
@@ -536,7 +538,7 @@ def parse_transcript(path: Path, subagent_root: Path | None = None, _state: _Par
     for tid, commands in hook_commands.items():
         tc = calls.get(tid)
         # Two hooks that each put a different command: which one ran is not recorded, so neither is taken.
-        if tc is not None and tc.tool == "Bash" and len(commands) == 1:
+        if tc is not None and len(commands) == 1:
             tc.hook_command = next(iter(commands))
 
     # Close trailing phase

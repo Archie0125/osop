@@ -1046,7 +1046,8 @@ def test_many_key_headers_without_an_end_line_are_masked_in_linear_time():
     assert "BEGIN" not in masked and masked.count("short") == 20000
 
 
-def _hooked(tmp_path, command, output, *, rewrites=None, note=None, is_error=False, final=None) -> Path:
+def _hooked(tmp_path, command, output, *, rewrites=None, note=None, is_error=False, final=None,
+            event="PreToolUse", hook_id="t0", stdout=None) -> Path:
     """One Bash call as Claude Code records it when PreToolUse hooks replace its command: a hook_success
     attachment per hook, and Claude Code's reading of a non-zero exit it does not flag (returnCodeInterpretation)."""
     rewrites = ["set -o pipefail; " + command] if rewrites is None else rewrites
@@ -1055,11 +1056,11 @@ def _hooked(tmp_path, command, output, *, rewrites=None, note=None, is_error=Fal
               {"type": "assistant", "timestamp": "2026-11-26T10:00:01Z", "message": {"model": "m", "content": [
                   {"type": "tool_use", "id": "t0", "name": "Bash", "input": {"command": command}}]}}]
     for rewrite in rewrites:
-        stdout = json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse",
-                                                    "updatedInput": {"command": rewrite}}})
+        hook_out = stdout if stdout is not None else json.dumps(
+            {"hookSpecificOutput": {"hookEventName": event, "updatedInput": {"command": rewrite}}})
         events.append({"type": "attachment", "timestamp": "2026-11-26T10:00:01Z", "attachment": {
-            "type": "hook_success", "hookName": "PreToolUse:Bash", "hookEvent": "PreToolUse",
-            "toolUseID": "t0", "stdout": stdout, "exitCode": 0}})
+            "type": "hook_success", "hookName": f"{event}:Bash", "hookEvent": event,
+            "toolUseID": hook_id, "stdout": hook_out, "exitCode": 0}})
     result = {"type": "user", "timestamp": "2026-11-26T10:00:02Z", "message": {"role": "user", "content": [
         {"type": "tool_result", "tool_use_id": "t0", "content": output, "is_error": is_error}]}}
     if note:
@@ -1146,7 +1147,37 @@ def test_hooks_that_disagree_leave_the_command_as_written(tmp_path):
 def test_a_separator_after_the_test_still_hides_it_under_the_hook(tmp_path):
     tests = _section(_receipt(_hooked(tmp_path, "python -m pytest -q | tail -3; echo done", "3 passed\ndone")),
                      "Tests")
+    assert "set -o pipefail; python -m pytest" in tests  # the hook's command is the one judged
     assert "🟡 probably passed: `;`" in tests and "✅" not in tests
+
+
+def test_only_a_pretooluse_hook_for_this_call_replaces_its_command(tmp_path):
+    command = "python -m pytest -q | tail -3"
+    for kwargs in ({"event": "PostToolUse"}, {"hook_id": "another-call"},
+                   {"stdout": "[" * 10000 + "0" + "]" * 10000}):  # nested too deep for json: skipped, not a crash
+        tests = _section(_receipt(_hooked(tmp_path, command, "3 passed in 0.1s", **kwargs)), "Tests")
+        assert "🟡" in tests and "✅" not in tests, kwargs
+
+
+def test_a_test_after_or_that_printed_nothing_may_not_have_run(tmp_path):
+    tests = _section(_receipt(_hooked(tmp_path, "false || python -m pytest -q", "", rewrites=[])), "Tests")
+    assert "it ran only if the command before failed, and no test result was printed" in tests and "✅" not in tests
+    ran = _section(_receipt(_hooked(tmp_path, "false || python -m pytest -q", "3 passed in 0.1s", rewrites=[])),
+                   "Tests")
+    assert "✅ passed" in ran
+
+
+def test_a_failing_step_after_the_test_in_a_hooked_pipe_is_not_blamed_on_the_test(tmp_path):
+    tests = _section(_receipt(_hooked(tmp_path, "python -m pytest -q | tee out.log",
+                                      "Exit code 1\n3 passed in 0.1s\ntee: out.log: No space left on device",
+                                      is_error=True)), "Tests")
+    assert "⚠️ unclear: exit 1, but output shows tests passing" in tests and "❌" not in tests
+
+
+def test_failures_passed_on_by_tail_under_the_hook_are_the_tests(tmp_path):
+    # npm's script swallowed pytest's exit status; tail only passes the summary on.
+    tests = _section(_receipt(_hooked(tmp_path, "npm test 2>&1 | tail -3", "1 failed, 4 passed in 0.2s")), "Tests")
+    assert "❌ exit 0 but output reports failures" in tests
 
 
 def test_exit_zero_with_failures_another_command_printed_is_unclear(tmp_path):

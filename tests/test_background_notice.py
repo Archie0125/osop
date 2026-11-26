@@ -8,7 +8,7 @@ from osop.recorder.receipt import render_receipt
 
 
 def _session(tmp_path: Path, command: str, summary: str | None, printed: str | None,
-             status: str = "completed", final: str = "All 5 tests pass.", moved: bool = False) -> Path:
+             status: str = "completed", final: str = "All 5 tests pass.", moved: bool | str = False) -> Path:
     """A background Bash run, its completion notice (None: none arrived) and the agent's final message.
 
     `printed` is what the output file holds; None leaves no file behind (Claude Code cleans them up after days).
@@ -21,8 +21,9 @@ def _session(tmp_path: Path, command: str, summary: str | None, printed: str | N
         inp = {"command": command, "timeout": 300000}
         reply = (f"Command did not complete within its 300s timeout and was moved to the background (ID: b1). "
                  f"Output is being written to: {out}. You will be notified when it completes.")
+        why = {"timedOutAfterMs": 300000} if moved is True else {moved: True}
         extra = {"toolUseResult": {"stdout": "", "stderr": "", "interrupted": False, "backgroundTaskId": "b1",
-                                   "timedOutAfterMs": 300000}}
+                                   **why}}
     else:
         inp = {"command": command, "run_in_background": True}
         reply = f"Command running in background with ID: b1. Output is being written to: {out}"
@@ -63,6 +64,11 @@ def test_a_run_moved_to_the_background_by_its_timeout_has_no_result_yet(tmp_path
     tests = _section(path, "Tests")
     assert "⏳" in tests and "✅" not in tests
     assert "✅ backed" not in _section(path, "Claims")
+
+
+def test_a_run_moved_to_the_background_for_any_reason_has_no_result_yet(tmp_path):
+    path = _session(tmp_path, "pytest -q", None, None, moved="backgroundedToDeliverMessage")
+    assert "⏳" in _section(path, "Tests") and "✅" not in _section(path, "Tests")
 
 
 def test_a_run_moved_to_the_background_takes_its_completion_notice(tmp_path):
