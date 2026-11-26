@@ -778,6 +778,24 @@ def test_brief_leads_with_the_last_test_run_and_counts_earlier_failures(tmp_path
     assert "tests: last 🟡 probably passed (2 runs) ·" in render_brief(parse_transcript(piped), "r.md")
 
 
+def test_brief_takes_the_last_test_run_by_time_not_by_who_ran_it(tmp_path):
+    # A sub-agent's failing run came first; the main agent's passing run after it is the last one.
+    from osop.recorder.receipt import render_brief
+    session = _session(tmp_path, [("Agent", {"description": "Check"}, "done", False),
+                                  ("Bash", {"command": "pytest -q"}, "3 passed in 0.1s", False)])
+    subagents = tmp_path / "s" / "subagents"
+    subagents.mkdir(parents=True)
+    (subagents / "agent-x1.meta.json").write_text(json.dumps({"toolUseId": "t0"}), encoding="utf-8")
+    (subagents / "agent-x1.jsonl").write_text("\n".join(json.dumps(e) for e in [
+        {"type": "user", "timestamp": "2026-10-23T10:00:01Z", "message": {"role": "user", "content": "check"}},
+        {"type": "assistant", "timestamp": "2026-10-23T10:00:02Z", "message": {"content": [
+            {"type": "tool_use", "id": "s1", "name": "Bash", "input": {"command": "pytest -q"}}]}},
+        {"type": "user", "timestamp": "2026-10-23T10:00:02Z", "message": {"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": "s1", "content": "Exit code 1\n1 failed", "is_error": True}]}},
+    ]) + "\n", encoding="utf-8")
+    assert "tests: last ✅ passed (2 runs, 1 failed) ·" in render_brief(parse_transcript(session), "r.md")
+
+
 def test_git_row_shows_the_git_command_not_the_start_of_the_script(tmp_path):
     receipt = _receipt(_session(tmp_path, [
         ("Bash", {"command": "cd /repo && python -m pytest -q && git commit -m 'fix: y' && git push -u origin fix-y"},
