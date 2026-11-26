@@ -216,3 +216,15 @@ def test_stop_hook_keeps_a_uuid_filename_after_a_long_error(tmp_path):
     message = __import__("json").loads(result.stdout.decode("utf-8"))["systemMessage"]
     assert message.startswith("OSOP") and "no receipt" in message
     assert "130fbd5c-b7d8-47bb-88b3-3eb9f91fba27.jsonl" in message
+
+
+def test_stop_hook_names_the_exception_when_osop_log_crashes(tmp_path):
+    # A traceback's first line says nothing; the exception that explains it is on the last line.
+    folder = tmp_path / "a-folder.jsonl"
+    folder.mkdir()  # opening a directory as a transcript raises
+    result = _run_hook({"hook_event_name": "Stop", "stop_hook_active": False,
+                        "transcript_path": str(folder)}, tmp_path)
+    assert result.returncode == 0
+    message = json.loads(result.stdout.decode("utf-8"))["systemMessage"]
+    assert message.startswith("OSOP · no receipt: Traceback")
+    assert "[Errno" in message
