@@ -99,7 +99,7 @@ class TestBrief:
         assert result.exit_code == 0, result.output
         line = result.stdout_bytes.decode("utf-8")
         assert line.count("\n") == 1 and line.startswith("OSOP")
-        assert "1 passed" in line
+        assert "tests: last ✅ passed (1 run)" in line
         assert str(tmp_path / "2026-10-23-demo.receipt.md") in line
         assert (tmp_path / "2026-10-23-demo.receipt.md").is_file()
 

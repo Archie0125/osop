@@ -414,7 +414,7 @@ def parse_transcript(path: Path, subagent_root: Path | None = None, _state: _Par
 
     for ev in events:
         ev_type = ev.get("type")
-        ts = ev.get("timestamp", "")
+        ts = ev.get("timestamp") or ""  # null: no timestamp, never None
 
         if ev_type == "user":
             final_parts = []

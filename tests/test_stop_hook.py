@@ -28,7 +28,7 @@ def test_stop_hook_shows_the_brief_and_writes_the_receipt(tmp_path):
                         "transcript_path": str(MINIMAL_SESSION), "cwd": "/work/demo"}, tmp_path)
     assert result.returncode == 0, result.stderr
     message = json.loads(result.stdout.decode("utf-8"))["systemMessage"]
-    assert message.startswith("OSOP") and "1 passed" in message
+    assert message.startswith("OSOP") and "tests: last ✅ passed (1 run)" in message
     assert list((tmp_path / ".osop" / "receipts" / "demo").glob("*.receipt.md"))
 
 
