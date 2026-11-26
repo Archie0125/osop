@@ -258,7 +258,7 @@ def render_brief(parsed: dict, receipt_path: Path | str) -> str:
     if unfinished:
         calls_part += f", {len(unfinished)} without result"
     claims = _claim_rows(parsed, calls, tests)
-    parts = [f"claims: {_claims_summary(parsed, claims)}", f"tests: {_tests_summary(tests)}", files_part, calls_part]
+    parts = [f"claims: {_claims_summary(parsed, claims)}", f"tests: {_tests_brief(tests)}", files_part, calls_part]
     skipped = parsed.get("skipped") or []
     if skipped:
         parts.append(f"⚠️ {_count(len(skipped), 'sub-agent transcript')} could not be read")
@@ -320,6 +320,20 @@ def _tests_summary(tests: list) -> str:
                             ("⚠️", "unclear ⚠️"), ("⏳", "no result"))
     ]
     return f"{_count(len(verdicts), 'run')}: " + ", ".join(f"{n} {label}" for n, label in counts if n)
+
+
+def _tests_brief(tests: list) -> str:
+    """The last run's verdict first: one line has to say whether the tests are green now. Earlier failures stay
+    visible as a count; the receipt has every run."""
+    if not tests:
+        return "none ran"
+    verdicts = [_test_verdict(tc, code, m) for _, tc, code, m in tests]
+    _, tc, code, m = max(tests, key=lambda t: t[1].started_at)
+    last = _test_verdict(tc, code, m)
+    label = next(text for mark, text in (("✅", "✅ passed"), ("🟡", "🟡 probably passed"), ("❌", "❌ failed"),
+                                         ("⚠️", "⚠️ unclear"), ("⏳", "⏳ no result yet")) if last.startswith(mark))
+    failed = sum(1 for v in verdicts if v.startswith("❌"))
+    return f"last {label} ({_count(len(tests), 'run')}" + (f", {failed} failed)" if failed else ")")
 
 
 # ---------------------------------------------------------------------------

@@ -543,7 +543,7 @@ def test_help_after_a_subcommand_and_a_version_query_before_the_real_run(tmp_pat
     path = _session(tmp_path, [
         ("Bash", {"command": "pytest -q --help"}, "usage: pytest", False),
         ("Bash", {"command": "pytest --version && pytest -q"}, "pytest 8.0\n3 passed", False)], "tests pass")
-    assert "tests: 1 run: 1 passed" in render_brief(parse_transcript(path), "r.md")
+    assert "tests: last ✅ passed (1 run)" in render_brief(parse_transcript(path), "r.md")
 
 
 def test_ts_diagnostics_and_pass_lines_of_a_test_runner_in_the_chain_are_not_the_lints(tmp_path):
@@ -620,7 +620,7 @@ def test_help_inside_a_group_is_not_a_run_but_ctest_verbose_is(tmp_path):
     assert "tests: none ran" in render_brief(parse_transcript(path), "r.md")
     path = _session(tmp_path, [("Bash", {"command": "ctest -V"}, "100% tests passed, 0 tests failed out of 3", False)],
                     "ok")
-    assert "tests: 1 run" in render_brief(parse_transcript(path), "r.md")
+    assert "tests: last ✅ passed (1 run)" in render_brief(parse_transcript(path), "r.md")
 
 
 def test_the_evidence_names_the_real_run_not_the_version_query(tmp_path):
@@ -641,7 +641,7 @@ def test_dash_v_is_a_version_flag_except_for_ctest(tmp_path):
     assert "❌ contradicted" in claims
     path = _session(tmp_path, [("Bash", {"command": "ctest -V"}, "100% tests passed, 0 tests failed out of 3", False)],
                     "ok")
-    assert "tests: 1 run" in render_brief(parse_transcript(path), "r.md")
+    assert "tests: last ✅ passed (1 run)" in render_brief(parse_transcript(path), "r.md")
 
 
 def test_a_runner_name_in_a_quoted_string_does_not_shift_the_echoed_status(tmp_path):

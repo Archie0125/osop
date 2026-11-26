@@ -748,7 +748,7 @@ def test_brief_is_one_line_with_the_counts_that_matter():
     from osop.recorder.receipt import render_brief
     line = render_brief(parse_transcript(MINIMAL_SESSION), receipt_path="/r/x.receipt.md")
     assert "\n" not in line and line.startswith("OSOP")
-    assert "tests: 1 run: 1 passed" in line
+    assert "tests: last ✅ passed (1 run)" in line
     assert "receipt: /r/x.receipt.md" in line
 
 
@@ -761,9 +761,21 @@ def test_brief_counts_failures_edits_and_shell_writes(tmp_path):
         ("Bash", {"command": "cat a.py > b.py"}, "", False),
     ])
     line = render_brief(parse_transcript(path), receipt_path=Path("r.md"))
-    assert "1 run: 1 failed" in line
+    assert "tests: last ❌ failed (1 run, 1 failed)" in line
     assert "files: 1 edited, 1 shell write" in line
     assert "tool calls: 4, 1 failed" in line
+
+
+def test_brief_leads_with_the_last_test_run_and_counts_earlier_failures(tmp_path):
+    from osop.recorder.receipt import render_brief
+    fixed = _session(tmp_path, [
+        ("Bash", {"command": "pytest -q"}, "Exit code 1\n1 failed, 2 passed", True),
+        ("Bash", {"command": "pytest -q"}, "3 passed in 0.1s", False)])
+    assert "tests: last ✅ passed (2 runs, 1 failed) ·" in render_brief(parse_transcript(fixed), "r.md")
+    piped = _session(tmp_path, [
+        ("Bash", {"command": "pytest -q"}, "3 passed in 0.1s", False),
+        ("Bash", {"command": "pytest -q | tail -1"}, "3 passed in 0.1s", False)])
+    assert "tests: last 🟡 probably passed (2 runs) ·" in render_brief(parse_transcript(piped), "r.md")
 
 
 def test_git_row_shows_the_git_command_not_the_start_of_the_script(tmp_path):
@@ -1085,7 +1097,7 @@ def test_a_pipe_the_pipefail_hook_rewrote_reports_the_tests_own_status(tmp_path)
 def test_a_tests_pass_claim_is_backed_by_a_run_the_hook_rewrote(tmp_path):
     path = _hooked(tmp_path, "python -m pytest -q | tail -3", "3 passed in 0.1s", final="All 3 tests pass.")
     brief = render_brief(parse_transcript(path), "r.md")
-    assert "claims: 1 backed ·" in brief and "tests: 1 run: 1 passed ·" in brief
+    assert "claims: 1 backed ·" in brief and "tests: last ✅ passed (1 run) ·" in brief
 
 
 def test_a_failing_run_under_pipefail_that_ends_in_grep_is_a_failure(tmp_path):
