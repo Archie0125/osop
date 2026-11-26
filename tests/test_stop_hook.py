@@ -218,13 +218,21 @@ def test_stop_hook_keeps_a_uuid_filename_after_a_long_error(tmp_path):
     assert "130fbd5c-b7d8-47bb-88b3-3eb9f91fba27.jsonl" in message
 
 
-def test_stop_hook_names_the_exception_when_osop_log_crashes(tmp_path):
+def test_stop_hook_keeps_every_line_of_a_failing_osop_log(tmp_path):
     # A traceback's first line says nothing; the exception that explains it is on the last line.
-    folder = tmp_path / "a-folder.jsonl"
-    folder.mkdir()  # opening a directory as a transcript raises
-    result = _run_hook({"hook_event_name": "Stop", "stop_hook_active": False,
-                        "transcript_path": str(folder)}, tmp_path)
+    # The hook runs `python -m osop` in its working directory, so a stand-in package there answers.
+    (tmp_path / "osop").mkdir()
+    (tmp_path / "osop" / "__init__.py").write_text("", encoding="utf-8")  # else the installed package wins
+    (tmp_path / "osop" / "__main__.py").write_text(textwrap.dedent("""\
+        import sys
+        sys.stderr.write("Traceback (most recent call last):\\n  File \\"x.py\\", line 1\\nValueError: the cause\\n")
+        sys.exit(1)
+    """), encoding="utf-8")
+    env = dict(os.environ, HOME=str(tmp_path), USERPROFILE=str(tmp_path))
+    payload = {"hook_event_name": "Stop", "stop_hook_active": False, "transcript_path": str(tmp_path / "s.jsonl")}
+    result = subprocess.run([sys.executable, str(HOOK)], input=json.dumps(payload).encode("utf-8"),
+                            capture_output=True, env=env, cwd=tmp_path, timeout=120)
     assert result.returncode == 0
     message = json.loads(result.stdout.decode("utf-8"))["systemMessage"]
-    assert message.startswith("OSOP · no receipt: Traceback")
-    assert "[Errno" in message
+    assert message.startswith(
+        'OSOP · no receipt: Traceback (most recent call last): File "x.py", line 1 ValueError: the cause ')

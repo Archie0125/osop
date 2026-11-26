@@ -142,7 +142,7 @@ class TestMissingTranscript:
         result = subprocess.run(
             [sys.executable, "-m", "osop", "log", str(missing), "--brief"],
             capture_output=True,
-            env={**os.environ, "COLUMNS": "80"},
+            env={**os.environ, "COLUMNS": "80", "PYTHONIOENCODING": "utf-8"},
             timeout=60,
         )
         assert result.returncode != 0
