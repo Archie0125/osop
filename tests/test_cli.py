@@ -134,6 +134,7 @@ class TestReceiptsDir:
 class TestMissingTranscript:
     def test_log_missing_long_path_keeps_the_filename(self, tmp_path):
         """A long path used to wrap at 80 columns and drop the file name from the first line."""
+        import os
         import subprocess
         import sys
 
@@ -141,9 +142,10 @@ class TestMissingTranscript:
         result = subprocess.run(
             [sys.executable, "-m", "osop", "log", str(missing), "--brief"],
             capture_output=True,
+            env={**os.environ, "COLUMNS": "80", "PYTHONIOENCODING": "utf-8"},
             timeout=60,
         )
         assert result.returncode != 0
-        text = (result.stdout + result.stderr).decode("utf-8", "replace")
-        assert "missing.jsonl" in text
-        assert "Error: No transcript found for:" in text
+        assert result.stdout == b""  # with --brief, stdout carries only the summary line
+        first_line = result.stderr.decode("utf-8", "replace").splitlines()[0]
+        assert first_line == f"Error: No transcript found for: {missing}"
