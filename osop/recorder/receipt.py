@@ -6,6 +6,7 @@ Nothing is taken from what the agent said about its own work.
 
 from __future__ import annotations
 
+import posixpath
 import re
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -58,10 +59,13 @@ _ENV = r"env(?:\s+(?:-[uC]\s*\S+|--[\w-]+=\S+|-(?![uC])[^\s=]*))*"
 # Windows (`C:/xampp/php/php.exe artisan test`, `/c/xampp/php/php.exe vendor/bin/phpunit`); unquoted, only `/`
 # separates its folders (bash drops a bare `\`) and the path holds no shell operator. Run on code with quotes and
 # heredocs removed.
-_RUN_WRAPPERS = (
+_WRAPPERS = (
     rf"(?:(?:sudo(?:\s+-\S+)*|time|nice|{_ENV}|nohup|timeout\s+\S+)\s+)*"
     r"(?:[A-Za-z_]\w*=\S*\s+)*"
-    r"(?:(?:(?:[^\s;&|<>()'\"]*/)?php(?:\.exe)?|npx|bunx|uv\s+run|poetry\s+run|python[\d.]*(?:\.exe)?|py)\s+"
+)
+_RUN_WRAPPERS = (
+    _WRAPPERS
+    + r"(?:(?:(?:[^\s;&|<>()'\"]*/)?php(?:\.exe)?|npx|bunx|uv\s+run|poetry\s+run|python[\d.]*(?:\.exe)?|py)\s+"
     r"|\S+\s+-m\s+)?"
     r"(?:\S*/)?"
 )
@@ -391,7 +395,8 @@ def _session_days(parsed: dict) -> set[str] | None:
 
 
 def _tests_evidence(parsed: dict, calls: list, tests: list, quote: str = "") -> tuple[str, str]:
-    """The last test run judges a "tests pass" sentence, unless the sentence gives a count it did not print.
+    """The last test run judges a "tests pass" sentence, unless the sentence gives a count it did not print. A script
+    the sentence names is shown, never trusted (see below).
 
     "18 map tests pass" is not about the full suite that ran after it. When the sentence gives a count of passing
     tests and the last run printed counts, none of them that one, no run judges the sentence: it is ⚠️, and the
@@ -400,11 +405,45 @@ def _tests_evidence(parsed: dict, calls: list, tests: list, quote: str = "") -> 
     lines); an older failure cannot contradict it, because the suite may have passed later outside a test
     command (a pre-push hook runs it). So this only ever moves a verdict to ⚠️, never to ✅ or ❌.
     """
+    names = _named_scripts(quote)
+    by_script = _script_runs(calls, tests, names)
+    if by_script:
+        # A named script's run is shown, never trusted: which scripts a sentence says passed cannot be read from it
+        # ("tests and verify.py pass" after only verify.py ran, `manage.py migrate` for "manage.py test passes", a
+        # script mentioned in passing). So it never makes a verdict ✅ or ❌. Where no test ran, the sentence is ⚠️
+        # with the run named, not ❓ "nothing ran"; where one did, a named script that did not pass moves ✅ to ⚠️.
+        shown, clean = [], True
+        for name, runs in by_script.items():
+            by, tc, code, m = max(runs, key=lambda t: t[1].started_at)
+            verdict = _test_verdict(tc, code, m)
+            clean = clean and verdict.startswith(("✅", "🟡"))
+            shown.append(f"last run of {_code(name)} {_code(_command(tc), 80)} at {_clock(tc.started_at)}"
+                         f"{_background_note(tc)} → {verdict}")
+        scripts = "; ".join(shown)
+        if not tests:
+            return _UNCLEAR, (f"no test command ran; {scripts} "
+                              "(whether that run is what the sentence claims is not judged)")
+        verdict, evidence = _tests_claim_row(parsed, calls, tests, quote, "last test run")
+        if verdict == _BACKED and not clean:
+            return _UNCLEAR, f"{evidence}; but {scripts}"
+        return verdict, evidence
     if not tests:
+        # Named in a command but no run read from it (`cat verify.py`): say so, not that it never ran.
+        named = [n for n in names
+                 if any(tc.tool == "Bash" and n.rsplit("/", 1)[-1] in _command(tc).replace("\\", "/")
+                        for _, tc in calls)]
+        if named:
+            return _NO_EVIDENCE, (f"no test command ran; {', '.join(_code(n) for n in named)} is in a command, "
+                                  "but no run of it was recognized")
         return _NO_EVIDENCE, "no test command ran"
+    return _tests_claim_row(parsed, calls, tests, quote, "last test run")
+
+
+def _tests_claim_row(parsed: dict, calls: list, tests: list, quote: str, what: str) -> tuple[str, str]:
+    """The verdict on a "tests pass" sentence from the last of `tests`, the runs it is about."""
     by, tc, code, m = max(tests, key=lambda t: t[1].started_at)
     verdict = _test_verdict(tc, code, m)
-    where = f"last test run {_code(_command(tc), 80)} at {_clock(tc.started_at)}{_background_note(tc)}"
+    where = f"{what} {_code(_command(tc), 80)} at {_clock(tc.started_at)}{_background_note(tc)}"
     counts = _claimed_counts(quote)
     printed = _printed_counts(tc.output)
     # A run that printed no count at all (only an exit status came back) cannot be told apart; it judges as before.
@@ -419,6 +458,73 @@ def _tests_evidence(parsed: dict, calls: list, tests: list, quote: str = "") -> 
         what = "the project changed after it" if parsed.get("cwd") else "files changed after it"
         return _UNCLEAR, f"{where} → {verdict}, but {what}: {later}"
     return _BACKED, f"{where} → {verdict}"
+
+
+# A script file a sentence names, with the folders it gives: "verify.py: 18 checks pass", "out\verify.py 全過",
+# "scripts/check_links.mjs passes". ASCII only, so "核對verify.py全過" names verify.py.
+_SCRIPT_NAME = re.compile(
+    r"(?<![\w./\\-])(?:[\w.-]+[/\\])*[\w-]+(?:\.[\w-]+)*\.(?:py|[cm]?[jt]s|sh)(?!\w|\.\w)", re.ASCII)
+# Interpreter options before the script, each with one way to match (no exponential backtracking). python:
+# `-X utf8` / `-W error` take a value; `-c`, `-m`, `-h`, `-V`, `--version`, `--help` run no file. sh / bash:
+# `-o pipefail` (or `-euo pipefail`) takes a value; a cluster with `c` runs inline code, `s` reads stdin, `n` runs
+# nothing.
+_PYTHON_OPTION = (rf"(?:-[XW](?:[ \t]+)?{_SHELL_WORD}+|--(?!version|help)[\w-]+"
+                  r"|-(?![XW])(?![A-Za-z]*[cmhV])[A-Za-z]+|-\d[\d.]*)")  # `py -3.11 verify.py`
+_SH_OPTION = (rf"(?:[-+](?![A-Za-z]*[cns])[A-Za-z]*o[ \t]+{_SHELL_WORD}+"
+              r"|[-+](?![A-Za-z]*[cnos])[A-Za-z]+)")
+
+
+def _named_scripts(quote: str) -> list[str]:
+    """The scripts a sentence names, as path suffixes: `../out/verify.py` is `out/verify.py`."""
+    names = []
+    for found in _SCRIPT_NAME.findall(quote):
+        parts = posixpath.normpath(found.replace("\\", "/")).split("/")
+        name = "/".join(parts[next((i for i, p in enumerate(parts) if p not in (".", "..")), len(parts)):])
+        if name not in names:
+            names.append(name)
+    return names
+
+
+def _script_pattern(name: str) -> re.Pattern:
+    """A run of the script at the start of a shell command: by python, node or sh with their options, or by its
+    path (`./smoke.sh`). `cat verify.py` and `python other.py verify.py` are no run of it, and neither is one inside
+    `$(…)`, `<(…)` or `>(…)`: the call's exit status is then another command's."""
+    return re.compile(
+        r"(?:^|[;&|\n]|(?<![$<>])\()\s*" + _WRAPPERS + r"(?:(?:uv|poetry)\s+run\s+)?"
+        rf"(?:(?:{_SHELL_WORD}*/)?(?:python[\d.]*|py)(?:\.exe)?(?:{_GAP}{_PYTHON_OPTION})*{_GAP}"
+        rf"|(?:{_SHELL_WORD}*/)?node(?:\.exe)?(?:{_GAP}{_NODE_OPTION})*{_GAP}"
+        rf"|(?:{_SHELL_WORD}*/)?(?:ba)?sh(?:\.exe)?(?:{_GAP}{_SH_OPTION})*{_GAP})?"
+        rf"(?P<script>(?:{_SHELL_WORD}*/)?{re.escape(name)})(?!{_SHELL_WORD})")
+
+
+def _script_runs(calls: list, tests: list, names: list[str]) -> dict[str, list]:
+    """For each named script that ran, its runs as (by, call, code, match), like the test runs.
+
+    A run that is also a test run of the script (`node test.js`, `node --test test.js; echo exit=$?`) is that test
+    run, so the test's reading of its output and its echoed status are kept.
+    """
+    as_test = {id(t[1]): t for t in tests}
+    found: dict[str, list] = {}
+    for name in names:
+        pattern = _script_pattern(name)
+        word = re.compile(rf"(?:^|[\s/]){re.escape(name)}(?!{_SHELL_WORD})")
+        for by, tc in calls:
+            if tc.tool != "Bash" or _refused(tc):
+                continue
+            scripts = tuple(names)
+            code = _shell_code(_unwrap_shell_c(_command(tc), scripts=scripts), scripts)
+            m = _real_run(pattern, code)
+            if not m:
+                continue
+            test = as_test.get(id(tc))
+            if test:
+                end = re.search(r"[;&|\n]", test[2][test[3].end():])
+                segment = test[2][test[3].start():test[3].end() + (end.start() if end else len(test[2]))]
+                if word.search(segment):
+                    found.setdefault(name, []).append(test)
+                    continue
+            found.setdefault(name, []).append((by, tc, code, m))
+    return found
 
 
 def _where_counts_were_printed(tests: list, counts: list[int]) -> str:
@@ -444,16 +550,23 @@ def _claimed_counts(quote: str) -> list[int]:
     clauses = _CLAUSE_BREAK.split(quote)
     for i, clause in enumerate(clauses):
         if i and _ENDS_PASSING.search(clauses[i - 1]) and (alone := _COUNT_ALONE.match(clause)):
-            counts.add(int(alone.group(1).replace(",", "")))
+            counts.add(_number(alone.group(1)))
         # "13/13 全過" is all of them passing; "3188／3169" and "3/3 review comments" are not.
         for m in _ALL_OF.finditer(clause):
             if (m.group(1).replace(",", "") == m.group(2).replace(",", "") and not _NOT_PASSING.match(clause, m.end())
                     and _PASS_WORD.search(clause, m.end())):
-                counts.add(int(m.group(1).replace(",", "")))
+                counts.add(_number(m.group(1)))
         for m in _COUNTED.finditer(clause):
             if not _NOT_PASSING.match(clause, m.end()) and _PASS_WORD.search(clause, m.end()):
-                counts.add(int(m.group(1).replace(",", "")))
-    return sorted(n for n in counts if n >= 2)
+                counts.add(_number(m.group(1)))
+    return sorted(n for n in counts if n is not None and n >= 2)
+
+
+def _number(digits: str) -> int | None:
+    """A count or exit status as written ("1,475"), or None when Python cannot convert it: it refuses more than
+    4,300 digits, and a script may print anything."""
+    digits = digits.replace(",", "").lstrip("0") or "0"
+    return int(digits) if len(digits) <= 4300 else None
 
 
 def _printed_counts(output: str) -> set[int]:
@@ -465,9 +578,9 @@ def _printed_counts(output: str) -> set[int]:
     for line in output.splitlines():
         if _SUITE_LINE.match(line):
             continue
-        found.update(int(n.replace(",", "")) for groups in _TEST_COUNT.findall(line) for n in groups if n)
-        statuses = [int(n.replace(",", "")) for n in _STATUS_COUNT.findall(line)]
-        if len(statuses) > 1:
+        found.update(c for groups in _TEST_COUNT.findall(line) for n in groups if n and (c := _number(n)) is not None)
+        statuses = [_number(n) for n in _STATUS_COUNT.findall(line)]
+        if len(statuses) > 1 and None not in statuses:
             found.add(sum(statuses))
     return found
 
@@ -869,6 +982,7 @@ def _test_verdict(tc: ToolCall, code: str, match: re.Match) -> str:
         # Known to be a test only by its folder: a helper there (a mock server, a screenshot script) exits 0 too,
         # or 124 under `timeout`. Without a test result its exit status backs or contradicts nothing.
         return "⚠️ unclear: a script in tests/ that printed no test result"
+    script = bool(match.groupdict().get("script"))
     mentions_failure = bool(_FAILURE.search(out) or _DOUBT.search(out))
     clean_pass = bool(_PASSED_COUNT.search(out)) and not mentions_failure
     # `set -o pipefail`, separators and group brackets are not steps that can fail.
@@ -883,12 +997,17 @@ def _test_verdict(tc: ToolCall, code: str, match: re.Match) -> str:
             return (f"⚠️ unclear: {_exit_text(tc)}, but output shows tests passing; "
                     f"{which} step in the chain may have failed")
         if before or after:
+            if script:
+                # No runner's summary tells the script's failure from that step's (`false && ./smoke.sh`).
+                return f"⚠️ unclear: {_exit_text(tc)}: this script or {which} step in the chain failed"
             return f"{_failed(tc)}: this test or {which} step in the chain failed"
         return _failed(tc)
     if _running(tc):
         return "⏳ started in background; no exit status in the transcript"
     hidden = _hidden_status(code, match.end())
     lead = re.match(r"[\s;&|(]*", match.group(0)).group(0)
+    if script and re.sub(r"[\s(]+$", "", code[:match.start()] + lead).endswith("||"):
+        return "⚠️ unclear: `||` before it: the script ran only if the command before failed"
     if re.sub(r"[\s(]+$", "", code[:match.start()] + lead).endswith("||") and not (
             _PASSED_COUNT.search(out) or _FAILURE.search(out)):
         # `x || pytest`: the test ran only if x failed, and its output does not show that it ran.
@@ -902,6 +1021,8 @@ def _test_verdict(tc: ToolCall, code: str, match: re.Match) -> str:
             return (f"⚠️ unclear: a non-zero exit that Claude Code read as \"{tc.exit_note}\"; "
                     "the test or a later step returned it")
         if _FAILURE.search(out):
+            if script:
+                return "⚠️ unclear: exit 0, but output mentions failures (a script's own words: `0 FAILED`)"
             if before or "&&" in rest:
                 # A mutation run or a log excerpt in the same call prints failures of its own; a pipe after the
                 # test only passes the test's output on.
@@ -909,6 +1030,9 @@ def _test_verdict(tc: ToolCall, code: str, match: re.Match) -> str:
                         "another command in the call may have printed them")
             return "❌ exit 0 but output reports failures"
         return "✅ passed" if _PASSED_COUNT.search(out) else "✅ exit 0, no pass/fail summary seen"
+    if script:
+        # A script prints no runner's summary, and what a later step printed cannot be told from its output.
+        return f"⚠️ unclear: {hidden} after the script hides its exit status"
     # The reported exit status belongs to whatever ran last, so only the output is left to read.
     echoed = _ECHOED_EXIT.findall(out)
     runs = sum(1 for m in _TEST_COMMAND.finditer(code) if _checks(code, m))
@@ -916,8 +1040,7 @@ def _test_verdict(tc: ToolCall, code: str, match: re.Match) -> str:
     # `pytest | tail; echo exit=${PIPESTATUS[0]}`: so is the first pipeline status, when the test opens the pipeline.
     # (`code` has quoted strings blanked to "", so `echo "exit=$?"` shows as `echo ""`.)
     var = _echoed_status_var(tc, code, match)
-    if var and runs == 1 and echoed:
-        status = int(re.search(r"\d+$", echoed[0]).group())
+    if var and runs == 1 and echoed and (status := _number(re.search(r"\d+$", echoed[0]).group())) is not None:
         if status:
             return f"❌ failed: `echo {var}` right after the test printed {echoed[0]}"
         if not _FAILURE.search(out):
@@ -926,7 +1049,7 @@ def _test_verdict(tc: ToolCall, code: str, match: re.Match) -> str:
         # "3 passed" may belong to any of them; the others may have failed silently.
         return f"⚠️ unclear: {hidden} after the test hides its exit status; {runs} test commands in one call"
     # A `||` fallback may have run and printed, and its output cannot be told apart from the test's.
-    echoed_failure = any(int(re.search(r"\d+$", e).group()) for e in echoed)
+    echoed_failure = any(_number(re.search(r"\d+$", e).group()) != 0 for e in echoed)  # unreadable counts as failed
     if clean_pass and hidden != "`||`" and not echoed_failure:
         return (f"🟡 probably passed: {hidden} after the test hid its exit status; "
                 "output shows tests passing, no failure")
@@ -1007,7 +1130,7 @@ def _governs(code: str, switch_pos: int, pipe_pos: int) -> bool:
     return not any(open_groups)
 
 
-def _unwrap_shell_c(command: str, blank: bool = True) -> str:
+def _unwrap_shell_c(command: str, blank: bool = True, scripts: tuple[str, ...] = ()) -> str:
     """`bash -c '<script>'` becomes a marked group `( <script> )`: the test inside is seen, an operator after the
     closing quote applies to the whole script, and the mark records where a new shell started (see _governs).
 
@@ -1036,11 +1159,11 @@ def _unwrap_shell_c(command: str, blank: bool = True) -> str:
                 break
             inner, end = word.group(0), m.end() + word.end()
         # Nested shells are unwrapped first; then the script's own quotes and comments end with the script.
-        inner = _unwrap_shell_c(inner, blank)
+        inner = _unwrap_shell_c(inner, blank, scripts)
         pipefail = re.findall(r"(?:^|\s)([-+])[A-Za-z]*o\s+pipefail\b", options)
         if blank and pipefail and pipefail[-1] == "-":  # a later `+o pipefail` turns it off again
             inner = "set -o pipefail; " + inner
-        head = f"{command[:m.end(1)]} {_NEW_SHELL}( {_shell_code(inner) if blank else inner} ) "
+        head = f"{command[:m.end(1)]} {_NEW_SHELL}( {_shell_code(inner, scripts) if blank else inner} ) "
         command = head + command[end:]
         pos = len(head)
     return command
@@ -1066,9 +1189,14 @@ def _mask(command: str) -> str:
                   masked)
 
 
-def _shell_code(command: str) -> str:
-    """The command with heredoc bodies, quoted strings and comments blanked out."""
+def _shell_code(command: str, scripts: tuple[str, ...] = ()) -> str:
+    """The command with heredoc bodies, quoted strings and comments blanked out. A quoted path to one of `scripts`
+    stays as `/<name>`, as a quoted runner does: `python -X utf8 "$D/scripts/verify.py" "$D"`."""
     def blank(m: re.Match) -> str:
+        path = m.group(0)[1:-1].replace("\\", "/")
+        script = next((s for s in scripts if path == s or path.endswith("/" + s)), None)
+        if script:
+            return f"/{script}"
         runner = _quoted_runner(m)
         return f"/{runner}" if runner else '""'
 

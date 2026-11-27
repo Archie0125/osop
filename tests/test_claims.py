@@ -1166,3 +1166,206 @@ def test_a_refused_lint_run_does_not_contradict_the_one_that_passed(tmp_path):
     calls = [("Bash", {"command": "ruff check ."}, "All checks passed!", False),
              ("Bash", {"command": "ruff check . --fix"}, denied, True)]
     assert "✅ backed" in _claims(_session(tmp_path, calls, "Lint passes."))
+
+
+# --- a sentence that names the script it ran ----------------------------------------------------------
+
+
+_VERIFY = "驗收腳本 verify.py 18 項全過"
+_BOTH = "測試全過，verify.py 也全過"
+
+
+def _verdict(claims: str) -> str:
+    """The verdict cell of the first claim row."""
+    return claims.splitlines()[2].split(" | ")[1]
+
+
+def test_a_named_script_run_is_shown_not_judged(tmp_path):
+    # With no test run, a named script's run neither backs nor contradicts the sentence: ⚠️ with the run named,
+    # instead of ❓ "no test command ran".
+    for output, is_error, shown in (("18 checks OK", False, "→ ✅ exit 0"),
+                                    ("Exit code 1\ncheck 7: FAIL", True, "→ ❌")):
+        claims = _claims(_session(tmp_path, [
+            ("Bash", {"command": "python -I -X utf8 scripts/verify.py out/"}, output, is_error)], _VERIFY))
+        assert _verdict(claims) == "⚠️ cannot tell", claims
+        assert "no test command ran; last run of `verify.py`" in claims and shown in claims, claims
+
+
+@pytest.mark.parametrize("final, command", [
+    (_BOTH, "python verify.py"), ("smoke.sh 和 verify.py 都全過", "./smoke.sh"),
+    ("`python manage.py test` 12 項全過", "python manage.py migrate"),
+    ("tests/test_x.py 4 個全過", "python tests/test_x.py"),
+])
+def test_a_named_script_alone_never_backs_a_sentence(tmp_path, final, command):
+    # Found by the second verifier of PR #32: the sentence may claim more than the script's run shows.
+    claims = _claims(_session(tmp_path, [("Bash", {"command": command}, "", False)], final))
+    assert _verdict(claims) == "⚠️ cannot tell", (final, claims)
+
+
+def test_a_failed_named_script_moves_a_passing_suite_to_cannot_tell(tmp_path):
+    claims = _claims(_session(tmp_path, [
+        ("Bash", {"command": "python -X utf8 scripts/verify.py out/"}, "Exit code 1\ncheck 7: FAIL", True),
+        ("Bash", {"command": "python -m pytest -q"}, "5 passed", False),
+    ], _BOTH))
+    assert _verdict(claims) == "⚠️ cannot tell" and "but last run of `verify.py`" in claims, claims
+
+
+def test_a_passing_named_script_leaves_the_tests_verdict(tmp_path):
+    for output, is_error, verdict in (("5 passed", False, "✅ backed"),
+                                      ("Exit code 1\n1 failed, 4 passed", True, "❌ contradicted")):
+        claims = _claims(_session(tmp_path, [
+            ("Bash", {"command": "python -m pytest -q"}, output, is_error),
+            ("Bash", {"command": "python verify.py"}, "18 checks OK", False),
+        ], _BOTH))
+        assert _verdict(claims) == verdict, claims
+
+
+def test_a_named_script_whose_status_is_hidden_moves_a_pass_to_cannot_tell(tmp_path):
+    claims = _claims(_session(tmp_path, [
+        ("Bash", {"command": "python scripts/verify.py out/; python -m pytest -q"}, "18 checks OK\n5 passed", False),
+    ], _BOTH))
+    assert _verdict(claims) == "⚠️ cannot tell" and "after the script" in claims, claims
+
+
+def test_a_later_run_of_the_named_script_does_not_clear_a_failed_test(tmp_path):
+    claims = _claims(_session(tmp_path, [
+        ("Bash", {"command": "python manage.py test"}, "Exit code 1\nFAILED (failures=2)", True),
+        ("Bash", {"command": "python manage.py migrate"}, "No migrations to apply.", False),
+    ], "`python manage.py test` 12 項全過"))
+    assert _verdict(claims) == "❌ contradicted", claims
+
+
+def test_a_huge_number_in_a_scripts_output_keeps_the_failed_test(tmp_path):
+    claims = _claims(_session(tmp_path, [
+        ("Bash", {"command": "python -m pytest -q"}, "Exit code 1\n1 failed, 17 passed", True),
+        ("Bash", {"command": "python verify.py"}, "9" * 4301 + " passed", False),
+    ], _BOTH))
+    assert _verdict(claims) == "❌ contradicted", claims
+
+
+def test_a_named_script_that_was_only_read_is_not_a_run(tmp_path):
+    claims = _claims(_session(tmp_path, [
+        ("Bash", {"command": "cat scripts/verify.py"}, "import sys", False),
+        ("Bash", {"command": "python other.py verify.py"}, "ok", False),
+    ], _VERIFY))
+    assert "❓ no evidence" in claims and "no run of it was recognized" in claims, claims
+
+
+def test_a_named_test_file_run_by_pytest_is_judged_as_before(tmp_path):
+    claims = _claims(_session(tmp_path, [
+        ("Bash", {"command": "python -m pytest tests/test_x.py -q"}, "4 passed", False),
+    ], "tests/test_x.py 4 個全過"))
+    assert _verdict(claims) == "✅ backed" and "last test run" in claims, claims
+
+
+@pytest.mark.parametrize("command", [
+    "bash -e ./smoke.sh", "./smoke.sh --fast", "sh scripts/smoke.sh", "cd app && timeout 60 bash -o pipefail smoke.sh",
+    "FOO=1 uv run python -W error tools/smoke.sh", "bash -euo pipefail smoke.sh",
+])
+def test_ways_to_run_a_named_script(tmp_path, command):
+    claims = _claims(_session(tmp_path, [("Bash", {"command": command}, "done", False)], "smoke.sh 12 項全過"))
+    assert "last run of `smoke.sh`" in claims, (command, claims)
+
+
+@pytest.mark.parametrize("command", [
+    "bash -c true; vim smoke.sh", "python -m smoke.sh", "echo smoke.sh", "./smoke.sh --help",
+    "bash -n ./smoke.sh", "bash -nx smoke.sh", "python --version smoke.sh", "python -V smoke.sh", "python -h smoke.sh",
+    "python --help-env smoke.sh", "bash -s ./smoke.sh", "bash -es smoke.sh", "echo $(python smoke.sh)",
+    "diff <(python smoke.sh) expected.txt",
+])
+def test_not_a_run_of_the_named_script(tmp_path, command):
+    claims = _claims(_session(tmp_path, [("Bash", {"command": command}, "done", False)], "smoke.sh 12 項全過"))
+    assert "last run of" not in claims and "❓ no evidence" in claims, (command, claims)
+
+
+@pytest.mark.parametrize("command", [
+    'python -I -X utf8 "$D/scripts/verify.py" "$D"', 'python "C:/work/out/verify.py"', '"$D"/scripts/verify.py',
+    r"python 'scripts\verify.py'", "bash -c 'python \"scripts/verify.py\"'", "py -3.11 verify.py",
+])
+def test_a_quoted_or_launched_path_to_the_named_script_is_a_run(tmp_path, command):
+    claims = _claims(_session(tmp_path, [("Bash", {"command": command}, "18 checks OK", False)], _VERIFY))
+    assert "last run of `verify.py`" in claims, (command, claims)
+
+
+def test_a_quoted_named_script_read_from_stdin_is_not_a_run(tmp_path):
+    claims = _claims(_session(tmp_path, [
+        ("Bash", {"command": "python -I - \"$S/verify.py\" <<'EOF'\nprint(1)\nEOF"}, "1", False),
+        ("Bash", {"command": 'echo "python verify.py"'}, "python verify.py", False),
+    ], _VERIFY))
+    assert "last run of" not in claims and "no run of it was recognized" in claims, claims
+
+
+def test_a_named_script_that_is_a_test_run_keeps_the_tests_reading(tmp_path):
+    # `node test.js` is a test run: its pass summary is read even when `;` hides the exit status.
+    claims = _claims(_session(tmp_path, [
+        ("Bash", {"command": "node test.js; echo done"}, "# pass 19\n# fail 0\n19 passing\ndone", False),
+    ], "node test.js 19 項全過"))
+    assert _verdict(claims) == "✅ backed" and "🟡 probably passed" in claims, claims
+
+
+def test_a_named_test_file_run_by_node_test_keeps_its_echoed_status(tmp_path):
+    claims = _claims(_session(tmp_path, [
+        ("Bash", {"command": "node --test test.js; echo exit=$?"}, "# pass 18\n# fail 0\nexit=0", False)],
+        "test.js 18 項全過"))
+    assert _verdict(claims) == "✅ backed", claims
+
+
+@pytest.mark.parametrize("command, shown", [
+    ("printf '18 passed' || ./smoke.sh", "the script ran only if"),
+    ("false && ./smoke.sh", "this script or an earlier step"),
+])
+def test_how_a_scripts_run_is_shown(tmp_path, command, shown):
+    claims = _claims(_session(tmp_path, [("Bash", {"command": command}, "18 passed", command.startswith("false"))],
+                              "smoke.sh 18 項全過"))
+    assert _verdict(claims) == "⚠️ cannot tell" and shown in claims, claims
+
+
+def test_failure_words_in_a_scripts_own_output_are_shown_as_unclear(tmp_path):
+    claims = _claims(_session(tmp_path, [
+        ("Bash", {"command": "python verify.py"}, "18 passed, 0 FAILED", False)], _VERIFY))
+    assert _verdict(claims) == "⚠️ cannot tell" and "output mentions failures" in claims, claims
+
+
+def test_the_folders_a_sentence_gives_must_match(tmp_path):
+    for command, final, found in (
+            ("python old/verify.py", "驗收腳本 new/verify.py 18 項全過", None),
+            ('python "C:/work/new/verify.py"', r"驗收腳本 ..\new\verify.py 18 項全過", "new/verify.py"),
+            ("python suite/old/verify.py", "驗收腳本 suite/old/../verify.py 18 項全過", None),
+            ("python suite/verify.py", "驗收腳本 suite/old/../verify.py 18 項全過", "suite/verify.py")):
+        claims = _claims(_session(tmp_path, [("Bash", {"command": command}, "18 checks OK", False)], final))
+        assert (f"last run of `{found}`" in claims) if found else ("last run of" not in claims), (command, claims)
+
+
+def test_each_named_script_that_ran_is_shown(tmp_path):
+    claims = _claims(_session(tmp_path, [
+        ("Bash", {"command": "./smoke.sh"}, "Exit code 1\nsmoke: FAIL", True),
+        ("Bash", {"command": "python verify.py"}, "18 checks OK", False),
+    ], "smoke.sh 和 verify.py 都全過"))
+    assert _verdict(claims) == "⚠️ cannot tell", claims
+    assert "last run of `smoke.sh`" in claims and "last run of `verify.py`" in claims, claims
+
+
+@pytest.mark.parametrize("command", ["bash " + "-o -e " * 2000 + "other.sh", "bash " + "+o " * 41 + "x.sh",
+                                     "python " + "-X a " * 2000 + "x.py", "node " + "--require a " * 2000 + "x.js",
+                                     "bash " + "-euo pipefail " * 2000 + "x.sh"])
+def test_long_option_lists_do_not_backtrack(command):
+    # The script pattern alone: `bash -o -e -o -e …` also slows the older `bash -c` unwrapping, which is not this.
+    import time
+
+    from osop.recorder.receipt import _named_scripts, _real_run, _script_pattern, _shell_code
+    start = time.perf_counter()
+    _real_run(_script_pattern("smoke.sh"), _shell_code(command, ("smoke.sh",)))
+    _named_scripts("a." * 20000 + " verify.py")
+    assert time.perf_counter() - start < 1, command
+
+
+@pytest.mark.parametrize("command, output, is_error, final, verdict", [
+    # Found by Codex on PR #32 (third round): long numbers read as they are, as on main.
+    ("pytest -q; echo exit=$(printf '%019d' $?)", "5 passed\nexit=0000000000000000000", False, "Tests pass.",
+     "✅ backed"),
+    ("pytest -q", "Exit code 1\n1 failed, 4 passed", True, "1000000000000000000 tests pass.", "⚠️ cannot tell"),
+    ("pytest -q", "0000000000000000005 passed", False, "5 tests pass.", "✅ backed"),
+])
+def test_long_numbers_are_read_as_written(tmp_path, command, output, is_error, final, verdict):
+    claims = _claims(_session(tmp_path, [("Bash", {"command": command}, output, is_error)], final))
+    assert _verdict(claims) == verdict, claims
