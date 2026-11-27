@@ -762,11 +762,15 @@ def _judge(tc: ToolCall, code: str, m: re.Match, verb: str | None = None) -> tup
     ran_again = _ran_again(code, m, verb, mine, others)
     if verb in _SHARED_FAIL and verb not in ("lint", "build"):
         # git prints one block per command: a generic `error:` / `fatal:` belongs to the last git command in
-        # the call (`git commit … && git push`: the push's error is not the commit's; `git commit …;
-        # git rev-parse @{u}`: "fatal: no upstream" is the rev-parse's). One that follows the
-        # command's own success line, when the verb ran once, is its cleanup (`gh pr merge --delete-branch`
-        # says "Squashed and merged", then "fatal:" about the branch).
-        later_git = any(g.start() > m.start() for g in _GIT_ANY.finditer(code))
+        # the call that ran (`git commit … && git push`: the push's error is not the commit's; `git commit …;
+        # git rev-parse @{u}`: "fatal: no upstream" is the rev-parse's). A later one joined by `&&` ran only
+        # after this one succeeded, which prints its success line unless quiet (`-q`), and a marker after
+        # that line is dropped below. One that follows the command's own success line, when the verb ran once,
+        # is its cleanup (`gh pr merge --delete-branch` says "Squashed and merged", then "fatal:" about the branch).
+        options = re.split(r"[;&|\n]", code[m.end():], maxsplit=1)[0]
+        quiet = re.search(r"\s(?:-[A-Za-z]*q[A-Za-z]*|--quiet)(?=\s|$)", options) is not None
+        later_git = any(g.start() > m.start() and (quiet or re.search(r"[;\n|]", code[m.end():g.end()]))
+                        for g in _GIT_ANY.finditer(code))
         generic = None if later_git else _last(_SHARED_FAIL[verb], out)
         if generic and done and done.start() < generic.start() and not ran_again:
             generic = None
@@ -1013,6 +1017,10 @@ def _test_verdict(tc: ToolCall, code: str, match: re.Match) -> str:
         # `pytest > log; echo "exit=$?"; tail -3 a b`: the status echoed right after the test is the test's,
         # whatever a later step returned.
         echoed = None if script else _echoed_verdict(tc, code, match, out)
+        if echoed and echoed.startswith("✅") and _DOUBT.search(out):
+            # The call failed: a test's own output can hold an `exit=0` (a test name, a `--help` check), so a
+            # passing status needs output without failure language.
+            echoed = None
         if echoed:
             exit_text = _exit_text(tc)
             later = f"a later step returned {exit_text}" if exit_text != "failed" else "a later step failed"
@@ -1099,11 +1107,43 @@ def _echoed_verdict(tc: ToolCall, code: str, match: re.Match, out: str) -> str |
     status = _number(re.search(r"\d+$", echoed[0]).group())
     if status is None:
         return None
+    gate = _gate(code, match, out)
     if status:
+        # `python patch.py && pytest; echo $?`: a failed patch's status, and the test never ran, unless the output
+        # reports a test failure.
+        if gate == "&&" and not _FAILURE.search(out):
+            return None
         return f"❌ failed: `echo {var}` right after the test printed {echoed[0]}"
-    if not _FAILURE.search(out):
+    if not _FAILURE.search(out) and gate != "||":  # `[ -f .skip ] || pytest`: 0 when the test never ran
         return f"✅ passed: `echo {var}` right after the test printed {echoed[0]}"
     return None
+
+
+def _gate(code: str, match: re.Match, out: str) -> str | None:
+    """'&&' when the test ran only if a step before it that can fail succeeded, '||' when only if one failed.
+
+    A failed `cd` prints its error, so `cd app && pytest` with no `cd:` in the output ran the test.
+    """
+    joined = _steps_before(code, match)
+    if joined is None or joined[0] == "||":
+        return joined and "||"
+    return "&&" if "cd:" in out or not all(_QUIET_STEP.fullmatch(step) for step in joined[1] if step) else None
+
+
+def _steps_before(code: str, match: re.Match, every: bool = False) -> tuple[str, list[str]] | None:
+    """How the test is joined to what comes before it ('&&' or '||') and the steps of that `&&` chain; with
+    `every`, all steps before the test. None when nothing gates the test (`;`, a new line, or nothing)."""
+    lead = re.match(r"[\s;&|(]*", match.group(0)).group(0)
+    before = re.sub(r"[\s(]+$", "", re.sub(r"\\\n", " ", code[:match.start()] + lead))  # `&& \` + newline
+    if every:
+        steps = re.split(r";|\n|&&|\|\||(?<!\|)\|(?!\|)", before)
+    elif before.endswith("||"):
+        return "||", []
+    elif before.endswith("&&"):
+        steps = re.split(r";|\n|\|\||(?<!\|)\|(?!\|)", before[:-2])[-1].split("&&")
+    else:
+        return None
+    return "&&", [step.strip(f" \t(){_NEW_SHELL}") for step in steps]
 
 
 def _exit_owned_elsewhere(code: str, match: re.Match, out: str) -> bool:
@@ -1113,20 +1153,14 @@ def _exit_owned_elsewhere(code: str, match: re.Match, out: str) -> bool:
     pipefail governs), one before it that the test runs only after (`python patch.py && pytest`: the patch failed
     and the test never ran), or any step before it under `set -e`. A step before it joined by `;` or `||` cannot:
     the test ran after it, and the test's status replaced that step's. Under pipefail a pipe returns the test's
-    failure. A failed `cd` prints its error, so `cd app && pytest > log` with no `cd:` in the output ran the test.
+    failure.
     """
     if _hidden_status(code, match.end()) is not None or "&&" in code[match.end():]:
         return True
-    lead = re.match(r"[\s;&|(]*", match.group(0)).group(0)
-    before = re.sub(r"[\s(]+$", "", code[:match.start()] + lead)
-    if _ERREXIT.search(before):
-        steps = re.split(r";|\n|&&|\|\||(?<!\|)\|(?!\|)", before)  # under `set -e`, every step before the test
-    elif before.endswith("&&"):
-        steps = re.split(r";|\n|\|\||(?<!\|)\|(?!\|)", before[:-2])[-1].split("&&")  # the `&&` chain into it
-    else:
-        return False
-    steps = [step.strip(f" \t(){_NEW_SHELL}") for step in steps]
-    return "cd:" in out or not all(_QUIET_STEP.fullmatch(step) for step in steps if step)
+    if _ERREXIT.search(code[:match.start()]):
+        _, steps = _steps_before(code, match, every=True)
+        return "cd:" in out or not all(_QUIET_STEP.fullmatch(step) for step in steps if step)
+    return _gate(code, match, out) == "&&"
 
 
 def _echoed_status_var(tc: ToolCall, code: str, match: re.Match) -> str | None:

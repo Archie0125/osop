@@ -327,6 +327,36 @@ def test_the_status_echoed_right_after_the_test_beats_a_later_steps_exit(tmp_pat
     assert "❌ failed" in row and "exit=1" in row
 
 
+def test_an_echoed_status_counts_only_when_the_test_ran(tmp_path):
+    # After `a &&`, a non-zero `$?` may be a's: the test never ran. A zero means both ran and passed.
+    for is_error, end in ((True, "; false"), (False, "")):
+        command = f'python patch.py && pytest -q > /tmp/t.log 2>&1; echo "exit=$?"{end}'
+        output = ("Exit code 1\n" if is_error else "") + "AssertionError: old text not found\nexit=1"
+        row = _verdicts(tmp_path, command, output, is_error).splitlines()[2]
+        assert "⚠️ unclear" in row and "❌" not in row, command
+    row = _verdicts(tmp_path, 'python gen.py && pytest -q > /tmp/t.log 2>&1; echo "exit=$?"; false',
+                    "Exit code 1\nexit=0", True).splitlines()[2]
+    assert "✅ passed" in row
+    # A test failure in the output: the gate passed and the test ran.
+    for is_error, end in ((True, "; false"), (False, "")):
+        command = f'git worktree add -q ../wt main && cd ../wt && pytest -q > /tmp/t.log 2>&1; echo "exit=$?"{end}'
+        output = ("Exit code 1\n" if is_error else "") + "exit=1\nFAILED tests/test_a.py::test_x\n1 failed, 4 passed"
+        assert "❌ failed" in _verdicts(tmp_path, command, output, is_error).splitlines()[2], command
+    # After `a ||`, a zero `$?` may be a's: the test ran only if a failed.
+    row = _verdicts(tmp_path, '[ -f .skip ] || pytest -q > /tmp/t.log 2>&1; echo "exit=$?"; false',
+                    "Exit code 1\nexit=0", True).splitlines()[2]
+    assert "✅" not in row
+    # The call failed and the output has failure language: an `exit=0` in it may be the test's own text.
+    row = _verdicts(tmp_path, 'npx mocha; echo "exit=$?"; false',
+                    "Exit code 1\n  ✓ prints exit=0 for --help\n  1 failing\n  AssertionError: expected 2\nexit=1",
+                    True).splitlines()[2]
+    assert "✅" not in row
+    # A gate continued on the next line is still a gate.
+    row = _verdicts(tmp_path, "python patch.py && \\\n  pytest -q > /tmp/t.log 2>&1",
+                    "Exit code 1\nAssertionError: old text not found", True).splitlines()[2]
+    assert "⚠️ unclear" in row
+
+
 def test_a_step_that_cannot_own_the_exit_status_leaves_the_test_failed(tmp_path):
     # A step before the test joined by `;` ran first: the test's status replaced its own.
     row = _verdicts(tmp_path, "cd app; php artisan test", "Exit code 255\nPHP Fatal error:  Cannot redeclare f()",

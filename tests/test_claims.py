@@ -924,6 +924,17 @@ def test_a_fatal_line_from_a_later_git_command_is_not_the_commits(tmp_path):
          "fatal: cherry-pick failed", False)], None)
     git = render_receipt(parse_transcript(path), source=path).split("## Git\n", 1)[1].split("\n## ", 1)[0]
     assert "❌" in git and "cherry-pick failed" in git
+    # A later git command after `&&` ran only if this one succeeded, which a commit says unless `-q`.
+    for command, output, claim, verdict in [
+            ("git commit -m x && git log --oneline -1",
+             "Exit code 128\nerror: gpg failed to sign the data\nfatal: failed to write commit object",
+             "Committed.", "❌ contradicted"),
+            ("git push origin main && gh pr view 5", "Exit code 128\nfatal: Authentication failed for 'x'",
+             "Pushed to main.", "❌ contradicted"),
+            ("git commit -q -m x && git log --oneline -1", "Exit code 128\nfatal: bad default revision 'HEAD'",
+             "Committed.", "⚠️ cannot tell")]:
+        claims = _claims(_session(tmp_path, [("Bash", {"command": command}, output, True)], claim))
+        assert verdict in claims, command
     # The commit as the last git command: its own fatal line.
     claims = _claims(_session(tmp_path, [
         ("Bash", {"command": "git add a.py; git commit -q -m x; echo done"},
