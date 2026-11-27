@@ -103,6 +103,7 @@ def _quoted_runner(m: re.Match) -> str | None:
 _FAILURE = re.compile(
     r"(?i:\b[1-9]\d*\s+(?:failed|failures?|errors?)\b|\bfail(?:ed|ures?):\s*[1-9])"
     r"|(?<![\w\[])FAILED\b|--- FAIL|(?<![\w\[])FAIL\s+\S*[/\\.]|FAILURES!|BUILD FAILURE|\bnot ok\b"
+    r"|(?:ℹ|#) fail [1-9]\d*\b"  # node --test's summary: "ℹ fail 2" (spec), "# fail 2" (TAP)
 )
 # Failure language that a "probably passed" output must not contain. Broader than _FAILURE and only used to
 # withhold 🟡 when the exit status is hidden; it never makes an exit-0 run ❌ on its own.
@@ -113,6 +114,12 @@ _DOUBT = re.compile(
     r"|(?i:coverage (?:failure|threshold)|fail-under|not reached)"
 )
 _PIPEFAIL = re.compile(r"\bset\s+([-+])[a-z]*o\s+pipefail\b")
+_ERREXIT = re.compile(r"\bset\s+(?:-[A-Za-z]*e|-o\s+errexit\b)")
+# Steps that cannot fail without saying so: `set` options, variable assignments, and `cd` (which prints `cd:`).
+_QUIET_STEP = re.compile(r"cd(?:\s+\S+)?|(?:export\s+)?[A-Za-z_]\w*=\S*|set(?:\s+[-+]\w+)*(?:\s+\w+)?")
+# bash refusing the command as written: what it parsed before the error may have run, the rest did not.
+_SHELL_SYNTAX = re.compile(
+    r"\b(?:ba|z|da|k)?sh: (?:-c: )?line \d+: (?:syntax error\b|unexpected EOF while looking for)")
 _CONTROL = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]|[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 # A pass summary: pytest / jest / vitest "N passed", mocha "N passing", PHPUnit "OK (N tests, …)" and
 # "OK, but incomplete, skipped, or risky tests!", cargo "test result: ok", rspec "N examples, 0 failures", go "ok  pkg".
@@ -192,13 +199,20 @@ _GIT_VERB = (
 # `timeout 900 git push`, `GIT_EDITOR=true git cherry-pick`, `env X=1 git push`: wrappers seen in real sessions.
 _GIT_START = _COMMAND_START + rf"(?:(?:timeout(?:\s+-\S+)*\s+\S+|nohup|{_ENV})\s+)*(?:[A-Za-z_]\w*=\S*\s+)*"
 _GIT_STATE = re.compile(_GIT_START + _GIT_VERB)
+_GIT_ANY = re.compile(_GIT_START + r"(?:git|gh)(?=\s)")
 _GIT_SEGMENT = re.compile(_GIT_START + "(" + _GIT_VERB + r"[^;&|\n)]*)")
 _FILE_TOOLS = ("Edit", "MultiEdit", "Write", "NotebookEdit")
 _MAIN = "main"
-# What Claude Code returns when a call never ran: the user said no, or a headless session had nobody to ask.
-_REFUSED = re.compile(r"\s*(?:The user doesn't want to proceed with this tool use"
+# What Claude Code returns when a call never ran: the user said no, a headless session had nobody to ask, a
+# PreToolUse hook blocked it, auto mode gave no verdict, a worktree-isolated agent refused it, or the shell could
+# not be started.
+_REFUSED = re.compile(r"\s*(?:The user doesn't want to (?:proceed with this tool use|take this action)"
                       r"|Permission for this (?:tool use|command|action) was denied"
-                      r"|Permission to use \w+ (?:has been|was) denied)")
+                      r"|Permission to use \w+ (?:has been|was) denied"
+                      r"|PreToolUse:\w+ hook error:"
+                      r"|The server-side auto mode classifier gave no verdict"
+                      r"|This agent is isolated in the worktree [^\n]*?Refusing to run it"
+                      r"|ENAMETOOLONG: name too long, uv_spawn)")
 # Token shapes that must not be copied into a receipt: commands and output are quoted there as they were.
 # A prefix must start a word ("task-<uuid>.json" holds no "sk-" key; after a written "\n" it does) and a token
 # is ASCII (text glued to it stays); a private key goes with its body.
@@ -746,11 +760,12 @@ def _judge(tc: ToolCall, code: str, m: re.Match, verb: str | None = None) -> tup
     ran_again = _ran_again(code, m, verb, mine, others)
     if verb in _SHARED_FAIL and verb not in ("lint", "build"):
         # git prints one block per command: a generic `error:` / `fatal:` belongs to the last git command in
-        # the call (`git commit … && git push`: the push's error is not the commit's). One that follows the
+        # the call (`git commit … && git push`: the push's error is not the commit's; `git commit …;
+        # git rev-parse @{u}`: "fatal: no upstream" is the rev-parse's). One that follows the
         # command's own success line, when the verb ran once, is its cleanup (`gh pr merge --delete-branch`
         # says "Squashed and merged", then "fatal:" about the branch).
-        segments = list(_GIT_STATE.finditer(code))
-        generic = _last(_SHARED_FAIL[verb], out) if segments and segments[-1].start() == m.start() else None
+        later_git = any(g.start() > m.start() for g in _GIT_ANY.finditer(code))
+        generic = None if later_git else _last(_SHARED_FAIL[verb], out)
         if generic and done and done.start() < generic.start() and not ran_again:
             generic = None
         if generic and (fail is None or generic.start() > fail.start()):
@@ -881,7 +896,7 @@ _GIT_FAIL = {
                          r"|hook failed"),
     "merge": re.compile(r"CONFLICT|Automatic merge failed|not something we can merge|not mergeable"),
     "rebase": re.compile(r"CONFLICT|could not apply"),
-    "cherry-pick": re.compile(r"CONFLICT|could not apply"),
+    "cherry-pick": re.compile(r"CONFLICT|could not apply|fatal: cherry-pick failed"),
     # Build and lint tools print little on success and a lot on failure; both are read the same way.
     # vite prints "✓ built in" for the client bundle, then "error during build:" when the SSR bundle fails.
     # npm names the script that failed: "Lifecycle script `build` failed", "Failed at the app@1.0.0 build script".
@@ -993,13 +1008,27 @@ def _test_verdict(tc: ToolCall, code: str, match: re.Match) -> str:
         after = (_hidden_status(code, match.end()) is not None or "&&" in rest
                  or bool(re.search(r"(?<!\|)\|(?!\|)", rest)))
         which = "an earlier or later" if before and after else "an earlier" if before else "a later"
+        # `pytest > log; echo "exit=$?"; tail -3 a b`: the status echoed right after the test is the test's,
+        # whatever a later step returned.
+        echoed = None if script else _echoed_verdict(tc, code, match, out)
+        if echoed:
+            exit_text = _exit_text(tc)
+            later = f"a later step returned {exit_text}" if exit_text != "failed" else "a later step failed"
+            return f"{echoed}; {later}" if echoed.startswith("✅") else echoed
         if after and clean_pass:
             return (f"⚠️ unclear: {_exit_text(tc)}, but output shows tests passing; "
                     f"{which} step in the chain may have failed")
+        if _SHELL_SYNTAX.search(out) and not _FAILURE.search(out):
+            return f"⚠️ unclear: {_exit_text(tc)}: the shell could not parse the command, so the test may not have run"
         if before or after:
             if script:
                 # No runner's summary tells the script's failure from that step's (`false && ./smoke.sh`).
                 return f"⚠️ unclear: {_exit_text(tc)}: this script or {which} step in the chain failed"
+            if _exit_owned_elsewhere(code, match, out) and not _FAILURE.search(out):
+                # `python patch.py && pytest`: the patch failed and the test never ran. `pytest > log; tail -3 a b`:
+                # tail failed. Without a test failure in the output, the exit status may be that step's.
+                return (f"⚠️ unclear: {_exit_text(tc)}: this test or {which} step in the chain failed; "
+                        "the output shows no test failure")
             return f"{_failed(tc)}: this test or {which} step in the chain failed"
         return _failed(tc)
     if _running(tc):
@@ -1036,15 +1065,9 @@ def _test_verdict(tc: ToolCall, code: str, match: re.Match) -> str:
     # The reported exit status belongs to whatever ran last, so only the output is left to read.
     echoed = _ECHOED_EXIT.findall(out)
     runs = sum(1 for m in _TEST_COMMAND.finditer(code) if _checks(code, m))
-    # `pytest; echo exit=$?`: the first `$?` echoed right after the test, with nothing between, is the test's.
-    # `pytest | tail; echo exit=${PIPESTATUS[0]}`: so is the first pipeline status, when the test opens the pipeline.
-    # (`code` has quoted strings blanked to "", so `echo "exit=$?"` shows as `echo ""`.)
-    var = _echoed_status_var(tc, code, match)
-    if var and runs == 1 and echoed and (status := _number(re.search(r"\d+$", echoed[0]).group())) is not None:
-        if status:
-            return f"❌ failed: `echo {var}` right after the test printed {echoed[0]}"
-        if not _FAILURE.search(out):
-            return f"✅ passed: `echo {var}` right after the test printed {echoed[0]}"
+    verdict = _echoed_verdict(tc, code, match, out)
+    if verdict:
+        return verdict
     if runs > 1:
         # "3 passed" may belong to any of them; the others may have failed silently.
         return f"⚠️ unclear: {hidden} after the test hides its exit status; {runs} test commands in one call"
@@ -1057,6 +1080,51 @@ def _test_verdict(tc: ToolCall, code: str, match: re.Match) -> str:
             else "; output mentions failures" if mentions_failure
             else "; output shows tests passing" if clean_pass else "")
     return f"⚠️ unclear: {hidden} after the test hides its exit status{hint}"
+
+
+def _echoed_verdict(tc: ToolCall, code: str, match: re.Match, out: str) -> str | None:
+    """✅ or ❌ from the status echoed right after the test when it is the only test command in the call, else None.
+
+    `pytest; echo exit=$?`: the first `$?` echoed right after the test, with nothing between, is the test's.
+    `pytest | tail; echo exit=${PIPESTATUS[0]}`: so is the first pipeline status, when the test opens the pipeline.
+    (`code` has quoted strings blanked to "", so `echo "exit=$?"` shows as `echo ""`.)
+    """
+    echoed = _ECHOED_EXIT.findall(out)
+    runs = sum(1 for m in _TEST_COMMAND.finditer(code) if _checks(code, m))
+    var = _echoed_status_var(tc, code, match)
+    if not (var and runs == 1 and echoed):
+        return None
+    status = _number(re.search(r"\d+$", echoed[0]).group())
+    if status is None:
+        return None
+    if status:
+        return f"❌ failed: `echo {var}` right after the test printed {echoed[0]}"
+    if not _FAILURE.search(out):
+        return f"✅ passed: `echo {var}` right after the test printed {echoed[0]}"
+    return None
+
+
+def _exit_owned_elsewhere(code: str, match: re.Match, out: str) -> bool:
+    """Whether a step other than the test can have set the call's non-zero exit status.
+
+    One after the test that runs whatever the test did (`;`, a new line, `||`, `&`, `&&`, or a pipe that no
+    pipefail governs), one before it that the test runs only after (`python patch.py && pytest`: the patch failed
+    and the test never ran), or any step before it under `set -e`. A step before it joined by `;` or `||` cannot:
+    the test ran after it, and the test's status replaced that step's. Under pipefail a pipe returns the test's
+    failure. A failed `cd` prints its error, so `cd app && pytest > log` with no `cd:` in the output ran the test.
+    """
+    if _hidden_status(code, match.end()) is not None or "&&" in code[match.end():]:
+        return True
+    lead = re.match(r"[\s;&|(]*", match.group(0)).group(0)
+    before = re.sub(r"[\s(]+$", "", code[:match.start()] + lead)
+    if _ERREXIT.search(before):
+        steps = re.split(r";|\n|&&|\|\||(?<!\|)\|(?!\|)", before)  # under `set -e`, every step before the test
+    elif before.endswith("&&"):
+        steps = re.split(r";|\n|\|\||(?<!\|)\|(?!\|)", before[:-2])[-1].split("&&")  # the `&&` chain into it
+    else:
+        return False
+    steps = [step.strip(f" \t(){_NEW_SHELL}") for step in steps]
+    return "cd:" in out or not all(_QUIET_STEP.fullmatch(step) for step in steps if step)
 
 
 def _echoed_status_var(tc: ToolCall, code: str, match: re.Match) -> str | None:
