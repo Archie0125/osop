@@ -101,8 +101,9 @@ def _quoted_runner(m: re.Match) -> str | None:
     before, after = m.string[max(m.start() - 1, 0):m.start()], m.string[m.end():m.end() + 1]
     return "php" if before in ("", " ", "\t", "\n", ";", "&", "|", "(") and after in ("", " ", "\t", "\n") else None
 _FAILURE = re.compile(
-    r"(?i:\b[1-9]\d*\s+(?:failed|failures?|errors?)\b|\bfail(?:ed|ures?):\s*[1-9])"
-    r"|(?<![\w\[])FAILED\b|--- FAIL|(?<![\w\[])FAIL\s+\S*[/\\.]|FAILURES!|BUILD FAILURE|\bnot ok\b"
+    # Within a line: "Exit code 1" (Claude Code's) then "Error: …" on the next is no "1 error".
+    r"(?i:\b[1-9]\d*[ \t]+(?:failed|failures?|errors?)\b|\bfail(?:ed|ures?):[ \t]*[1-9])"
+    r"|(?<![\w\[])FAILED\b|--- FAIL|(?<![\w\[])FAIL\s+\S*[/\\.]|FAILURES!|ERRORS!|BUILD FAILURE|\bnot ok\b"
     r"|ℹ fail [1-9]\d*\b"  # node --test's summary: "ℹ fail 2"
 )
 # Failure language that a "probably passed" output must not contain. Broader than _FAILURE and only used to
@@ -763,13 +764,16 @@ def _judge(tc: ToolCall, code: str, m: re.Match, verb: str | None = None) -> tup
     if verb in _SHARED_FAIL and verb not in ("lint", "build"):
         # git prints one block per command: a generic `error:` / `fatal:` belongs to the last git command in
         # the call that ran (`git commit … && git push`: the push's error is not the commit's; `git commit …;
-        # git rev-parse @{u}`: "fatal: no upstream" is the rev-parse's). A later one joined by `&&` ran only
-        # after this one succeeded, which prints its success line unless quiet (`-q`), and a marker after
-        # that line is dropped below. One that follows the command's own success line, when the verb ran once,
-        # is its cleanup (`gh pr merge --delete-branch` says "Squashed and merged", then "fatal:" about the branch).
+        # git rev-parse @{u}`: "fatal: no upstream" is the rev-parse's). A later read-only one joined by `&&`
+        # ran only after this one succeeded, which prints its success line unless quiet (`-q`), and a marker
+        # after that line is dropped below. A later state-changing one always counts: this one may have
+        # succeeded silently (`git cherry-pick --no-commit … && git commit`). One that follows the command's
+        # own success line, when the verb ran once, is its cleanup (`gh pr merge --delete-branch` says
+        # "Squashed and merged", then "fatal:" about the branch).
         options = re.split(r"[;&|\n]", code[m.end():], maxsplit=1)[0]
         quiet = re.search(r"\s(?:-[A-Za-z]*q[A-Za-z]*|--quiet)(?=\s|$)", options) is not None
-        later_git = any(g.start() > m.start() and (quiet or re.search(r"[;\n|]", code[m.end():g.end()]))
+        later_git = any(g.start() > m.start() and (quiet or _GIT_STATE.match(code, g.start())
+                                                   or re.search(r"[;\n|]", re.sub(r"\\\n", " ", code[m.end():g.end()])))
                         for g in _GIT_ANY.finditer(code))
         generic = None if later_git else _last(_SHARED_FAIL[verb], out)
         if generic and done and done.start() < generic.start() and not ran_again:
@@ -899,7 +903,7 @@ _GIT_FAIL = {
     # What the verb itself prints when it fails; the generic `fatal:` / `error:` are in _SHARED_FAIL.
     "push": re.compile(r"! \[(?:remote )?rejected\]|failed to push|error: src refspec"),
     "commit": re.compile(r"nothing to commit|nothing added to commit|no changes added to commit|Aborting commit"
-                         r"|hook failed"),
+                         r"|hook failed|failed to write commit object|gpg failed to sign"),
     "merge": re.compile(r"CONFLICT|Automatic merge failed|not something we can merge|not mergeable"),
     "rebase": re.compile(r"CONFLICT|could not apply"),
     "cherry-pick": re.compile(r"CONFLICT|could not apply|fatal: cherry-pick failed"),

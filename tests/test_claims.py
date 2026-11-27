@@ -935,6 +935,21 @@ def test_a_fatal_line_from_a_later_git_command_is_not_the_commits(tmp_path):
              "Committed.", "⚠️ cannot tell")]:
         claims = _claims(_session(tmp_path, [("Bash", {"command": command}, output, True)], claim))
         assert verdict in claims, command
+    # A `\`-continued `&&` is still `&&`; what only a commit prints is the commit's, whatever follows.
+    for command, output, is_error in [
+            ("git commit -S -m x && \\\n  git status --short",
+             "Exit code 128\nfatal: could not open '.git/COMMIT_EDITMSG': Permission denied", True),
+            ("git commit -S -m x; git status --short",
+             "error: gpg failed to sign the data\nfatal: failed to write commit object\nM  app.py", False)]:
+        claims = _claims(_session(tmp_path, [("Bash", {"command": command}, output, is_error)], "Committed."))
+        assert "❌ contradicted" in claims, command
+    # A later state-changing command can follow a silent success: its failure is not this one's.
+    path = _session(tmp_path, [
+        ("Bash", {"command": "git cherry-pick --no-commit abc1234 && git commit -S -m x"},
+         "Exit code 128\nerror: gpg failed to sign the data\nfatal: failed to write commit object", True)], None)
+    git = render_receipt(parse_transcript(path), source=path).split("## Git\n", 1)[1].split("\n## ", 1)[0]
+    pick = next(line for line in git.splitlines() if "cherry-pick" in line)
+    assert "❌" not in pick, pick
     # The commit as the last git command: its own fatal line.
     claims = _claims(_session(tmp_path, [
         ("Bash", {"command": "git add a.py; git commit -q -m x; echo done"},

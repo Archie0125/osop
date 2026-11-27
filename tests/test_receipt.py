@@ -313,6 +313,14 @@ def test_a_later_step_that_owns_the_exit_status_does_not_fail_the_test(tmp_path)
             ("npm test > /tmp/t.log 2>&1 && git status --short | grep -q .", "Exit code 1")]:
         row = _verdicts(tmp_path, command, output, True).splitlines()[2]
         assert "⚠️ unclear" in row and "❌" not in row and "no test failure" in row, command
+    # Claude Code's "Exit code 1" and a step's "Error:" on the next line are no "1 error" summary.
+    row = _verdicts(tmp_path, "./scripts/bootstrap.sh && pytest -q", "Exit code 1\nError: missing configuration",
+                    True).splitlines()[2]
+    assert "⚠️ unclear" in row
+    # PHPUnit's error summary is a test failure.
+    row = _verdicts(tmp_path, "php vendor/bin/phpunit tests/Feature 2>&1; git status --short",
+                    "Exit code 1\nERRORS!\nTests: 7, Assertions: 31, Errors: 1.", True).splitlines()[2]
+    assert "❌" in row
     # With a test failure in the output, it is still the test's.
     row = _verdicts(tmp_path, "pytest -q 2>&1 | tail -3; cut -c1-80 /tmp/missing.log",
                     "Exit code 1\n2 failed, 3 passed\ncut: /tmp/missing.log: No such file", True).splitlines()[2]
@@ -347,10 +355,10 @@ def test_an_echoed_status_counts_only_when_the_test_ran(tmp_path):
                     "Exit code 1\nexit=0", True).splitlines()[2]
     assert "✅" not in row
     # The call failed and the output has failure language: an `exit=0` in it may be the test's own text.
-    row = _verdicts(tmp_path, 'npx mocha; echo "exit=$?"; false',
-                    "Exit code 1\n  ✓ prints exit=0 for --help\n  1 failing\n  AssertionError: expected 2\nexit=1",
-                    True).splitlines()[2]
-    assert "✅" not in row
+    for output in ("Exit code 1\n  ✓ prints exit=0 for --help\n  1 failing\n  AssertionError: expected 2\nexit=1",
+                   "Exit code 1\n  ✓ prints exit=0 for --help\n  TypeError: run is not a function\nexit=1"):
+        row = _verdicts(tmp_path, 'npx mocha; echo "exit=$?"; false', output, True).splitlines()[2]
+        assert "✅" not in row, output
     # A gate continued on the next line is still a gate.
     row = _verdicts(tmp_path, "python patch.py && \\\n  pytest -q > /tmp/t.log 2>&1",
                     "Exit code 1\nAssertionError: old text not found", True).splitlines()[2]
