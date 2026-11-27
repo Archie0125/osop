@@ -1354,3 +1354,29 @@ def test_failure_words_in_a_scripts_own_output_cannot_tell(tmp_path):
 def test_the_py_launcher_with_a_version(tmp_path):
     claims = _claims(_session(tmp_path, [("Bash", {"command": "py -3.11 verify.py"}, "18 checks OK", False)], _VERIFY))
     assert "✅ backed" in claims, claims
+
+
+# --- found by Codex on PR #32, second round ------------------------------------------------------------
+
+
+def test_a_huge_number_in_a_scripts_output_keeps_the_failed_test(tmp_path):
+    claims = _claims(_session(tmp_path, [
+        ("Bash", {"command": "python -m pytest -q"}, "Exit code 1\n1 failed, 17 passed", True),
+        ("Bash", {"command": "python verify.py"}, "9" * 4301 + " passed", False),
+    ], _VERIFY))
+    assert "❌ contradicted" in claims, claims
+
+
+@pytest.mark.parametrize("command", ["python --help-env verify.py", "bash -s ./verify.py", "bash -es verify.py"])
+def test_more_interpreters_that_run_nothing(tmp_path, command):
+    claims = _claims(_session(tmp_path, [("Bash", {"command": command}, "", False)], _VERIFY))
+    assert "✅" not in claims, (command, claims)
+
+
+def test_a_parent_folder_in_the_sentence_is_resolved(tmp_path):
+    claims = _claims(_session(tmp_path, [
+        ("Bash", {"command": "python suite/old/verify.py"}, "18 checks OK", False)], "驗收腳本 suite/old/../verify.py 18 項全過"))
+    assert "✅" not in claims, claims
+    claims = _claims(_session(tmp_path, [
+        ("Bash", {"command": "python suite/verify.py"}, "18 checks OK", False)], "驗收腳本 suite/old/../verify.py 18 項全過"))
+    assert "✅ backed" in claims, claims

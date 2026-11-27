@@ -6,6 +6,7 @@ Nothing is taken from what the agent said about its own work.
 
 from __future__ import annotations
 
+import posixpath
 import re
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -457,18 +458,19 @@ _SCRIPT_NAME = re.compile(
     r"(?<![\w./\\-])(?:[\w.-]+[/\\])*[\w-]+(?:\.[\w-]+)*\.(?:py|[cm]?[jt]s|sh)(?!\w|\.\w)", re.ASCII)
 # Interpreter options before the script, each with one way to match (no exponential backtracking). python:
 # `-X utf8` / `-W error` take a value; `-c`, `-m`, `-h`, `-V`, `--version`, `--help` run no file. sh / bash:
-# `-o pipefail` (or `-euo pipefail`) takes a value; a cluster with `c` runs inline code, one with `n` runs nothing.
-_PYTHON_OPTION = (rf"(?:-[XW](?:[ \t]+)?{_SHELL_WORD}+|--(?!(?:version|help)(?![\w-]))[\w-]+"
+# `-o pipefail` (or `-euo pipefail`) takes a value; a cluster with `c` runs inline code, `s` reads stdin, `n` runs nothing.
+_PYTHON_OPTION = (rf"(?:-[XW](?:[ \t]+)?{_SHELL_WORD}+|--(?!version|help)[\w-]+"
                   r"|-(?![XW])(?![A-Za-z]*[cmhV])[A-Za-z]+|-\d[\d.]*)")  # `py -3.11 verify.py`
-_SH_OPTION = (rf"(?:[-+](?![A-Za-z]*[cn])[A-Za-z]*o[ \t]+{_SHELL_WORD}+"
-              r"|[-+](?![A-Za-z]*[cno])[A-Za-z]+)")
+_SH_OPTION = (rf"(?:[-+](?![A-Za-z]*[cns])[A-Za-z]*o[ \t]+{_SHELL_WORD}+"
+              r"|[-+](?![A-Za-z]*[cnos])[A-Za-z]+)")
 
 
 def _named_scripts(quote: str) -> list[str]:
     """The scripts a sentence names, as path suffixes: `..\out\verify.py` is `out/verify.py`."""
     names = []
     for found in _SCRIPT_NAME.findall(quote):
-        name = "/".join(p for p in found.replace("\\", "/").split("/") if p not in ("", ".", ".."))
+        parts = posixpath.normpath(found.replace("\\", "/")).split("/")
+        name = "/".join(parts[next((i for i, p in enumerate(parts) if p not in (".", "..")), len(parts)):])
         if name not in names:
             names.append(name)
     return names
@@ -539,16 +541,23 @@ def _claimed_counts(quote: str) -> list[int]:
     clauses = _CLAUSE_BREAK.split(quote)
     for i, clause in enumerate(clauses):
         if i and _ENDS_PASSING.search(clauses[i - 1]) and (alone := _COUNT_ALONE.match(clause)):
-            counts.add(int(alone.group(1).replace(",", "")))
+            counts.add(_number(alone.group(1)))
         # "13/13 全過" is all of them passing; "3188／3169" and "3/3 review comments" are not.
         for m in _ALL_OF.finditer(clause):
             if (m.group(1).replace(",", "") == m.group(2).replace(",", "") and not _NOT_PASSING.match(clause, m.end())
                     and _PASS_WORD.search(clause, m.end())):
-                counts.add(int(m.group(1).replace(",", "")))
+                counts.add(_number(m.group(1)))
         for m in _COUNTED.finditer(clause):
             if not _NOT_PASSING.match(clause, m.end()) and _PASS_WORD.search(clause, m.end()):
-                counts.add(int(m.group(1).replace(",", "")))
+                counts.add(_number(m.group(1)))
     return sorted(n for n in counts if n >= 2)
+
+
+def _number(digits: str) -> int:
+    """A count or exit status as written ("1,475"). One too long to be either is -1: Python refuses to convert
+    more than 4,300 digits, and a script may print anything."""
+    digits = digits.replace(",", "")
+    return int(digits) if len(digits) <= 18 else -1
 
 
 def _printed_counts(output: str) -> set[int]:
@@ -560,8 +569,8 @@ def _printed_counts(output: str) -> set[int]:
     for line in output.splitlines():
         if _SUITE_LINE.match(line):
             continue
-        found.update(int(n.replace(",", "")) for groups in _TEST_COUNT.findall(line) for n in groups if n)
-        statuses = [int(n.replace(",", "")) for n in _STATUS_COUNT.findall(line)]
+        found.update(_number(n) for groups in _TEST_COUNT.findall(line) for n in groups if n)
+        statuses = [_number(n) for n in _STATUS_COUNT.findall(line)]
         if len(statuses) > 1:
             found.add(sum(statuses))
     return found
@@ -1023,7 +1032,7 @@ def _test_verdict(tc: ToolCall, code: str, match: re.Match) -> str:
     # (`code` has quoted strings blanked to "", so `echo "exit=$?"` shows as `echo ""`.)
     var = _echoed_status_var(tc, code, match)
     if var and runs == 1 and echoed:
-        status = int(re.search(r"\d+$", echoed[0]).group())
+        status = _number(re.search(r"\d+$", echoed[0]).group())
         if status:
             return f"❌ failed: `echo {var}` right after the test printed {echoed[0]}"
         if not _FAILURE.search(out):
@@ -1032,7 +1041,7 @@ def _test_verdict(tc: ToolCall, code: str, match: re.Match) -> str:
         # "3 passed" may belong to any of them; the others may have failed silently.
         return f"⚠️ unclear: {hidden} after the test hides its exit status; {runs} test commands in one call"
     # A `||` fallback may have run and printed, and its output cannot be told apart from the test's.
-    echoed_failure = any(int(re.search(r"\d+$", e).group()) for e in echoed)
+    echoed_failure = any(_number(re.search(r"\d+$", e).group()) for e in echoed)
     if clean_pass and hidden != "`||`" and not echoed_failure:
         return (f"🟡 probably passed: {hidden} after the test hid its exit status; "
                 "output shows tests passing, no failure")
