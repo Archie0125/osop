@@ -58,10 +58,13 @@ _ENV = r"env(?:\s+(?:-[uC]\s*\S+|--[\w-]+=\S+|-(?![uC])[^\s=]*))*"
 # Windows (`C:/xampp/php/php.exe artisan test`, `/c/xampp/php/php.exe vendor/bin/phpunit`); unquoted, only `/`
 # separates its folders (bash drops a bare `\`) and the path holds no shell operator. Run on code with quotes and
 # heredocs removed.
-_RUN_WRAPPERS = (
+_WRAPPERS = (
     rf"(?:(?:sudo(?:\s+-\S+)*|time|nice|{_ENV}|nohup|timeout\s+\S+)\s+)*"
     r"(?:[A-Za-z_]\w*=\S*\s+)*"
-    r"(?:(?:(?:[^\s;&|<>()'\"]*/)?php(?:\.exe)?|npx|bunx|uv\s+run|poetry\s+run|python[\d.]*(?:\.exe)?|py)\s+"
+)
+_RUN_WRAPPERS = (
+    _WRAPPERS
+    + r"(?:(?:(?:[^\s;&|<>()'\"]*/)?php(?:\.exe)?|npx|bunx|uv\s+run|poetry\s+run|python[\d.]*(?:\.exe)?|py)\s+"
     r"|\S+\s+-m\s+)?"
     r"(?:\S*/)?"
 )
@@ -400,11 +403,25 @@ def _tests_evidence(parsed: dict, calls: list, tests: list, quote: str = "") -> 
     lines); an older failure cannot contradict it, because the suite may have passed later outside a test
     command (a pre-push hook runs it). So this only ever moves a verdict to ⚠️, never to ✅ or ❌.
     """
-    if not tests:
+    names = _named_scripts(quote)
+    # A named script that is itself a test run (`node test.js`) keeps the test's reading of its output.
+    as_test = {id(t[1]): t for t in tests if any(re.search(rf"(?:^|[\s/]){re.escape(n)}$", t[3].group(0))
+                                                  for n in names)}
+    runs = [as_test.get(id(r[1]), r) for r in _script_runs(calls, names)]
+    if runs:
+        tests = runs  # "verify.py: 18 checks pass" is about verify.py, not about the last test runner
+    elif not tests:
+        # Named in a command but no run read from it (`cat verify.py`, or a quoted path osop does not read): say so,
+        # not that it never ran.
+        named = [n for n in names if any(tc.tool == "Bash" and n in _command(tc) for _, tc in calls)]
+        if named:
+            return _NO_EVIDENCE, (f"no test command ran; {', '.join(_code(n) for n in named)} is in a command, "
+                                  "but no run of it was recognized")
         return _NO_EVIDENCE, "no test command ran"
     by, tc, code, m = max(tests, key=lambda t: t[1].started_at)
     verdict = _test_verdict(tc, code, m)
-    where = f"last test run {_code(_command(tc), 80)} at {_clock(tc.started_at)}{_background_note(tc)}"
+    what = "last run of the named script" if runs else "last test run"
+    where = f"{what} {_code(_command(tc), 80)} at {_clock(tc.started_at)}{_background_note(tc)}"
     counts = _claimed_counts(quote)
     printed = _printed_counts(tc.output)
     # A run that printed no count at all (only an exit status came back) cannot be told apart; it judges as before.
@@ -419,6 +436,43 @@ def _tests_evidence(parsed: dict, calls: list, tests: list, quote: str = "") -> 
         what = "the project changed after it" if parsed.get("cwd") else "files changed after it"
         return _UNCLEAR, f"{where} → {verdict}, but {what}: {later}"
     return _BACKED, f"{where} → {verdict}"
+
+
+# A script file a sentence names: "verify.py: 18 checks pass", "scripts/check_links.mjs 全過". ASCII only, so
+# "核對verify.py全過" names verify.py.
+_SCRIPT_NAME = re.compile(r"(?<![\w-])[\w-]+(?:\.[\w-]+)*\.(?:py|[cm]?[jt]s|sh)(?!\w|\.\w)", re.ASCII)
+# Interpreter options before the script. python: `-X utf8` / `-W error` take a value, `-c` and `-m` run no file.
+# sh / bash: `-o pipefail` takes one, a cluster with `c` runs inline code.
+_PYTHON_OPTION = rf"(?:-[XW](?:[ \t]+)?{_SHELL_WORD}+|--[\w-]+|-(?![cmXW])[A-Za-z]+)"
+_SH_OPTION = rf"(?:[-+]o[ \t]+{_SHELL_WORD}+|[-+](?![A-Za-z]*c)[A-Za-z]+)"
+
+
+def _named_scripts(quote: str) -> list[str]:
+    return list(dict.fromkeys(_SCRIPT_NAME.findall(quote)))
+
+
+def _script_pattern(name: str) -> re.Pattern:
+    """A run of the script at the start of a shell command: by python, node or sh with their options, or by its
+    path (`./smoke.sh`). `cat verify.py` and `python other.py verify.py` are no run of it."""
+    return re.compile(
+        r"(?:^|[;&|(\n])\s*" + _WRAPPERS + r"(?:(?:uv|poetry)\s+run\s+)?"
+        rf"(?:(?:{_SHELL_WORD}*/)?(?:python[\d.]*|py)(?:\.exe)?(?:{_GAP}{_PYTHON_OPTION})*{_GAP}"
+        rf"|(?:{_SHELL_WORD}*/)?node(?:\.exe)?(?:{_GAP}{_NODE_OPTION})*{_GAP}"
+        rf"|(?:{_SHELL_WORD}*/)?(?:ba)?sh(?:\.exe)?(?:{_GAP}{_SH_OPTION})*{_GAP})?"
+        rf"(?P<script>(?:{_SHELL_WORD}*/)?{re.escape(name)})(?!{_SHELL_WORD})")
+
+
+def _script_runs(calls: list, names: list[str]) -> list:
+    """(by, call, code, match) for each Bash call that ran one of the named scripts, like the test runs."""
+    patterns = [_script_pattern(n) for n in names]
+    runs = []
+    for by, tc in calls:
+        if patterns and tc.tool == "Bash" and not _refused(tc):
+            code = _shell_code(_unwrap_shell_c(_command(tc)), tuple(names))
+            m = next((m for p in patterns if (m := _real_run(p, code))), None)
+            if m:
+                runs.append((by, tc, code, m))
+    return runs
 
 
 def _where_counts_were_printed(tests: list, counts: list[int]) -> str:
@@ -909,6 +963,9 @@ def _test_verdict(tc: ToolCall, code: str, match: re.Match) -> str:
                         "another command in the call may have printed them")
             return "❌ exit 0 but output reports failures"
         return "✅ passed" if _PASSED_COUNT.search(out) else "✅ exit 0, no pass/fail summary seen"
+    if match.groupdict().get("script"):
+        # A script prints no runner's summary, and what a later step printed cannot be told from its output.
+        return f"⚠️ unclear: {hidden} after the script hides its exit status"
     # The reported exit status belongs to whatever ran last, so only the output is left to read.
     echoed = _ECHOED_EXIT.findall(out)
     runs = sum(1 for m in _TEST_COMMAND.finditer(code) if _checks(code, m))
@@ -1066,9 +1123,14 @@ def _mask(command: str) -> str:
                   masked)
 
 
-def _shell_code(command: str) -> str:
-    """The command with heredoc bodies, quoted strings and comments blanked out."""
+def _shell_code(command: str, scripts: tuple[str, ...] = ()) -> str:
+    """The command with heredoc bodies, quoted strings and comments blanked out. A quoted path to one of `scripts`
+    stays as `/<name>`, as a quoted runner does: `python -X utf8 "$D/scripts/verify.py" "$D"`."""
     def blank(m: re.Match) -> str:
+        path = m.group(0)[1:-1].replace("\\", "/")
+        script = next((s for s in scripts if path == s or path.endswith("/" + s)), None)
+        if script:
+            return f"/{script}"
         runner = _quoted_runner(m)
         return f"/{runner}" if runner else '""'
 

@@ -1166,3 +1166,88 @@ def test_a_refused_lint_run_does_not_contradict_the_one_that_passed(tmp_path):
     calls = [("Bash", {"command": "ruff check ."}, "All checks passed!", False),
              ("Bash", {"command": "ruff check . --fix"}, denied, True)]
     assert "✅ backed" in _claims(_session(tmp_path, calls, "Lint passes."))
+
+
+# --- a sentence that names the script it ran ----------------------------------------------------------
+
+
+_VERIFY = "驗收腳本 verify.py 18 項全過"
+
+
+def test_a_named_script_run_backs_the_sentence(tmp_path):
+    claims = _claims(_session(tmp_path, [
+        ("Bash", {"command": "python -I -X utf8 scripts/verify.py out/"}, "18 checks OK", False),
+    ], _VERIFY))
+    assert "✅ backed" in claims and "named script" in claims, claims
+
+
+def test_a_failed_named_script_contradicts_the_sentence_even_after_a_passing_suite(tmp_path):
+    claims = _claims(_session(tmp_path, [
+        ("Bash", {"command": "python -X utf8 scripts/verify.py out/"}, "Exit code 1\ncheck 7: FAIL", True),
+        ("Bash", {"command": "python -m pytest -q"}, "5 passed", False),
+    ], _VERIFY))
+    assert "❌ contradicted" in claims and "verify.py" in claims, claims
+
+
+def test_a_named_script_whose_status_is_hidden_cannot_tell(tmp_path):
+    claims = _claims(_session(tmp_path, [
+        ("Bash", {"command": "python scripts/verify.py out/; python -m pytest -q"}, "18 checks OK\n5 passed", False),
+    ], _VERIFY))
+    assert "⚠️ cannot tell" in claims and "after the script" in claims, claims
+
+
+def test_a_named_script_that_was_only_read_is_not_a_run(tmp_path):
+    claims = _claims(_session(tmp_path, [
+        ("Bash", {"command": "cat scripts/verify.py"}, "import sys", False),
+        ("Bash", {"command": "python other.py verify.py"}, "ok", False),
+    ], _VERIFY))
+    assert "❓ no evidence" in claims and "no run of it was recognized" in claims, claims
+
+
+def test_a_named_test_file_run_by_pytest_is_judged_as_before(tmp_path):
+    claims = _claims(_session(tmp_path, [
+        ("Bash", {"command": "python -m pytest tests/test_x.py -q"}, "4 passed", False),
+    ], "tests/test_x.py 4 個全過"))
+    assert "✅ backed" in claims and "last test run" in claims, claims
+
+
+@pytest.mark.parametrize("command", [
+    "bash -e ./smoke.sh", "./smoke.sh --fast", "sh scripts/smoke.sh", "cd app && timeout 60 bash -o pipefail smoke.sh",
+    "FOO=1 uv run python -W error tools/smoke.sh",
+])
+def test_ways_to_run_a_named_script(tmp_path, command):
+    claims = _claims(_session(tmp_path, [("Bash", {"command": command}, "done", False)], "smoke.sh 12 項全過"))
+    assert "✅ backed" in claims, (command, claims)
+
+
+@pytest.mark.parametrize("command", [
+    "bash -c true; vim smoke.sh", "python -m smoke.sh", "echo smoke.sh", "./smoke.sh --help",
+])
+def test_not_a_run_of_the_named_script(tmp_path, command):
+    claims = _claims(_session(tmp_path, [("Bash", {"command": command}, "done", False)], "smoke.sh 12 項全過"))
+    assert "✅" not in claims, (command, claims)
+
+
+@pytest.mark.parametrize("command", [
+    'python -I -X utf8 "$D/scripts/verify.py" "$D"', 'python "C:/work/out/verify.py"', '"$D"/scripts/verify.py',
+    r"python 'scripts\verify.py'",
+])
+def test_a_quoted_path_to_the_named_script_is_a_run(tmp_path, command):
+    claims = _claims(_session(tmp_path, [("Bash", {"command": command}, "18 checks OK", False)], _VERIFY))
+    assert "✅ backed" in claims, (command, claims)
+
+
+def test_a_quoted_named_script_read_from_stdin_is_not_a_run(tmp_path):
+    claims = _claims(_session(tmp_path, [
+        ("Bash", {"command": "python -I - \"$S/verify.py\" <<'EOF'\nprint(1)\nEOF"}, "1", False),
+        ("Bash", {"command": 'echo "python verify.py"'}, "python verify.py", False),
+    ], _VERIFY))
+    assert "✅" not in claims and "no run of it was recognized" in claims, claims
+
+
+def test_a_named_script_that_is_a_test_run_keeps_the_tests_reading(tmp_path):
+    # `node test.js` is a test run: its pass summary is read even when `;` hides the exit status.
+    claims = _claims(_session(tmp_path, [
+        ("Bash", {"command": "node test.js; echo done"}, "# pass 19\n# fail 0\n19 passing\ndone", False),
+    ], "node test.js 19 項全過"))
+    assert "🟡 probably passed" in claims and "named script" in claims, claims
