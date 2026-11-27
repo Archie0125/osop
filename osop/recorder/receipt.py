@@ -395,8 +395,8 @@ def _session_days(parsed: dict) -> set[str] | None:
 
 
 def _tests_evidence(parsed: dict, calls: list, tests: list, quote: str = "") -> tuple[str, str]:
-    """The last test run judges a "tests pass" sentence (the last run of each script it names, when one ran), unless
-    the sentence gives a count it did not print.
+    """The last test run judges a "tests pass" sentence, unless the sentence gives a count it did not print. A script
+    the sentence names is shown, never trusted (see below).
 
     "18 map tests pass" is not about the full suite that ran after it. When the sentence gives a count of passing
     tests and the last run printed counts, none of them that one, no run judges the sentence: it is ⚠️, and the
@@ -408,17 +408,25 @@ def _tests_evidence(parsed: dict, calls: list, tests: list, quote: str = "") -> 
     names = _named_scripts(quote)
     by_script = _script_runs(calls, tests, names)
     if by_script:
-        # "verify.py: 18 checks pass" is about verify.py too: each named script that ran is judged by its own last
-        # run, and so is the last test run, and the worst verdict stands. The scripts can only add evidence where no
-        # test ran, or a failure: "tests pass and verify.py is clean" after a failed pytest is still ❌, and so is
-        # "manage.py test passes" when `manage.py migrate` ran after the failed `manage.py test`. A named file that
-        # never ran is left out: the sentence may name a module it edited ("fixed audit.py; verify.py passes").
-        rows = [_tests_claim_row(parsed, calls, runs, quote, f"last run of {_code(name)}")
-                for name, runs in by_script.items()]
-        if tests:
-            rows.append(_tests_claim_row(parsed, calls, tests, quote, "last test run"))
-        worst = next(v for v in (_CONTRADICTED, _UNCLEAR, _BACKED) if any(r[0] == v for r in rows))
-        return worst, "; ".join(dict.fromkeys(evidence for _, evidence in rows))
+        # A named script's run is shown, never trusted: which scripts a sentence says passed cannot be read from it
+        # ("tests and verify.py pass" after only verify.py ran, `manage.py migrate` for "manage.py test passes", a
+        # script mentioned in passing). So it never makes a verdict ✅ or ❌. Where no test ran, the sentence is ⚠️
+        # with the run named, not ❓ "nothing ran"; where one did, a named script that did not pass moves ✅ to ⚠️.
+        shown, clean = [], True
+        for name, runs in by_script.items():
+            by, tc, code, m = max(runs, key=lambda t: t[1].started_at)
+            verdict = _test_verdict(tc, code, m)
+            clean = clean and verdict.startswith(("✅", "🟡"))
+            shown.append(f"last run of {_code(name)} {_code(_command(tc), 80)} at {_clock(tc.started_at)}"
+                         f"{_background_note(tc)} → {verdict}")
+        scripts = "; ".join(shown)
+        if not tests:
+            return _UNCLEAR, (f"no test command ran; {scripts} "
+                              "(whether that run is what the sentence claims is not judged)")
+        verdict, evidence = _tests_claim_row(parsed, calls, tests, quote, "last test run")
+        if verdict == _BACKED and not clean:
+            return _UNCLEAR, f"{evidence}; but {scripts}"
+        return verdict, evidence
     if not tests:
         # Named in a command but no run read from it (`cat verify.py`): say so, not that it never ran.
         named = [n for n in names
@@ -458,7 +466,8 @@ _SCRIPT_NAME = re.compile(
     r"(?<![\w./\\-])(?:[\w.-]+[/\\])*[\w-]+(?:\.[\w-]+)*\.(?:py|[cm]?[jt]s|sh)(?!\w|\.\w)", re.ASCII)
 # Interpreter options before the script, each with one way to match (no exponential backtracking). python:
 # `-X utf8` / `-W error` take a value; `-c`, `-m`, `-h`, `-V`, `--version`, `--help` run no file. sh / bash:
-# `-o pipefail` (or `-euo pipefail`) takes a value; a cluster with `c` runs inline code, `s` reads stdin, `n` runs nothing.
+# `-o pipefail` (or `-euo pipefail`) takes a value; a cluster with `c` runs inline code, `s` reads stdin, `n` runs
+# nothing.
 _PYTHON_OPTION = (rf"(?:-[XW](?:[ \t]+)?{_SHELL_WORD}+|--(?!version|help)[\w-]+"
                   r"|-(?![XW])(?![A-Za-z]*[cmhV])[A-Za-z]+|-\d[\d.]*)")  # `py -3.11 verify.py`
 _SH_OPTION = (rf"(?:[-+](?![A-Za-z]*[cns])[A-Za-z]*o[ \t]+{_SHELL_WORD}+"
@@ -466,7 +475,7 @@ _SH_OPTION = (rf"(?:[-+](?![A-Za-z]*[cns])[A-Za-z]*o[ \t]+{_SHELL_WORD}+"
 
 
 def _named_scripts(quote: str) -> list[str]:
-    """The scripts a sentence names, as path suffixes: `..\out\verify.py` is `out/verify.py`."""
+    """The scripts a sentence names, as path suffixes: `../out/verify.py` is `out/verify.py`."""
     names = []
     for found in _SCRIPT_NAME.findall(quote):
         parts = posixpath.normpath(found.replace("\\", "/")).split("/")
