@@ -1357,3 +1357,15 @@ def test_long_option_lists_do_not_backtrack(command):
     _real_run(_script_pattern("smoke.sh"), _shell_code(command, ("smoke.sh",)))
     _named_scripts("a." * 20000 + " verify.py")
     assert time.perf_counter() - start < 1, command
+
+
+@pytest.mark.parametrize("command, output, is_error, final, verdict", [
+    # Found by Codex on PR #32 (third round): long numbers read as they are, as on main.
+    ("pytest -q; echo exit=$(printf '%019d' $?)", "5 passed\nexit=0000000000000000000", False, "Tests pass.",
+     "✅ backed"),
+    ("pytest -q", "Exit code 1\n1 failed, 4 passed", True, "1000000000000000000 tests pass.", "⚠️ cannot tell"),
+    ("pytest -q", "0000000000000000005 passed", False, "5 tests pass.", "✅ backed"),
+])
+def test_long_numbers_are_read_as_written(tmp_path, command, output, is_error, final, verdict):
+    claims = _claims(_session(tmp_path, [("Bash", {"command": command}, output, is_error)], final))
+    assert _verdict(claims) == verdict, claims

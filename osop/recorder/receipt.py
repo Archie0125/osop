@@ -559,14 +559,14 @@ def _claimed_counts(quote: str) -> list[int]:
         for m in _COUNTED.finditer(clause):
             if not _NOT_PASSING.match(clause, m.end()) and _PASS_WORD.search(clause, m.end()):
                 counts.add(_number(m.group(1)))
-    return sorted(n for n in counts if n >= 2)
+    return sorted(n for n in counts if n is not None and n >= 2)
 
 
-def _number(digits: str) -> int:
-    """A count or exit status as written ("1,475"). One too long to be either is -1: Python refuses to convert
-    more than 4,300 digits, and a script may print anything."""
-    digits = digits.replace(",", "")
-    return int(digits) if len(digits) <= 18 else -1
+def _number(digits: str) -> int | None:
+    """A count or exit status as written ("1,475"), or None when Python cannot convert it: it refuses more than
+    4,300 digits, and a script may print anything."""
+    digits = digits.replace(",", "").lstrip("0") or "0"
+    return int(digits) if len(digits) <= 4300 else None
 
 
 def _printed_counts(output: str) -> set[int]:
@@ -578,9 +578,9 @@ def _printed_counts(output: str) -> set[int]:
     for line in output.splitlines():
         if _SUITE_LINE.match(line):
             continue
-        found.update(_number(n) for groups in _TEST_COUNT.findall(line) for n in groups if n)
+        found.update(c for groups in _TEST_COUNT.findall(line) for n in groups if n and (c := _number(n)) is not None)
         statuses = [_number(n) for n in _STATUS_COUNT.findall(line)]
-        if len(statuses) > 1:
+        if len(statuses) > 1 and None not in statuses:
             found.add(sum(statuses))
     return found
 
@@ -1040,8 +1040,7 @@ def _test_verdict(tc: ToolCall, code: str, match: re.Match) -> str:
     # `pytest | tail; echo exit=${PIPESTATUS[0]}`: so is the first pipeline status, when the test opens the pipeline.
     # (`code` has quoted strings blanked to "", so `echo "exit=$?"` shows as `echo ""`.)
     var = _echoed_status_var(tc, code, match)
-    if var and runs == 1 and echoed:
-        status = _number(re.search(r"\d+$", echoed[0]).group())
+    if var and runs == 1 and echoed and (status := _number(re.search(r"\d+$", echoed[0]).group())) is not None:
         if status:
             return f"❌ failed: `echo {var}` right after the test printed {echoed[0]}"
         if not _FAILURE.search(out):
@@ -1050,7 +1049,7 @@ def _test_verdict(tc: ToolCall, code: str, match: re.Match) -> str:
         # "3 passed" may belong to any of them; the others may have failed silently.
         return f"⚠️ unclear: {hidden} after the test hides its exit status; {runs} test commands in one call"
     # A `||` fallback may have run and printed, and its output cannot be told apart from the test's.
-    echoed_failure = any(_number(re.search(r"\d+$", e).group()) for e in echoed)
+    echoed_failure = any(_number(re.search(r"\d+$", e).group()) != 0 for e in echoed)  # unreadable counts as failed
     if clean_pass and hidden != "`||`" and not echoed_failure:
         return (f"🟡 probably passed: {hidden} after the test hid its exit status; "
                 "output shows tests passing, no failure")
