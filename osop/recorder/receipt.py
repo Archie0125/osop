@@ -105,6 +105,7 @@ _FAILURE = re.compile(
     r"(?i:\b[1-9]\d*[ \t]+(?:failed|failures?|errors?)\b|\bfail(?:ed|ures?):[ \t]*[1-9])"
     r"|(?<![\w\[])FAILED\b|--- FAIL|(?<![\w\[])FAIL\s+\S*[/\\.]|FAILURES!|ERRORS!|BUILD FAILURE|\bnot ok\b"
     r"|ℹ fail [1-9]\d*\b"  # node --test's summary: "ℹ fail 2"
+    r"|(?m:^[ \t]*[1-9]\d* failing[ \t]*$)"  # mocha's, on a line of its own: "  1 failing"
 )
 # Failure language that a "probably passed" output must not contain. Broader than _FAILURE and only used to
 # withhold 🟡 when the exit status is hidden; it never makes an exit-0 run ❌ on its own.
@@ -765,13 +766,13 @@ def _judge(tc: ToolCall, code: str, m: re.Match, verb: str | None = None) -> tup
         # git prints one block per command: a generic `error:` / `fatal:` belongs to the last git command in
         # the call that ran (`git commit … && git push`: the push's error is not the commit's; `git commit …;
         # git rev-parse @{u}`: "fatal: no upstream" is the rev-parse's). A later read-only one joined by `&&`
-        # ran only after this one succeeded, which prints its success line unless quiet (`-q`), and a marker
-        # after that line is dropped below. A later state-changing one always counts: this one may have
-        # succeeded silently (`git cherry-pick --no-commit … && git commit`). One that follows the command's
-        # own success line, when the verb ran once, is its cleanup (`gh pr merge --delete-branch` says
-        # "Squashed and merged", then "fatal:" about the branch).
-        options = re.split(r"[;&|\n]", code[m.end():], maxsplit=1)[0]
-        quiet = re.search(r"\s(?:-[A-Za-z]*q[A-Za-z]*|--quiet)(?=\s|$)", options) is not None
+        # ran only after this one succeeded, which prints its success line unless quiet (`-q`, or its output
+        # sent elsewhere: `> /dev/null`), and a marker after that line is dropped below. A later
+        # state-changing one always counts: this one may have succeeded silently (`git cherry-pick --no-commit
+        # … && git commit`). One that follows the command's own success line, when the verb ran once, is its
+        # cleanup (`gh pr merge --delete-branch` says "Squashed and merged", then "fatal:" about the branch).
+        options = re.split(r";|&&|\||\n", code[m.end():], maxsplit=1)[0]
+        quiet = re.search(r"\s(?:-[A-Za-z]*q[A-Za-z]*|--quiet)(?=\s|$)|(?<![2\w])(?:&|1)?>(?!&)", options) is not None
         later_git = any(g.start() > m.start() and (quiet or _GIT_STATE.match(code, g.start())
                                                    or re.search(r"[;\n|]", re.sub(r"\\\n", " ", code[m.end():g.end()])))
                         for g in _GIT_ANY.finditer(code))
@@ -1159,7 +1160,10 @@ def _exit_owned_elsewhere(code: str, match: re.Match, out: str) -> bool:
     the test ran after it, and the test's status replaced that step's. Under pipefail a pipe returns the test's
     failure.
     """
-    if _hidden_status(code, match.end()) is not None or "&&" in code[match.end():]:
+    rest = re.sub(r"\d?>&\d", "", code[match.end():])
+    # `pytest -q || exit 1`: a single fallback ran only because the test failed, so a failure is the test's.
+    fallback_only = re.fullmatch(r"[^;\n&|]*\|\|[^;\n&|]*", rest) is not None
+    if not fallback_only and (_hidden_status(code, match.end()) is not None or "&&" in rest):
         return True
     if _ERREXIT.search(code[:match.start()]):
         _, steps = _steps_before(code, match, every=True)

@@ -935,6 +935,14 @@ def test_a_fatal_line_from_a_later_git_command_is_not_the_commits(tmp_path):
              "Committed.", "⚠️ cannot tell")]:
         claims = _claims(_session(tmp_path, [("Bash", {"command": command}, output, True)], claim))
         assert verdict in claims, command
+    # A commit whose output went elsewhere printed no success line: a later git command may have run.
+    for command in ("git commit -m x > /dev/null && git rev-parse --abbrev-ref @{u}",
+                    "git commit -m x &>/dev/null && git rev-parse --abbrev-ref @{u}",
+                    "git commit -m x >/dev/null 2>&1 && git rev-parse --abbrev-ref @{u}"):
+        claims = _claims(_session(tmp_path, [
+            ("Bash", {"command": command}, "Exit code 128\nfatal: no upstream configured for branch 'x'", True)],
+            "Committed."))
+        assert "⚠️ cannot tell" in claims and "❌" not in claims, command
     # A `\`-continued `&&` is still `&&`; what only a commit prints is the commit's, whatever follows.
     for command, output, is_error in [
             ("git commit -S -m x && \\\n  git status --short",

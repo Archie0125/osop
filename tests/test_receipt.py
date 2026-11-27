@@ -317,6 +317,19 @@ def test_a_later_step_that_owns_the_exit_status_does_not_fail_the_test(tmp_path)
     row = _verdicts(tmp_path, "./scripts/bootstrap.sh && pytest -q", "Exit code 1\nError: missing configuration",
                     True).splitlines()[2]
     assert "⚠️ unclear" in row
+    # A single fallback after `||` ran only because the test failed.
+    for command, output in [("pytest -q > /tmp/t.log 2>&1 || cat /tmp/missing.log",
+                              "Exit code 1\ncat: /tmp/missing.log: No such file or directory"),
+                             ("pytest -q || exit 1", "Exit code 1")]:
+        assert "❌" in _verdicts(tmp_path, command, output, True).splitlines()[2], command
+    # mocha's summary, on a line of its own, is a test failure; the same words inside other text are not.
+    row = _verdicts(tmp_path, "npx mocha && npm run lint",
+                    "Exit code 1\n  3 passing (5ms)\n  1 failing\n\n  1) smoke\n     AssertionError: 41 !== 42",
+                    True).splitlines()[2]
+    assert "❌" in row
+    row = _verdicts(tmp_path, 'pytest -q -s; echo "exit=$?"', "assert report == '1 failing'\n.\n5 passed\nexit=0"
+                    ).splitlines()[2]
+    assert "✅" in row
     # PHPUnit's error summary is a test failure.
     row = _verdicts(tmp_path, "php vendor/bin/phpunit tests/Feature 2>&1; git status --short",
                     "Exit code 1\nERRORS!\nTests: 7, Assertions: 31, Errors: 1.", True).splitlines()[2]
