@@ -904,7 +904,7 @@ _GIT_FAIL = {
     # What the verb itself prints when it fails; the generic `fatal:` / `error:` are in _SHARED_FAIL.
     "push": re.compile(r"! \[(?:remote )?rejected\]|failed to push|error: src refspec"),
     "commit": re.compile(r"nothing to commit|nothing added to commit|no changes added to commit|Aborting commit"
-                         r"|hook failed|failed to write commit object|gpg failed to sign"),
+                         r"|hook failed"),
     "merge": re.compile(r"CONFLICT|Automatic merge failed|not something we can merge|not mergeable"),
     "rebase": re.compile(r"CONFLICT|could not apply"),
     "cherry-pick": re.compile(r"CONFLICT|could not apply|fatal: cherry-pick failed"),

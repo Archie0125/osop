@@ -943,14 +943,21 @@ def test_a_fatal_line_from_a_later_git_command_is_not_the_commits(tmp_path):
             ("Bash", {"command": command}, "Exit code 128\nfatal: no upstream configured for branch 'x'", True)],
             "Committed."))
         assert "⚠️ cannot tell" in claims and "❌" not in claims, command
-    # A `\`-continued `&&` is still `&&`; what only a commit prints is the commit's, whatever follows.
-    for command, output, is_error in [
-            ("git commit -S -m x && \\\n  git status --short",
-             "Exit code 128\nfatal: could not open '.git/COMMIT_EDITMSG': Permission denied", True),
-            ("git commit -S -m x; git status --short",
-             "error: gpg failed to sign the data\nfatal: failed to write commit object\nM  app.py", False)]:
-        claims = _claims(_session(tmp_path, [("Bash", {"command": command}, output, is_error)], "Committed."))
-        assert "❌ contradicted" in claims, command
+    # A `\`-continued `&&` is still `&&`: the status ran only if the commit succeeded.
+    claims = _claims(_session(tmp_path, [
+        ("Bash", {"command": "git commit -S -m x && \\\n  git status --short"},
+         "Exit code 128\nfatal: could not open '.git/COMMIT_EDITMSG': Permission denied", True)], "Committed."))
+    assert "❌ contradicted" in claims
+    # After `;` a read-only git command may print a fatal line too, and a merge or a tag can fail to sign or to
+    # write its commit object as well: a signing failure there cannot be told.
+    claims = _claims(_session(tmp_path, [
+        ("Bash", {"command": "git commit -S -m x; git status --short"},
+         "error: gpg failed to sign the data\nfatal: failed to write commit object\nM  app.py", False)], "Committed."))
+    assert "⚠️ cannot tell" in claims
+    claims = _claims(_session(tmp_path, [
+        ("Bash", {"command": 'git commit -m "fix: report when gpg failed to sign"; git status --short'},
+         "[main abc1234] fix: report when gpg failed to sign\n 1 file changed, 1 insertion(+)", False)], "Committed."))
+    assert "❌" not in claims
     # A later state-changing command can follow a silent success: its failure is not this one's.
     path = _session(tmp_path, [
         ("Bash", {"command": "git cherry-pick --no-commit abc1234 && git commit -S -m x"},
