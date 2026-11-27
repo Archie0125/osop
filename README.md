@@ -3,7 +3,7 @@
 **What an AI agent actually did — read from its transcript, not its own report.**
 
 ```bash
-pip install git+https://github.com/Archie0125/osop.git@b5817778e828495c87dc764d01238cc9a36ee598
+pip install git+https://github.com/Archie0125/osop.git@b96f45df6dc04354256e3ef3e1be2af56d5327df
 ```
 
 > Not on PyPI yet. Do not install the unrelated package of the same name from PyPI. The command above pins this commit.
