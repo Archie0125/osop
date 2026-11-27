@@ -103,7 +103,7 @@ def _quoted_runner(m: re.Match) -> str | None:
 _FAILURE = re.compile(
     r"(?i:\b[1-9]\d*\s+(?:failed|failures?|errors?)\b|\bfail(?:ed|ures?):\s*[1-9])"
     r"|(?<![\w\[])FAILED\b|--- FAIL|(?<![\w\[])FAIL\s+\S*[/\\.]|FAILURES!|BUILD FAILURE|\bnot ok\b"
-    r"|(?:ℹ|#) fail [1-9]\d*\b"  # node --test's summary: "ℹ fail 2" (spec), "# fail 2" (TAP)
+    r"|ℹ fail [1-9]\d*\b"  # node --test's summary: "ℹ fail 2"
 )
 # Failure language that a "probably passed" output must not contain. Broader than _FAILURE and only used to
 # withhold 🟡 when the exit status is hidden; it never makes an exit-0 run ❌ on its own.
@@ -115,11 +115,13 @@ _DOUBT = re.compile(
 )
 _PIPEFAIL = re.compile(r"\bset\s+([-+])[a-z]*o\s+pipefail\b")
 _ERREXIT = re.compile(r"\bset\s+(?:-[A-Za-z]*e|-o\s+errexit\b)")
-# Steps that cannot fail without saying so: `set` options, variable assignments, and `cd` (which prints `cd:`).
-_QUIET_STEP = re.compile(r"cd(?:\s+\S+)?|(?:export\s+)?[A-Za-z_]\w*=\S*|set(?:\s+[-+]\w+)*(?:\s+\w+)?")
-# bash refusing the command as written: what it parsed before the error may have run, the rest did not.
+# Steps that cannot fail without saying so: `set` options, `cd` (which prints `cd:`), and variable assignments
+# without a command substitution (`D=$(mktemp -d)` fails when mktemp does).
+_QUIET_STEP = re.compile(
+    r"cd(?:\s+\S+)?|(?:export\s+)?[A-Za-z_]\w*=(?!\S*(?:\$\(|`))\S*|set(?:\s+[-+]\w+)*(?:\s+\w+)?")
+# The shell refusing the command as written, before it printed anything: a script the test runs may print the same.
 _SHELL_SYNTAX = re.compile(
-    r"\b(?:ba|z|da|k)?sh: (?:-c: )?line \d+: (?:syntax error\b|unexpected EOF while looking for)")
+    r"(?:\S*/)?(?:ba|z|da|k)?sh: (?:-c: )?line \d+: (?:syntax error\b|unexpected EOF while looking for)")
 _CONTROL = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]|[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 # A pass summary: pytest / jest / vitest "N passed", mocha "N passing", PHPUnit "OK (N tests, …)" and
 # "OK, but incomplete, skipped, or risky tests!", cargo "test result: ok", rspec "N examples, 0 failures", go "ok  pkg".
@@ -1018,7 +1020,7 @@ def _test_verdict(tc: ToolCall, code: str, match: re.Match) -> str:
         if after and clean_pass:
             return (f"⚠️ unclear: {_exit_text(tc)}, but output shows tests passing; "
                     f"{which} step in the chain may have failed")
-        if _SHELL_SYNTAX.search(out) and not _FAILURE.search(out):
+        if _SHELL_SYNTAX.match(_EXIT_CODE.sub("", out, count=1).lstrip()) and not _FAILURE.search(out):
             return f"⚠️ unclear: {_exit_text(tc)}: the shell could not parse the command, so the test may not have run"
         if before or after:
             if script:
@@ -1312,7 +1314,7 @@ def _git_table(calls: list) -> str:
     """Commands whose result backs or contradicts a "committed / pushed / merged" claim."""
     rows = []
     for by, tc in calls:
-        if tc.tool != "Bash":
+        if tc.tool != "Bash" or _refused(tc):
             continue
         code = _shell_code(_unwrap_shell_c(_command(tc)))
         m = _GIT_STATE.search(code)

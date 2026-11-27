@@ -367,6 +367,25 @@ def test_a_command_the_shell_could_not_parse_is_no_failed_test(tmp_path):
             ("pytest -q 2>&1 | tail -3", "Exit code 2\nbash: line 1: syntax error near unexpected token `)'")]:
         row = _verdicts(tmp_path, command, output, True).splitlines()[2]
         assert "⚠️ unclear" in row and "could not parse" in row, command
+    # A script the test runs printed it, after the test started: the exit status is the test's.
+    row = _verdicts(tmp_path, "npm test", "Exit code 2\n\n> app@1.0.0 test\n> bash -c 'echo )'\n\n"
+                    "bash: -c: line 1: syntax error near unexpected token `)'", True).splitlines()[2]
+    assert "❌" in row and "could not parse" not in row
+
+
+def test_an_assignment_from_a_command_can_fail_before_the_test(tmp_path):
+    for command in ("TEST_ROOT=$(mktemp) && pytest -q", "TEST_ROOT=`mktemp` && pytest -q"):
+        row = _verdicts(tmp_path, command, "Exit code 1\nmktemp: failed to create file: No space left on device",
+                        True).splitlines()[2]
+        assert "⚠️ unclear" in row, command
+    row = _verdicts(tmp_path, "TEST_ROOT=/tmp/t && pytest -q > /tmp/t.log 2>&1", "Exit code 1", True).splitlines()[2]
+    assert "❌" in row
+
+
+def test_a_tap_line_a_test_prints_is_no_runner_summary(tmp_path):
+    row = _verdicts(tmp_path, "pytest -q -s tests/test_tap.py", "TAP version 13\n# fail 1\n.\n1 passed in 0.01s"
+                    ).splitlines()[2]
+    assert "✅" in row
 
 
 @pytest.mark.parametrize("output", [
