@@ -475,7 +475,9 @@ def _tests_claim_row(parsed: dict, calls: list, tests: list, quote: str, what: s
     if counts and printed and not printed & set(counts):
         return _UNCLEAR, f"{_where_counts_were_printed(tests, counts)}; {where} printed other counts → {verdict}"
     if verdict.startswith("❌"):
-        if counts and not printed and any(set(counts) & _printed_counts(t[1].output) for t in tests if t[1] is not tc):
+        if counts and not printed and any(set(counts) & _printed_counts(t[1].output)
+                                          and not _test_verdict(t[1], t[2], t[3]).startswith("❌")
+                                          for t in tests if t[1] is not tc):
             # The last run printed no count (a red check run after the suite passed prints only its status), and an
             # earlier run printed the sentence's: the sentence may be about that one, which this one cannot contradict.
             return _UNCLEAR, f"{_where_counts_were_printed(tests, counts)}; {where} printed no count → {verdict}"

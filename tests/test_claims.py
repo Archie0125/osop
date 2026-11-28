@@ -939,6 +939,11 @@ def test_a_failing_last_run_with_no_count_does_not_contradict_a_count_an_earlier
                                'echo "exit=$?"'}, "exit=1", False)
     claims = _claims(_session(tmp_path, [suite, red], "The new head is ready (527 tests pass)."))
     assert "⚠️ cannot tell" in claims and "printed 527" in claims and "❌ contradicted" not in claims
+    # An earlier run that printed the count but failed itself backs nothing: the last run still decides.
+    for earlier in ("527 failed in 9.1s", "3 failed, 527 passed in 9.1s"):
+        failed_suite = ("Bash", {"command": "python -m pytest -q"}, "Exit code 1\n" + earlier, True)
+        claims = _claims(_session(tmp_path, [failed_suite, red], "The new head is ready (527 tests pass)."))
+        assert "❌ contradicted" in claims, earlier
     # Without a count in the sentence, or with no earlier run that printed it, the last run still decides.
     for final in ("Tests pass.", "All 600 tests pass."):
         claims = _claims(_session(tmp_path, [suite, red], final))
