@@ -253,6 +253,7 @@ def test_a_bare_assignment_takes_the_tests_status(tmp_path):
     for command in ["out=$(pytest -q 2>&1)", 'out="$(pytest -q 2>&1)"', "A=1 out=$(pytest -q 2>&1)"]:
         assert "❌" in _verdicts(tmp_path, command, "Exit code 1\n1 failed, 4 passed", True), command
         assert "✅" in _verdicts(tmp_path, command, ""), command
+    assert "❌ failed: `echo $?`" in _verdicts(tmp_path, 'out=$(pytest -q 2>&1); echo "exit=$?"', "exit=1")
     # In a loop the assignment is still bare; the `;` after it is what hides the status.
     row = _verdicts(tmp_path, 'for f in a b; do out=$(pytest -q tests/test_$f.py); echo "$out"; done',
                     "3 passed\n2 passed").splitlines()[2]
@@ -273,9 +274,18 @@ def test_what_a_test_in_a_used_substitution_cannot_show(tmp_path):
         ('test "$(pytest -q >/dev/null 2>&1)" = yes || exit 1', "Exit code 1", True),
         # An escaped bracket does not end the `$( … )`.
         ("echo \"$(printf '%s' \\); pytest -q >/dev/null 2>&1)\"", ")", False),
+        # An escaped `;` is echo's argument, so `out=` is no assignment.
+        ('echo \\; out="$(pytest -q >/dev/null 2>&1)"', "; out=", False),
+        # `$?` after the `$( … )` is the status of `:`.
+        (': $(pytest -q >/dev/null 2>&1); echo "exit=$?"', "exit=0", False),
+        # A continued line makes `x=` echo's argument; an array's `=(` starts no command, so `declare` sets it.
+        ('echo hi \\\nx="$(pytest -q 2>/dev/null)"', "hi x=boom", False),
+        ('declare -a arr=(a="$(pytest -q)")', "", False),
     ]:
         row = _verdicts(tmp_path, command, output, is_error).splitlines()[2]
         assert "| ⚠️ unclear" in row, (command, row)
+    # A backtick substitution after the test sets the assignment's status: such a string is left blanked.
+    assert "No test command ran." in _verdicts(tmp_path, 'out="$(pytest -q 2>&1) on `hostname`"', "")
     # Nor does one open a bracket: the test after the `$( … )` runs on its own.
     assert "✅ passed" in _verdicts(tmp_path, ": $(printf %s \\(); pytest -q")
 
@@ -293,8 +303,22 @@ def test_nested_quoted_substitutions_are_read_once_each(monkeypatch):
     assert len(calls) == 14, len(calls)
 
 
+def test_an_unclosed_substitution_in_a_string_is_not_rescanned(monkeypatch):
+    from osop.recorder import receipt
+    original, calls = receipt._string_end, []
+
+    def counted(text, i):
+        calls.append(i)
+        return original(text, i)
+
+    monkeypatch.setattr(receipt, "_string_end", counted)
+    receipt._shell_code("echo " + '"$(' * 20 + "; pytest -q")
+    assert len(calls) <= 20 * 21 // 2, len(calls)  # each quote tried once from where it opens; was 17,710
+
+
 def test_a_quoted_string_whose_substitution_runs_no_test_stays_a_string(tmp_path):
-    for command in ["echo '$(pytest -q)'", 'echo "$(cat notes.txt) pytest -q"', '# echo "$(pytest -q)"\nls']:
+    for command in ["echo '$(pytest -q)'", 'echo "$(cat notes.txt) pytest -q"', '# echo "$(pytest -q)"\nls',
+                    "echo it\\'s; echo '\"$(pytest -q)\"'"]:
         assert "No test command ran." in _verdicts(tmp_path, command), command
     # A commit message written by a heredoc stays one string: its lines are no later commands.
     git = _section(_receipt(_session(tmp_path, [(

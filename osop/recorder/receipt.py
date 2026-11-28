@@ -1110,6 +1110,8 @@ def _echoed_verdict(tc: ToolCall, code: str, match: re.Match, out: str) -> str |
     runs = [m for m in _TEST_COMMAND.finditer(code) if _checks(code, m)] or [match]
     echoes = []
     for run in runs:
+        if _in_used_substitution(code, run.end()):
+            return None  # `: $(pytest); echo "exit=$?"` prints the status of `:`
         echoed = _echoed_status(tc, code, run, out)
         if echoed is None:
             return None
@@ -1337,7 +1339,8 @@ def _hidden_status(code: str, test_end: int) -> str | None:
 
 
 _ASSIGNMENT_BEFORE = re.compile(
-    r"(?:^|[;&|(\n])[ \t]*(?:(?:do|then|else|\{)[ \t]+)?(?:[A-Za-z_]\w*=\S*[ \t]+)*[A-Za-z_]\w*=\"?$")
+    # An escaped separator or new line starts no command (`echo \; x=`, `make \⏎ X=`), nor does an array's `=(`.
+    r"(?:^|(?<!\\)[;&|\n]|(?<![\\=])\()[ \t]*(?:(?:do|then|else|\{)[ \t]+)?(?:[A-Za-z_]\w*=\S*[ \t]+)*[A-Za-z_]\w*=\"?$")
 
 
 def _in_used_substitution(code: str, test_end: int) -> bool:
@@ -1466,7 +1469,8 @@ def _expand_git_vars(command: str) -> str:
 def _string_end(text: str, i: int) -> tuple[int, list[str]]:
     """(the end of the quoted string that opens at text[i] or -1 when it is not closed, the commands of its
     `$( … )`). In a double-quoted string `$( … )` is a command of its own, whose quotes open strings of their own:
-    `"== $(phpunit "$F/a.php" | tail -1)"` is one string."""
+    `"== $(phpunit "$F/a.php" | tail -1)"` is one string. A `$(` that never closes leaves the string open, as in bash
+    (reading on past it would scan the rest again at every level of nesting)."""
     if text[i] == "'":
         end = text.find("'", i + 1)
         return (end + 1 if end >= 0 else -1), []
@@ -1476,7 +1480,10 @@ def _string_end(text: str, i: int) -> tuple[int, list[str]]:
             i += 2
         elif text[i] == '"':
             return i + 1, commands
-        elif text.startswith("$(", i) and (end := _substitution_end(text, i + 2)) > 0:
+        elif text.startswith("$(", i):
+            end = _substitution_end(text, i + 2)
+            if end < 0:
+                return -1, []
             commands.append(text[i + 2:end - 1])
             i = end
         else:
@@ -1514,6 +1521,9 @@ def _quoted_tests(text: str, scripts: tuple[str, ...]) -> list[tuple[int, int, l
     if "$(" not in text:
         return found
     while i < len(text):
+        if text[i] == "\\":
+            i += 2  # `\'` and `\"` open no string: `echo it\'s '"$(pytest)"'` runs no test
+            continue
         if text[i] not in "'\"":
             i += 1
             continue
@@ -1521,7 +1531,9 @@ def _quoted_tests(text: str, scripts: tuple[str, ...]) -> list[tuple[int, int, l
         if end < 0:
             i += 1
             continue
-        commands = [_shell_code(c, scripts) for c in commands]
+        # A backtick substitution may run after the test and set an assignment's status (`x="$(pytest) `id`"`):
+        # such a string stays blanked.
+        commands = [] if "`" in text[i:end] else [_shell_code(c, scripts) for c in commands]
         if any(_TEST_COMMAND.search(c) for c in commands):
             found.append((i, end, commands))
         i = end
