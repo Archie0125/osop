@@ -442,6 +442,19 @@ def test_the_tests_own_echo_line_is_read_and_no_other(tmp_path):
                            "test rc=0 (pytest)\ntest rc=1")
     assert "✅ passed" in row('pytest -q > /dev/null 2>&1; echo "test rc=$?" "(pytest)"', "test rc=0 (pytest)")
     assert "❌" not in row('pytest -q > /dev/null 2>&1; echo "test rc=$?" 1>/dev/null; tail -n 1 old-test.log', old)
+    # `bash -o pipefail -c "…$?"`: a double-quoted script, whatever options come before `-c`.
+    for shell in ("bash -o pipefail -c", "bash -O extglob -c", "timeout 600 bash -o pipefail -c"):
+        assert "✅" not in row(f'{shell} "pytest -q > /tmp/l 2>&1; echo test exit $?"', "test exit 0"), shell
+    # In a loop the test runs several times; one echo line is one of the runs.
+    loop = 'for f in a b; do\n  pytest -q $f > /tmp/t 2>&1; echo "rc=$?" > /tmp/rc\ndone; tail -1 /tmp/rc'
+    assert "✅" not in row(loop, "rc=0")
+    # A log appended to and not emptied in this call may show an older run's line first.
+    assert "✅" not in row('pytest -q > /tmp/t 2>&1; echo "rc=$?" >> /tmp/runs.log; head -2 /tmp/runs.log',
+                           "earlier\nrc=0")
+    assert "✅ passed" in row('pytest -q > /tmp/t.log 2>&1; echo "rc=$?" >> /tmp/t.log; tail -1 /tmp/t.log', "rc=0")
+    # The same name in another directory is another log.
+    assert "✅" not in row('pytest -q > /tmp/new/t.log 2>&1; echo "rc=$?" >> /tmp/new/t.log; tail -1 /tmp/old/t.log',
+                           "rc=0")
     # An echo inside a group that closes right after it.
     assert "✅ passed" in row('(pytest -q > /tmp/t 2>&1; echo "exit=$?"); tail -1 /tmp/t', "exit=0\n5 passed")
     # A pipe inside a group: the status after it is the group's, which is tail's.

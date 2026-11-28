@@ -1134,9 +1134,11 @@ def _read_later(target: str, later: str) -> bool:
     path = target.strip("\"'")
     name = re.split(r"[\\/]", path)[-1]
     stem = name.rsplit(".", 1)[0]
-    def named(word: str) -> bool:  # a whole word: `test.log` is not in `old-test.log`
-        return re.search(rf"(?<![\w.-]){re.escape(word)}(?![\w.-])", later) is not None
-    return named(path) or named(name) or (len(stem) >= 4 and named(stem))
+    def named(word: str, own_dir: bool = False) -> bool:
+        # A whole word: `test.log` is not in `old-test.log`; a bare name is not in `/tmp/old/test.log`.
+        before = r"[\w./-]" if own_dir else r"[\w.-]"
+        return re.search(rf"(?<!{before}){re.escape(word)}(?![\w.-])", later) is not None
+    return named(path) or named(name, True) or (len(stem) >= 4 and named(stem, True))
 
 
 def _echo_words(args: str, start: int = 0) -> str:
@@ -1173,9 +1175,9 @@ def _echoed_status(tc: ToolCall, code: str, match: re.Match, out: str) -> tuple[
     line that is exactly that text with a number is the echo's. Other echoes with the same text print lines no order
     can tell apart (logs shown later, `&`, functions, scripts): then every such line must show the same status.
     """
-    if re.search(r"""(?:^|[;&|(\s])(?:\S*[\\/])?(?:ba|z|da|k)?sh(?:\.exe)?\s+(?:-\S+\s+)*-[A-Za-z]*c\s+(?:--\s+)?\"""",
-                 _command(tc)):
-        return None  # `bash -c "pytest; echo $?"`: the calling shell expands `$?` before bash runs
+    command = _command(tc)
+    if any(command[m.end():m.end() + 1] == '"' for m in _SHELL_C.finditer(command)):
+        return None  # `bash -o pipefail -c "pytest; echo $?"`: the calling shell expands `$?` before bash runs
     # Read the command as written: `echo "exit=$?"` and `echo "done"` are both `echo ""` once blanked.
     raw = _unwrap_shell_c(_command(tc), blank=False)
     # The same occurrence of the runner as the match, found in a mask of the raw command where quoted
@@ -1189,6 +1191,10 @@ def _echoed_status(tc: ToolCall, code: str, match: re.Match, out: str) -> tuple[
         return None
     runner = found[-1]
     before, after = raw[:runner.start()], raw[runner.end():]
+    masked_before = _mask(raw)[:runner.start()]
+    if len(re.findall(r"(?<![\w-])do(?![\w-])", masked_before)) > len(re.findall(r"(?<![\w-])done(?![\w-])",
+                                                                                   masked_before)):
+        return None  # in a loop the test runs several times, and one echo line is one of them
     echo = _ECHO_AFTER.match(after)
     if not echo:
         return None
@@ -1212,6 +1218,9 @@ def _echoed_status(tc: ToolCall, code: str, match: re.Match, out: str) -> tuple[
     into = _INTO_FILE.search(echo.group("args")[ref.end():])
     if into and not _read_later(into.group("target"), after[echo.end():]):
         return None
+    emptied = rf"(?<![>0-9&])[1&]?>(?!>)[ \t]*{re.escape(into.group('target'))}" if into else ""
+    if into and ">>" in into.group(0) and not re.search(emptied, raw[:runner.end() + echo.start("args")]):
+        return None  # `echo "rc=$?" >> log` into a log not emptied in this call: an older run's line may be shown
     def text(part: str) -> str:
         return part.replace('"', "").replace("'", "")
     args = echo.group("args")
