@@ -1090,7 +1090,9 @@ def _echoed_verdict(tc: ToolCall, code: str, match: re.Match, out: str) -> str |
     The echo right after the test (`pytest; echo "test exit=$?"`) prints its text, then the status, on a line of its
     own: that line, and no other `exit=` in the output, is read (a test name or an earlier step can print one too).
     """
-    # The call's test row stands for every test command in it: each needs its own echo, and one failure is enough.
+    # The call's test row stands for every test command in it: each needs its own echo. The last one decides a
+    # failure; a pass needs every one to pass (`pytest -k new; echo "before fix=$?"; git stash pop; pytest; echo
+    # "after fix=$?"` printing 1, then 0, is no pass, and no failure of what the call ended with).
     runs = [m for m in _TEST_COMMAND.finditer(code) if _checks(code, m)] or [match]
     echoes = []
     for run in runs:
@@ -1099,7 +1101,10 @@ def _echoed_verdict(tc: ToolCall, code: str, match: re.Match, out: str) -> str |
             return None
         echoes.append((run, *echoed))
     failed = [(run, var, line) for run, var, line, status in echoes if status]
+    if failed and not echoes[-1][3]:
+        return None
     if failed:
+        failed = [failed[-1]]
         run, var, line = failed[0]
         # `python patch.py && pytest; echo $?`: a failed patch's status, and the test never ran, unless the output
         # reports a test failure.
@@ -1138,10 +1143,13 @@ def _echoed_status(tc: ToolCall, code: str, match: re.Match, out: str) -> tuple[
     the test's own exit status and its line is found in the output, else None.
 
     `pytest; echo exit=$?` with nothing between: `$?` is the test's; so is `rc=$?; echo $rc`. After a pipe only
-    `${PIPESTATUS[0]}` is, when the test opens the pipeline. The echo's text before the status is its label: the line
-    that starts with it is the echo's. Echoes with the same label earlier in the call printed theirs first; when
-    not every one of them printed, which line is this one's cannot be told.
+    `${PIPESTATUS[0]}` is, when the test opens the pipeline. The echo's text around the status is its pattern: the
+    line that is exactly that text with a number is the echo's. Other echoes with the same text print lines no order
+    can tell apart (logs shown later, `&`, functions, scripts): then every such line must show the same status.
     """
+    if re.search(r"""(?:^|[;&|(\s])(?:\S*[\\/])?(?:ba|z|da|k)?sh(?:\.exe)?\s+(?:-\S+\s+)*-[A-Za-z]*c\s+(?:--\s+)?\"""",
+                 _command(tc)):
+        return None  # `bash -c "pytest; echo $?"`: the calling shell expands `$?` before bash runs
     # Read the command as written: `echo "exit=$?"` and `echo "done"` are both `echo ""` once blanked.
     raw = _unwrap_shell_c(_command(tc), blank=False)
     # The same occurrence of the runner as the match, found in a mask of the raw command where quoted
@@ -1180,24 +1188,25 @@ def _echoed_status(tc: ToolCall, code: str, match: re.Match, out: str) -> tuple[
     into = _INTO_FILE.search(echo.group("args")[ref.end():])
     if into and not _read_later(into.group("target"), after[echo.end():]):
         return None
-    label = re.sub(r"^(?:\\[ntr])+", "", echo.group("args")[:ref.start()].replace('"', "").replace("'", "")).strip()
+    def text(part: str) -> str:
+        return part.replace('"', "").replace("'", "")
+    args = echo.group("args")
+    label = re.sub(r"^(?:\\[ntr])+", "", text(args[:ref.start()])).strip()
+    # The text after the status, to the closing quote of a quoted argument, else to a redirect or a group's `)`.
+    quote = args[:1] if args[:1] in "\"'" else ""
+    tail = args[ref.end():].split(quote, 1)[0] if quote else re.split(r"(?<![0-9&])>|\d?>&\d|\)", args[ref.end():])[0]
+    suffix = text(tail).strip()
     if not re.search(r"[A-Za-z]", label):
         return None  # a bare number on a line could be anything's
-    printed = list(re.finditer(rf"(?m)^[ \t]*{re.escape(label)}[ \t]*(\d+)\b", out))
-    same = re.compile(rf"""\becho[ \t]+(?:-[neE]+[ \t]+)?["']?(?:\\[ntr])*{re.escape(label)}[ \t]*\$[^;&|\n]*""")
-    echoes = same.findall(raw)
-    earlier, total = len(same.findall(before)), len(echoes)
-    if len(printed) != total or earlier >= len(printed):
+    # Claude Code's own first line ("Exit code 1") is no echo's; a runner's "Tests: 5 passed" is not "Tests: $?".
+    shown = _EXIT_CODE.sub("", out, count=1)
+    printed = list(re.finditer(rf"(?m)^[ \t]*{re.escape(label)}[ \t]*(\d+)[ \t]*{re.escape(suffix)}[ \t]*$", shown))
+    # Echoes with the same text anywhere in the call, a heredoc's body (a script run later) included.
+    same = re.compile(rf"""\becho[ \t]+(?:-[neE]+[ \t]+)?["']?(?:\\[ntr])*{re.escape(label)}[ \t]*\$""")
+    statuses = {_number(p.group(1)) for p in printed}
+    if len(printed) != len(same.findall(raw)) or len(statuses) != 1 or None in statuses:
         return None
-    line = printed[earlier]
-    # Lines match the echoes in order only when each echo printed its line where it ran: echoes into logs come
-    # out in whatever order the logs are shown (`tail -n 1 test.log lint.log`). Then only a status every line
-    # shows is this echo's.
-    if (total > 1 and any(_INTO_FILE.search(e) for e in echoes)
-            and len({_number(p.group(1)) for p in printed}) != 1):
-        return None
-    status = _number(line.group(1))
-    return None if status is None else (f"${var}" if var else source, line.group(0).strip(), status)
+    return f"${var}" if var else source, printed[0].group(0).strip(), statuses.pop()
 
 
 def _gate(code: str, match: re.Match, out: str) -> str | None:

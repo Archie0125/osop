@@ -371,10 +371,13 @@ def _tests_row(tmp_path, command, output):
 
 
 def test_an_earlier_echoed_status_in_the_same_call_is_not_the_tests(tmp_path):
-    # Each echo prints its own line: the second "exit=" line is the test's, the first the linter's.
+    # Two echoes print the same text with different statuses: which line is the test's is not read from the order.
     command = 'ruff check .; echo "exit=$?"; python -m pytest -q | tail -3; echo "exit=${PIPESTATUS[0]}"'
     row = _tests_row(tmp_path, command, "E501 line too long\nexit=1\n3 passed\nexit=0")
-    assert "✅ passed" in row and "❌" not in row
+    assert "⚠️" in row and "❌" not in row
+    # With the same status on every line, that status is the test's.
+    row = _tests_row(tmp_path, command, "All checks passed!\nexit=0\n3 passed\nexit=0")
+    assert "✅ passed" in row
     # An echo into a file prints no line, so the lines no longer line up with the echoes: cannot tell.
     command = 'ruff check . > /tmp/l 2>&1; echo "exit=$?" >> /tmp/l; python -m pytest -q; echo "exit=$?"'
     row = _tests_row(tmp_path, command, "3 passed\nexit=1")
@@ -610,7 +613,7 @@ def test_a_version_query_echoed_before_the_test_is_not_the_tests_status(tmp_path
     claims = _claims(_session(tmp_path, [
         ("Bash", {"command": "pytest --version; echo exit=$?; pytest tests/test_api.py; echo exit=$?"}, out, False)],
         "Tests pass."))
-    assert "❌ contradicted" in claims and "exit=4" in claims and "exit=0" not in claims
+    assert "⚠️ cannot tell" in claims
 
 
 def test_a_lowercase_answer_glued_to_a_question_mark_is_still_an_answer():
@@ -654,7 +657,7 @@ def test_a_runner_name_in_a_quoted_string_does_not_shift_the_echoed_status(tmp_p
            "no tests ran in 0.00s\nexit=4")
     command = 'echo "pytest --version"; pytest --version; echo exit=$?; pytest tests/test_api.py; echo exit=$?'
     claims = _claims(_session(tmp_path, [("Bash", {"command": command}, out, False)], "Tests pass."))
-    assert "❌ contradicted" in claims and "exit=4" in claims
+    assert "⚠️ cannot tell" in claims
     claims = _claims(_session(tmp_path, [
         ("Bash", {"command": 'echo "Running pytest..."; pytest -q; echo exit=$?'},
          "Running pytest...\n3 passed\nexit=0", False)], "Tests pass."))

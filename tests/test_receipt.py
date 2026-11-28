@@ -368,6 +368,11 @@ def test_the_tests_own_echo_line_is_read_and_no_other(tmp_path):
     assert "✅" not in row('pytest tests/a > /tmp/a 2>&1; echo "a=$?"; pytest tests/b > /tmp/b 2>&1', "a=0")
     # Text inside a line is not the echo's line; a line the test printed with the same label makes it unreadable.
     assert "❌ failed" in row('npx mocha; echo "exit=$?"; true', "  ✓ prints exit=0 for --help\n  1 failing\nexit=1")
+    assert "❌ failed" in row('npx mocha; echo "exit=$?"; true', "  ✓ prints exit=0\n  1 failing\nexit=1")
+    # The echo's whole line, text after the status included.
+    assert "✅ passed" in row('pytest -q -s; echo "exit=$? (pytest)"; true',
+                              "exit=1 means a failure\n5 passed\nexit=0 (pytest)")
+    assert "❌" not in row('pytest -q > /dev/null 2>&1; rc=$?; echo -n "test rc=$rc"; echo 1', "test rc=01")
     assert "✅" not in row('pytest -q -s; echo "exit=$?"; true', "exit=0\n.\nF\n1 failed, 1 passed\nexit=1")
     assert "❌" not in row('pytest -q -s; echo "exit=$?"; true', "exit=1\n.\n1 passed\nexit=0")
     # A later step's Traceback does not unsay the test's own 0.
@@ -406,6 +411,29 @@ def test_the_tests_own_echo_line_is_read_and_no_other(tmp_path):
                               "5 passed\nexit=0")
     assert "✅ passed" in row('set -o pipefail; (pytest -q 2>&1 | tail -5); echo "exit=${PIPESTATUS[0]}"',
                               "5 passed\nexit=0")
+    # Same-text echoes whose lines come out in another order than written (a log shown later, `&`, a function):
+    # different statuses cannot be told apart.
+    for command, output in [
+            ('ruff check . > /tmp/r 2>&1; echo "exit=$?" >> /tmp/r; pytest -q > /tmp/p 2>&1; echo "exit=$?"; '
+             'cat /tmp/r', "exit=1\nAll checks passed!\nexit=0"),
+            ('(ruff check .; echo "exit=$?") & (pytest -q; echo "exit=$?") & wait', "exit=0\n3 passed\nexit=1"),
+            ('show() { echo "exit=$?"; }; ruff check .; show; pytest -q > /tmp/t 2>&1; echo "exit=$?"',
+             "exit=1\nexit=0")]:
+        assert "✅" not in row(command, output) and "❌" not in row(command, output), command
+    # Two runs of the test: the last decides a failure; a pass needs both.
+    red_green = ('pytest -q -k new > /tmp/a 2>&1; echo "before fix exit=$?"; git stash pop -q; '
+                 'pytest -q > /tmp/b 2>&1; echo "after fix exit=$?"')
+    assert "❌" not in row(red_green, "before fix exit=1\nafter fix exit=0")
+    assert "❌ failed" in row(red_green, "before fix exit=0\nafter fix exit=1")
+    # `bash -c "…$?"`: the calling shell put its own status in before bash ran.
+    assert "✅" not in row('bash -c "pytest -q > /tmp/l 2>&1; echo test exit $?"', "test exit 0")
+    # Claude Code's own "Exit code 1" line, and a runner's "Tests: 5 passed", are no echo's line.
+    grep_after = 'pytest -q > /tmp/t.log 2>&1; echo "Exit code $?" >> /tmp/t.log; grep -q FAILED /tmp/t.log'
+    assert "❌ failed" not in row(grep_after, "Exit code 1", True)
+    assert "❌" not in row('php artisan test 2>&1 | tail -3; echo "Tests: ${PIPESTATUS[0]}"',
+                           "Tests:    5 passed (12 assertions)\nTests: 0")
+    # An echo inside a group that closes right after it.
+    assert "✅ passed" in row('(pytest -q > /tmp/t 2>&1; echo "exit=$?"); tail -1 /tmp/t', "exit=0\n5 passed")
     # A pipe inside a group: the status after it is the group's, which is tail's.
     assert "✅" not in row('(pytest -q 2>&1 | tail -n 20) > /tmp/t.log; rc=${PIPESTATUS[0]}; echo "test rc=$rc"',
                            "test rc=0")
