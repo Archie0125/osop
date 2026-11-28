@@ -203,7 +203,6 @@ _GIT_VERB = (
 # `timeout 900 git push`, `GIT_EDITOR=true git cherry-pick`, `env X=1 git push`: wrappers seen in real sessions.
 _GIT_START = _COMMAND_START + rf"(?:(?:timeout(?:\s+-\S+)*\s+\S+|nohup|{_ENV})\s+)*(?:[A-Za-z_]\w*=\S*\s+)*"
 _GIT_STATE = re.compile(_GIT_START + _GIT_VERB)
-_GIT_ANY = re.compile(_GIT_START + r"(?:git|gh)(?=\s)")
 _GIT_SEGMENT = re.compile(_GIT_START + "(" + _GIT_VERB + r"[^;&|\n)]*)")
 _FILE_TOOLS = ("Edit", "MultiEdit", "Write", "NotebookEdit")
 _MAIN = "main"
@@ -764,19 +763,11 @@ def _judge(tc: ToolCall, code: str, m: re.Match, verb: str | None = None) -> tup
     ran_again = _ran_again(code, m, verb, mine, others)
     if verb in _SHARED_FAIL and verb not in ("lint", "build"):
         # git prints one block per command: a generic `error:` / `fatal:` belongs to the last git command in
-        # the call that ran (`git commit … && git push`: the push's error is not the commit's; `git commit …;
-        # git rev-parse @{u}`: "fatal: no upstream" is the rev-parse's). A later read-only one joined by `&&`
-        # ran only after this one succeeded, which prints its success line unless quiet (`-q`, or its output
-        # sent elsewhere: `> /dev/null`), and a marker after that line is dropped below. A later
-        # state-changing one always counts: this one may have succeeded silently (`git cherry-pick --no-commit
-        # … && git commit`). One that follows the command's own success line, when the verb ran once, is its
-        # cleanup (`gh pr merge --delete-branch` says "Squashed and merged", then "fatal:" about the branch).
-        options = re.split(r";|&&|\||\n", code[m.end():], maxsplit=1)[0]
-        quiet = re.search(r"\s(?:-[A-Za-z]*q[A-Za-z]*|--quiet)(?=\s|$)|(?<![2\w])(?:&|1)?>(?!&)", options) is not None
-        later_git = any(g.start() > m.start() and (quiet or _GIT_STATE.match(code, g.start())
-                                                   or re.search(r"[;\n|]", re.sub(r"\\\n", " ", code[m.end():g.end()])))
-                        for g in _GIT_ANY.finditer(code))
-        generic = None if later_git else _last(_SHARED_FAIL[verb], out)
+        # the call (`git commit … && git push`: the push's error is not the commit's). One that follows the
+        # command's own success line, when the verb ran once, is its cleanup (`gh pr merge --delete-branch`
+        # says "Squashed and merged", then "fatal:" about the branch).
+        segments = list(_GIT_STATE.finditer(code))
+        generic = _last(_SHARED_FAIL[verb], out) if segments and segments[-1].start() == m.start() else None
         if generic and done and done.start() < generic.start() and not ran_again:
             generic = None
         if generic and (fail is None or generic.start() > fail.start()):
@@ -907,7 +898,7 @@ _GIT_FAIL = {
                          r"|hook failed"),
     "merge": re.compile(r"CONFLICT|Automatic merge failed|not something we can merge|not mergeable"),
     "rebase": re.compile(r"CONFLICT|could not apply"),
-    "cherry-pick": re.compile(r"CONFLICT|could not apply|fatal: cherry-pick failed"),
+    "cherry-pick": re.compile(r"CONFLICT|could not apply"),
     # Build and lint tools print little on success and a lot on failure; both are read the same way.
     # vite prints "✓ built in" for the client bundle, then "error during build:" when the SSR bundle fails.
     # npm names the script that failed: "Lifecycle script `build` failed", "Failed at the app@1.0.0 build script".

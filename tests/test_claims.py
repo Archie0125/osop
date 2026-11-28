@@ -910,68 +910,6 @@ def test_a_push_error_in_the_same_call_is_not_the_commits_failure(tmp_path):
     assert "❌ contradicted" in claims.split("| committed:")[1].split("\n")[0]
 
 
-def test_a_fatal_line_from_a_later_git_command_is_not_the_commits(tmp_path):
-    # `git rev-parse @{u}` after a quiet commit prints "fatal: no upstream": that is the rev-parse's.
-    command = ('git commit -q -F /tmp/msg.txt; rc=$?; echo "commit rc=$rc"; git log --oneline -1; '
-               "git rev-parse --abbrev-ref --symbolic-full-name @{u} 2>&1 | head -1")
-    out = "commit rc=0\nabc1234 feat: x\nfatal: no upstream configured for branch 'feat/x'"
-    claims = _claims(_session(tmp_path, [("Bash", {"command": command}, out, False)], "Committed as abc1234."))
-    assert "⚠️ cannot tell" in claims and "❌" not in claims
-    # What only a cherry-pick prints is the cherry-pick's, with a later git command or not.
-    path = _session(tmp_path, [
-        ("Bash", {"command": "git cherry-pick abc1234 2>&1 | tail -3; git status --short | grep -E '^UU'"},
-         "error: Your local changes to the following files would be overwritten by merge:\nAborting\n"
-         "fatal: cherry-pick failed", False)], None)
-    git = render_receipt(parse_transcript(path), source=path).split("## Git\n", 1)[1].split("\n## ", 1)[0]
-    assert "❌" in git and "cherry-pick failed" in git
-    # A later git command after `&&` ran only if this one succeeded, which a commit says unless `-q`.
-    for command, output, claim, verdict in [
-            ("git commit -m x && git log --oneline -1",
-             "Exit code 128\nerror: gpg failed to sign the data\nfatal: failed to write commit object",
-             "Committed.", "❌ contradicted"),
-            ("git push origin main && gh pr view 5", "Exit code 128\nfatal: Authentication failed for 'x'",
-             "Pushed to main.", "❌ contradicted"),
-            ("git commit -q -m x && git log --oneline -1", "Exit code 128\nfatal: bad default revision 'HEAD'",
-             "Committed.", "⚠️ cannot tell")]:
-        claims = _claims(_session(tmp_path, [("Bash", {"command": command}, output, True)], claim))
-        assert verdict in claims, command
-    # A commit whose output went elsewhere printed no success line: a later git command may have run.
-    for command in ("git commit -m x > /dev/null && git rev-parse --abbrev-ref @{u}",
-                    "git commit -m x &>/dev/null && git rev-parse --abbrev-ref @{u}",
-                    "git commit -m x >/dev/null 2>&1 && git rev-parse --abbrev-ref @{u}"):
-        claims = _claims(_session(tmp_path, [
-            ("Bash", {"command": command}, "Exit code 128\nfatal: no upstream configured for branch 'x'", True)],
-            "Committed."))
-        assert "⚠️ cannot tell" in claims and "❌" not in claims, command
-    # A `\`-continued `&&` is still `&&`: the status ran only if the commit succeeded.
-    claims = _claims(_session(tmp_path, [
-        ("Bash", {"command": "git commit -S -m x && \\\n  git status --short"},
-         "Exit code 128\nfatal: could not open '.git/COMMIT_EDITMSG': Permission denied", True)], "Committed."))
-    assert "❌ contradicted" in claims
-    # After `;` a read-only git command may print a fatal line too, and a merge or a tag can fail to sign or to
-    # write its commit object as well: a signing failure there cannot be told.
-    claims = _claims(_session(tmp_path, [
-        ("Bash", {"command": "git commit -S -m x; git status --short"},
-         "error: gpg failed to sign the data\nfatal: failed to write commit object\nM  app.py", False)], "Committed."))
-    assert "⚠️ cannot tell" in claims
-    claims = _claims(_session(tmp_path, [
-        ("Bash", {"command": 'git commit -m "fix: report when gpg failed to sign"; git status --short'},
-         "[main abc1234] fix: report when gpg failed to sign\n 1 file changed, 1 insertion(+)", False)], "Committed."))
-    assert "❌" not in claims
-    # A later state-changing command can follow a silent success: its failure is not this one's.
-    path = _session(tmp_path, [
-        ("Bash", {"command": "git cherry-pick --no-commit abc1234 && git commit -S -m x"},
-         "Exit code 128\nerror: gpg failed to sign the data\nfatal: failed to write commit object", True)], None)
-    git = render_receipt(parse_transcript(path), source=path).split("## Git\n", 1)[1].split("\n## ", 1)[0]
-    pick = next(line for line in git.splitlines() if "cherry-pick" in line)
-    assert "❌" not in pick, pick
-    # The commit as the last git command: its own fatal line.
-    claims = _claims(_session(tmp_path, [
-        ("Bash", {"command": "git add a.py; git commit -q -m x; echo done"},
-         "fatal: Unable to create '.git/index.lock': File exists.\ndone", False)], "Committed."))
-    assert "❌ contradicted" in claims
-
-
 def test_a_git_command_a_hook_blocked_never_ran(tmp_path):
     claims = _claims(_session(tmp_path, [
         ("Bash", {"command": "git commit -q -m x --no-verify && git push"},

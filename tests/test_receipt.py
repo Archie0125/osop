@@ -314,9 +314,9 @@ def test_a_later_step_that_owns_the_exit_status_does_not_fail_the_test(tmp_path)
         row = _verdicts(tmp_path, command, output, True).splitlines()[2]
         assert "⚠️ unclear" in row and "❌" not in row and "no test failure" in row, command
     # Claude Code's "Exit code 1" and a step's "Error:" on the next line are no "1 error" summary.
-    row = _verdicts(tmp_path, "./scripts/bootstrap.sh && pytest -q", "Exit code 1\nError: missing configuration",
-                    True).splitlines()[2]
-    assert "⚠️ unclear" in row
+    for output in ("Exit code 1\nError: missing configuration", "Exit code 1\npatch failed:\n2 hunks rejected"):
+        row = _verdicts(tmp_path, "./scripts/bootstrap.sh && pytest -q", output, True).splitlines()[2]
+        assert "⚠️ unclear" in row, output
     # A single fallback after `||` ran only because the test failed.
     for command, output in [("pytest -q > /tmp/t.log 2>&1 || cat /tmp/missing.log",
                               "Exit code 1\ncat: /tmp/missing.log: No such file or directory"),
