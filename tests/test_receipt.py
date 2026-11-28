@@ -383,6 +383,35 @@ def test_the_tests_own_echo_line_is_read_and_no_other(tmp_path):
     assert "✅" not in row('pytest -q > /tmp/t.log 2>&1; echo "exit=$?" >> /tmp/t.log; ls', "t.log")
     assert "✅" not in row('pytest -q >> /tmp/t.log 2>&1; echo "exit=$?" >> /tmp/t.log; cat /tmp/t.log',
                            "1 failed\nexit=1\n5 passed\nexit=0")
+    # Another log shown instead of the one the echo went into.
+    other_log = 'pytest -q > /tmp/run.log 2>&1; rc=$?; echo "exit=$rc" >> /tmp/run.log; tail -n 1 /tmp/old.log'
+    assert "✅" not in row(other_log, "exit=0")
+    # Same-label echoes into logs come out in the order the logs are shown, not the order they ran.
+    both = ('ruff check . > /tmp/l.log 2>&1; echo "exit=$?" >> /tmp/l.log; pytest -q > /tmp/t.log 2>&1; '
+            'echo "exit=$?" >> /tmp/t.log; tail -qn 1 /tmp/t.log /tmp/l.log')
+    for output in ("exit=0\nexit=1", "exit=1\nexit=0"):
+        assert "✅" not in row(both, output) and "❌" not in row(both, output), output
+    # Logs shown in any order, every line showing the same status: that status is each test's.
+    two = ('pytest tests/a > /tmp/a.log 2>&1; echo "exit=$?" >> /tmp/a.log; pytest tests/b > /tmp/b.log 2>&1; '
+           'echo "exit=$?" >> /tmp/b.log; tail -qn 1 /tmp/b.log /tmp/a.log')
+    assert "✅ passed" in row(two, "exit=0\nexit=0")
+    # A log read through a loop variable, and an echo inside a group that closes right after it.
+    loop = ('pytest -q > "$N/final-sim.log" 2>&1; echo "sim_exit=$?" >> "$N/final-sim.log"; '
+            'for f in final-sim; do tail -n 2 "$N/$f.log"; done')
+    assert "❌ failed" in row(loop, "1 failed, 4 passed\nsim_exit=1")
+    assert "✅ passed" in row("(pytest -q > ../t.log 2>&1; echo exit=$? >> ../t.log); tail -2 ../t.log",
+                              "5 passed\nexit=0")
+    # Parentheses in a quoted pattern are no group; under pipefail a group's status is the test's failure.
+    assert "✅ passed" in row('pytest -q 2>&1 | grep -E "(passed|failed)" | head -3; echo "exit=${PIPESTATUS[0]}"',
+                              "5 passed\nexit=0")
+    assert "✅ passed" in row('set -o pipefail; (pytest -q 2>&1 | tail -5); echo "exit=${PIPESTATUS[0]}"',
+                              "5 passed\nexit=0")
+    # A pipe inside a group: the status after it is the group's, which is tail's.
+    assert "✅" not in row('(pytest -q 2>&1 | tail -n 20) > /tmp/t.log; rc=${PIPESTATUS[0]}; echo "test rc=$rc"',
+                           "test rc=0")
+    # `echo -n` leaves the line open for the next output.
+    assert "❌" not in row('pytest -q > /dev/null 2>&1; rc=$?; echo -n "test rc=$rc"; printf "1 warning\\n"',
+                           "test rc=01 warning")
 
 
 def test_an_echoed_status_counts_only_when_the_test_ran(tmp_path):

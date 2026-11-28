@@ -1118,7 +1118,19 @@ def _echoed_verdict(tc: ToolCall, code: str, match: re.Match, out: str) -> str |
 _ECHO_AFTER = re.compile(
     r"(?P<rest>(?:[^;&|\n]|>&|&>|\|(?!\|))*?);[ \t]*"
     r"(?:(?P<var>\w+)=(?P<src>\$\?|\$\{PIPESTATUS\[0\]\})[ \t]*;[ \t]*)?"
-    r"echo[ \t]+(?:-[neE]+[ \t]+)?(?P<args>[^;&|\n]*)")
+    r"echo[ \t]+(?P<flags>-[neE]+[ \t]+)?(?P<args>[^;&|\n]*)")
+# Where an echo's output goes when it is not the terminal: `>> "$S/test.log"`.
+_INTO_FILE = re.compile(r"""(?<![0-9&])>>?[ \t]*(?P<target>"[^"]*"|'[^']*'|[^\s;&|)]+)""")
+
+
+def _read_later(target: str, later: str) -> bool:
+    """Whether the commands after an echo into `target` show that file: its path, its name, or its name without the
+    extension (`for f in sim own; do sed … "$N/$f.log"`) appears in them."""
+    path = target.strip("\"'")
+    name = re.split(r"[\\/]", path)[-1]
+    stem = name.rsplit(".", 1)[0]
+    return path in later or name in later or (len(stem) >= 4 and re.search(rf"(?<![\w-]){re.escape(stem)}(?![\w-])",
+                                                                          later) is not None)
 
 
 def _echoed_status(tc: ToolCall, code: str, match: re.Match, out: str) -> tuple[str, str, int] | None:
@@ -1151,21 +1163,39 @@ def _echoed_status(tc: ToolCall, code: str, match: re.Match, out: str) -> tuple[
     source = echo.group("src") or ("${PIPESTATUS[0]}" if piped else "$?")
     if (source == "$?") == piped or (piped and not opens):
         return None  # `pytest | tail; echo $?` echoes tail's status
+    rest = _mask(raw)[runner.end():runner.end() + echo.end("rest")]
+    pipe = re.search(r"(?<!\|)\|(?!\|)", code[match.end():])
+    switches = [m.group(1) for m in _PIPEFAIL.finditer(code[:match.end()])
+                if pipe and _governs(code, m.start(), match.end() + pipe.start())]
+    if piped and ")" in rest and not (switches and switches[-1] == "-"):
+        return None  # `(pytest | tail) > log; echo ${PIPESTATUS[0]}`: the group's status, tail's without pipefail
+    if "n" in (echo.group("flags") or ""):
+        return None  # `echo -n`: the next output joins the line
     var = echo.group("var")
     ref = re.search(rf"\$(?:\{{{var}\}}|{var}\b)" if var else re.escape(source), echo.group("args"))
     if not ref:
         return None  # the echo prints something else
-    # An echo into a log (`echo "exit=$?" >> log; tail -3 log`) reaches the output when the log is shown; when it
-    # is not, or an earlier run's line is shown too, the lines no longer match the echoes one to one (below).
+    # An echo into a log (`echo "exit=$?" >> log; tail -3 log`) reaches the output only when that log is read
+    # later in the call.
+    into = _INTO_FILE.search(echo.group("args")[ref.end():])
+    if into and not _read_later(into.group("target"), after[echo.end():]):
+        return None
     label = re.sub(r"^(?:\\[ntr])+", "", echo.group("args")[:ref.start()].replace('"', "").replace("'", "")).strip()
     if not re.search(r"[A-Za-z]", label):
         return None  # a bare number on a line could be anything's
     printed = list(re.finditer(rf"(?m)^[ \t]*{re.escape(label)}[ \t]*(\d+)\b", out))
-    same = re.compile(rf"""\becho[ \t]+(?:-[neE]+[ \t]+)?["']?(?:\\[ntr])*{re.escape(label)}[ \t]*\$""")
-    earlier, total = len(same.findall(before)), len(same.findall(raw))
+    same = re.compile(rf"""\becho[ \t]+(?:-[neE]+[ \t]+)?["']?(?:\\[ntr])*{re.escape(label)}[ \t]*\$[^;&|\n]*""")
+    echoes = same.findall(raw)
+    earlier, total = len(same.findall(before)), len(echoes)
     if len(printed) != total or earlier >= len(printed):
         return None
     line = printed[earlier]
+    # Lines match the echoes in order only when each echo printed its line where it ran: echoes into logs come
+    # out in whatever order the logs are shown (`tail -n 1 test.log lint.log`). Then only a status every line
+    # shows is this echo's.
+    if (total > 1 and any(_INTO_FILE.search(e) for e in echoes)
+            and len({_number(p.group(1)) for p in printed}) != 1):
+        return None
     status = _number(line.group(1))
     return None if status is None else (f"${var}" if var else source, line.group(0).strip(), status)
 
