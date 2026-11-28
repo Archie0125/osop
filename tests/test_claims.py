@@ -897,6 +897,37 @@ def test_an_instruction_after_the_claim_does_not_erase_it():
 # --- after the Opus review of 371f0ba6 --------------------------------------------------------------
 
 
+def test_git_run_through_a_variable_is_a_git_command(tmp_path):
+    for command, out, err, claim, verdict in [
+            ('G="git -c safe.directory=* -c user.name=x"; $G add a.py && $G commit -m "fix: x"',
+             "[main abc1234] fix: x\n 1 file changed", False, "Committed as abc1234.", "✅ backed"),
+            ("G=git; ${G} push origin main", "   abc1234..def5678  main -> main", False, "Pushed to main.",
+             "✅ backed"),
+            ('G="git -C /repo"; $G commit -q -m x; $G log --oneline -1', "abc1234 x", False, "Committed.",
+             "⚠️ cannot tell"),
+            ('G="git -c user.name=x"; $G commit -m x', "Exit code 1\nnothing to commit, working tree clean", True,
+             "Committed.", "❌ contradicted")]:
+        claims = _claims(_session(tmp_path, [("Bash", {"command": command}, out, err)], claim))
+        assert verdict in claims and "no `git" not in claims, command
+    # A variable that holds something else is not git.
+    claims = _claims(_session(tmp_path, [("Bash", {"command": 'G="echo git"; $G commit -m x'}, "git commit -m x",
+                                          False)], "Committed."))
+    assert "❓ no evidence" in claims
+
+
+def test_a_failing_last_run_with_no_count_does_not_contradict_a_count_an_earlier_run_printed(tmp_path):
+    suite = ("Bash", {"command": "python -m pytest -q"}, "527 passed in 7.38s", False)
+    # A red check after the suite: the new tests on the old code, which prints only its status.
+    red = ("Bash", {"command": 'cd ../main-wt && python -m pytest -q tests/test_new.py > ../red.log 2>&1; '
+                               'echo "exit=$?"'}, "exit=1", False)
+    claims = _claims(_session(tmp_path, [suite, red], "The new head is ready (527 tests pass)."))
+    assert "⚠️ cannot tell" in claims and "printed 527" in claims and "❌ contradicted" not in claims
+    # Without a count in the sentence, or with no earlier run that printed it, the last run still decides.
+    for final in ("Tests pass.", "All 600 tests pass."):
+        claims = _claims(_session(tmp_path, [suite, red], final))
+        assert "❌ contradicted" in claims, final
+
+
 def test_a_push_error_in_the_same_call_is_not_the_commits_failure(tmp_path):
     out = ("Exit code 1\n[m2 abc1234] fix: parser\n 1 file changed\nTo github.com:x/y.git\n"
            " ! [rejected]        main -> main (fetch first)\nerror: failed to push some refs to 'x/y.git'")

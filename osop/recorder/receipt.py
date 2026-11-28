@@ -207,6 +207,8 @@ _GIT_VERB = (
 # `timeout 900 git push`, `GIT_EDITOR=true git cherry-pick`, `env X=1 git push`: wrappers seen in real sessions.
 _GIT_START = _COMMAND_START + rf"(?:(?:timeout(?:\s+-\S+)*\s+\S+|nohup|{_ENV})\s+)*(?:[A-Za-z_]\w*=\S*\s+)*"
 _GIT_STATE = re.compile(_GIT_START + _GIT_VERB)
+# A variable that holds a git invocation: `G="git -c safe.directory=* -c user.name=x"`, `G=git`.
+_GIT_VAR = re.compile(r"""(?:^|(?<=[;&|(\s]))([A-Za-z_]\w*)=(["']?)(git(?:[ \t][^"'\n;&|]*)?)\2(?=[\s;&|)]|$)""")
 _GIT_SEGMENT = re.compile(_GIT_START + "(" + _GIT_VERB + r"[^;&|\n)]*)")
 _FILE_TOOLS = ("Edit", "MultiEdit", "Write", "NotebookEdit")
 _MAIN = "main"
@@ -471,6 +473,10 @@ def _tests_claim_row(parsed: dict, calls: list, tests: list, quote: str, what: s
     if counts and printed and not printed & set(counts):
         return _UNCLEAR, f"{_where_counts_were_printed(tests, counts)}; {where} printed other counts → {verdict}"
     if verdict.startswith("❌"):
+        if counts and not printed and any(set(counts) & _printed_counts(t[1].output) for t in tests if t[1] is not tc):
+            # The last run printed no count (a red check run after the suite passed prints only its status), and an
+            # earlier run printed the sentence's: the sentence may be about that one, which this one cannot contradict.
+            return _UNCLEAR, f"{_where_counts_were_printed(tests, counts)}; {where} printed no count → {verdict}"
         return _CONTRADICTED, f"{where} → {verdict}"
     if not verdict.startswith(("✅", "🟡")):
         return _UNCLEAR, f"{where} → {verdict}"
@@ -1400,9 +1406,20 @@ def _mask(command: str) -> str:
                   masked)
 
 
+def _expand_git_vars(command: str) -> str:
+    """`$G commit` with `G="git -c …"` set in the call, written out as `git -c … commit`."""
+    for m in _GIT_VAR.finditer(command):
+        name, value = m.group(1), m.group(3).strip()
+        command = re.sub(rf"\$(?:\{{{name}\}}|{name}\b)", lambda _, v=value: v, command)
+    return command
+
+
 def _shell_code(command: str, scripts: tuple[str, ...] = ()) -> str:
     """The command with heredoc bodies, quoted strings and comments blanked out. A quoted path to one of `scripts`
-    stays as `/<name>`, as a quoted runner does: `python -X utf8 "$D/scripts/verify.py" "$D"`."""
+    stays as `/<name>`, as a quoted runner does: `python -X utf8 "$D/scripts/verify.py" "$D"`. A variable that
+    holds a git invocation is written out (`G="git -c x=y"; $G commit`)."""
+    command = _expand_git_vars(command)
+
     def blank(m: re.Match) -> str:
         path = m.group(0)[1:-1].replace("\\", "/")
         script = next((s for s in scripts if path == s or path.endswith("/" + s)), None)
@@ -1481,6 +1498,7 @@ def _git_segments(command: str) -> list[str]:
     spans lines, like `-m "$(cat <<'EOF' … EOF)"`, stays one segment.
     """
     fill = lambda m, keep=0: m.group(0)[:keep] + "x" * (len(m.group(0)) - keep)  # noqa: E731
+    command = _expand_git_vars(command)
     blanked = _QUOTED.sub(fill, _HEREDOC.sub(lambda m: fill(m, 2), command))
     segments = []
     for m in _GIT_SEGMENT.finditer(blanked):
