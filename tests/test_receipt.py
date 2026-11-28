@@ -348,6 +348,43 @@ def test_the_status_echoed_right_after_the_test_beats_a_later_steps_exit(tmp_pat
     assert "❌ failed" in row and "exit=1" in row
 
 
+def test_the_tests_own_echo_line_is_read_and_no_other(tmp_path):
+    def row(command, output, is_error=False):
+        return _verdicts(tmp_path, command, output, is_error).splitlines()[2]
+    # An earlier step printed an `exit=1` of its own; the test's echo says 0.
+    assert "✅ passed" in row('php gen.php 2>&1 | tail -3; php artisan test; echo "test exit $?"',
+                              "dry run, exit=1 when real\ntest exit 0\nTests: 50 passed")
+    # Labels without the word "exit" on its own, and a status kept in a variable.
+    assert "✅ passed" in row("npm test > /tmp/t.log 2>&1; echo npm_test_exit=$?", "npm_test_exit=0")
+    assert "❌ failed" in row('pytest -q > /tmp/t.log 2>&1; rc=$?; echo "rc=$rc"', "rc=1")
+    assert "✅ passed" in row('pytest -q > /tmp/t.log 2>&1; rc=$?; echo "pytest rc=${rc}"', "pytest rc=0")
+    # An earlier step's echo with another label does not get in the way.
+    assert "✅ passed" in row('npx tsc > /tmp/c 2>&1; echo "tsc exit $?"; npm test > /tmp/t 2>&1; echo "test exit $?"',
+                              "tsc exit 2\ntest exit 0\nℹ pass 5\nℹ fail 0")
+    # Two tests in one call make one row: every test needs its echo, and one failure is enough.
+    command = 'pytest tests/a > /tmp/a 2>&1; echo "a=$?"; pytest tests/b > /tmp/b 2>&1; echo "b=$?"'
+    assert "❌ failed" in row(command, "a=0\nb=1") and "b=1" in row(command, "a=0\nb=1")
+    assert "✅ passed" in row(command, "a=0\nb=0") and "a=0, b=0" in row(command, "a=0\nb=0")
+    assert "✅" not in row('pytest tests/a > /tmp/a 2>&1; echo "a=$?"; pytest tests/b > /tmp/b 2>&1', "a=0")
+    # Text inside a line is not the echo's line; a line the test printed with the same label makes it unreadable.
+    assert "❌ failed" in row('npx mocha; echo "exit=$?"; true', "  ✓ prints exit=0 for --help\n  1 failing\nexit=1")
+    assert "✅" not in row('pytest -q -s; echo "exit=$?"; true', "exit=0\n.\nF\n1 failed, 1 passed\nexit=1")
+    assert "❌" not in row('pytest -q -s; echo "exit=$?"; true', "exit=1\n.\n1 passed\nexit=0")
+    # A later step's Traceback does not unsay the test's own 0.
+    assert "✅ passed" in row('pytest -q > /tmp/t 2>&1; echo "exit=$?"; python check.py',
+                              "Exit code 1\nexit=0\nTraceback (most recent call last):\nKeyError: 'x'", True)
+    # Echoes that print another status, a bare number, or into a file.
+    assert "✅" not in row('pytest -q | tail -3; echo "exit=$?"', "3 passed\nexit=0")
+    assert "✅" not in row('pytest -q | tail -3; rc=$?; echo "rc=$rc"', "3 passed\nrc=0")
+    assert "✅" not in row("pytest -q > /tmp/t 2>&1; echo $?; true", "0")
+    # An echo into the log reaches the output when the log is shown; not shown, or shown with an older run's line, no.
+    log = 'pytest -q > /tmp/t.log 2>&1; echo "exit=$?" >> /tmp/t.log; tail -n 2 /tmp/t.log'
+    assert "✅ passed" in row(log, "5 passed in 0.31s\nexit=0")
+    assert "✅" not in row('pytest -q > /tmp/t.log 2>&1; echo "exit=$?" >> /tmp/t.log; ls', "t.log")
+    assert "✅" not in row('pytest -q >> /tmp/t.log 2>&1; echo "exit=$?" >> /tmp/t.log; cat /tmp/t.log',
+                           "1 failed\nexit=1\n5 passed\nexit=0")
+
+
 def test_an_echoed_status_counts_only_when_the_test_ran(tmp_path):
     # After `a &&`, a non-zero `$?` may be a's: the test never ran. A zero means both ran and passed.
     for is_error, end in ((True, "; false"), (False, "")):

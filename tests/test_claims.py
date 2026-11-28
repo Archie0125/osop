@@ -371,9 +371,14 @@ def _tests_row(tmp_path, command, output):
 
 
 def test_an_earlier_echoed_status_in_the_same_call_is_not_the_tests(tmp_path):
+    # Each echo prints its own line: the second "exit=" line is the test's, the first the linter's.
     command = 'ruff check .; echo "exit=$?"; python -m pytest -q | tail -3; echo "exit=${PIPESTATUS[0]}"'
     row = _tests_row(tmp_path, command, "E501 line too long\nexit=1\n3 passed\nexit=0")
-    assert "⚠️" in row and "❌" not in row
+    assert "✅ passed" in row and "❌" not in row
+    # An echo into a file prints no line, so the lines no longer line up with the echoes: cannot tell.
+    command = 'ruff check . > /tmp/l 2>&1; echo "exit=$?" >> /tmp/l; python -m pytest -q; echo "exit=$?"'
+    row = _tests_row(tmp_path, command, "3 passed\nexit=1")
+    assert "❌" not in row
 
 
 def test_an_echo_between_the_test_and_the_status_echo_breaks_the_link(tmp_path):
@@ -605,7 +610,7 @@ def test_a_version_query_echoed_before_the_test_is_not_the_tests_status(tmp_path
     claims = _claims(_session(tmp_path, [
         ("Bash", {"command": "pytest --version; echo exit=$?; pytest tests/test_api.py; echo exit=$?"}, out, False)],
         "Tests pass."))
-    assert "⚠️ cannot tell" in claims
+    assert "❌ contradicted" in claims and "exit=4" in claims and "exit=0" not in claims
 
 
 def test_a_lowercase_answer_glued_to_a_question_mark_is_still_an_answer():
@@ -649,7 +654,7 @@ def test_a_runner_name_in_a_quoted_string_does_not_shift_the_echoed_status(tmp_p
            "no tests ran in 0.00s\nexit=4")
     command = 'echo "pytest --version"; pytest --version; echo exit=$?; pytest tests/test_api.py; echo exit=$?'
     claims = _claims(_session(tmp_path, [("Bash", {"command": command}, out, False)], "Tests pass."))
-    assert "⚠️ cannot tell" in claims
+    assert "❌ contradicted" in claims and "exit=4" in claims
     claims = _claims(_session(tmp_path, [
         ("Bash", {"command": 'echo "Running pytest..."; pytest -q; echo exit=$?'},
          "Running pytest...\n3 passed\nexit=0", False)], "Tests pass."))
