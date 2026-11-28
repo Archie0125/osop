@@ -950,6 +950,14 @@ def test_a_failing_last_run_with_no_count_does_not_contradict_a_count_an_earlier
         assert "❌ contradicted" in claims, final
 
 
+def test_a_test_run_inside_a_quoted_substitution_is_the_last_run(tmp_path):
+    red = ("Bash", {"command": 'php artisan test > ../red.log 2>&1; echo "exit=$?"'}, "exit=1", False)
+    green = ("Bash", {"command": 'echo "tests: $(php artisan test --no-ansi 2>&1 | grep -E \'Tests:\')"'},
+             "tests: Tests: 74 passed (331 assertions)", False)
+    claims = _claims(_session(tmp_path, [red, green], "All 74 tests pass."))
+    assert "✅ backed" in claims and "the command that uses `$(…)`" in claims, claims
+
+
 def test_a_push_error_in_the_same_call_is_not_the_commits_failure(tmp_path):
     out = ("Exit code 1\n[m2 abc1234] fix: parser\n 1 file changed\nTo github.com:x/y.git\n"
            " ! [rejected]        main -> main (fetch first)\nerror: failed to push some refs to 'x/y.git'")

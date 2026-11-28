@@ -1312,6 +1312,8 @@ def _exit_owned_elsewhere(code: str, match: re.Match, out: str) -> bool:
 
 def _hidden_status(code: str, test_end: int) -> str | None:
     """What follows the test command and can hide its exit status, or None when nothing does."""
+    if _in_used_substitution(code, test_end):
+        return "the command that uses `$(…)`"
     rest = code[test_end:].rstrip()
     # `|| anything` runs the fallback when the test fails, and its exit status wins.
     if "||" in rest:
@@ -1329,6 +1331,30 @@ def _hidden_status(code: str, test_end: int) -> str | None:
         if not (switches and switches[-1] == "-"):
             return "a pipe"
     return None
+
+
+_ASSIGNMENT_BEFORE = re.compile(
+    r"(?:^|[;&|(\n])[ \t]*(?:(?:do|then|else|\{)[ \t]+)?(?:[A-Za-z_]\w*=\S*[ \t]+)*[A-Za-z_]\w*=\"?$")
+
+
+def _in_used_substitution(code: str, test_end: int) -> bool:
+    """Whether the test runs inside a `$( … )` whose output a command takes, which sets the status instead:
+    `echo "tests: $(pytest | tail -1)"`, `local out=$(pytest)`. A bare assignment (`out=$(pytest)`, `out="$(pytest)"`
+    and nothing after) takes the test's status."""
+    opens = []
+    for i, ch in enumerate(code[:test_end]):
+        if ch == "(":
+            opens.append(i)
+        elif ch == ")" and opens:
+            opens.pop()
+    for p in opens:
+        if code[p - 1:p] != "$":
+            continue  # a group, a subshell or `bash -c`
+        end = _substitution_end(code, p + 1)
+        if end < 0 or not (_ASSIGNMENT_BEFORE.search(code[:p - 1])
+                           and re.match(r"\"?[ \t]*(?:$|[;&|\n)])", code[end:])):
+            return True
+    return False
 
 
 _NEW_SHELL = "\x01"  # placed before the `(` that stands for an unwrapped `bash -c '…'`
@@ -1434,10 +1460,74 @@ def _expand_git_vars(command: str) -> str:
     return "".join(parts) + command[end:]
 
 
+def _string_end(text: str, i: int) -> tuple[int, list[str]]:
+    """(the end of the quoted string that opens at text[i] or -1 when it is not closed, the commands of its
+    `$( … )`). In a double-quoted string `$( … )` is a command of its own, whose quotes open strings of their own:
+    `"== $(phpunit "$F/a.php" | tail -1)"` is one string."""
+    if text[i] == "'":
+        end = text.find("'", i + 1)
+        return (end + 1 if end >= 0 else -1), []
+    commands, i = [], i + 1
+    while i < len(text):
+        if text[i] == "\\":
+            i += 2
+        elif text[i] == '"':
+            return i + 1, commands
+        elif text.startswith("$(", i) and (end := _substitution_end(text, i + 2)) > 0:
+            commands.append(text[i + 2:end - 1])
+            i = end
+        else:
+            i += 1
+    return -1, []
+
+
+def _substitution_end(text: str, i: int) -> int:
+    """The end of the `$( … )` whose command starts at text[i], or -1 when it is not closed."""
+    depth = 0
+    while i < len(text):
+        if text[i] == "\\":
+            i += 2
+            continue
+        if text[i] in "'\"":
+            i = _string_end(text, i)[0]
+            if i < 0:
+                return -1
+            continue
+        if text[i] == "(":
+            depth += 1
+        elif text[i] == ")":
+            if not depth:
+                return i + 1
+            depth -= 1
+        i += 1
+    return -1
+
+
+def _quoted_tests(text: str) -> list[tuple[int, int, list[str]]]:
+    """(start, end, commands) of each double-quoted string whose `$( … )` runs a test:
+    `echo "tests: $(php artisan test | grep Tests:)"`. The commands are all its `$( … )`."""
+    found, i = [], 0
+    if "$(" not in text:
+        return found
+    while i < len(text):
+        if text[i] not in "'\"":
+            i += 1
+            continue
+        end, commands = _string_end(text, i)
+        if end < 0:
+            i += 1
+            continue
+        if any(_TEST_COMMAND.search(_shell_code(c)) for c in commands):
+            found.append((i, end, commands))
+        i = end
+    return found
+
+
 def _shell_code(command: str, scripts: tuple[str, ...] = ()) -> str:
     """The command with heredoc bodies, quoted strings and comments blanked out. A quoted path to one of `scripts`
     stays as `/<name>`, as a quoted runner does: `python -X utf8 "$D/scripts/verify.py" "$D"`. A variable that
-    holds a git invocation is written out (`G="git -c x=y"; $G commit`)."""
+    holds a git invocation is written out (`G="git -c x=y"; $G commit`). A double-quoted string whose `$( … )` runs
+    a test keeps those commands: `echo "tests: $(pytest | tail -1)"` is `echo "$(pytest | tail -1)"`."""
     command = _expand_git_vars(command)
 
     def blank(m: re.Match) -> str:
@@ -1448,8 +1538,15 @@ def _shell_code(command: str, scripts: tuple[str, ...] = ()) -> str:
         runner = _quoted_runner(m)
         return f"/{runner}" if runner else '""'
 
-    code = _QUOTED.sub(blank, _HEREDOC.sub(lambda m: "<<heredoc" + m.group(3), command))
-    return re.sub(r"(?m)(^|[\s;&|(])#[^\n]*", r"\1", code)
+    code = _HEREDOC.sub(lambda m: "<<heredoc" + m.group(3), command)
+    kept = _quoted_tests(code)
+    # Such a string is a placeholder while the rest is blanked; one in a comment goes with the comment.
+    for n, (start, end, _) in reversed(list(enumerate(kept))):
+        code = f"{code[:start]}\x02{n}\x02{code[end:]}"
+    code = re.sub(r"(?m)(^|[\s;&|(])#[^\n]*", r"\1", _QUOTED.sub(blank, code))
+    for n, (_, _, commands) in enumerate(kept):
+        code = code.replace(f"\x02{n}\x02", '"' + " ".join(f"$({_shell_code(c, scripts)})" for c in commands) + '"')
+    return code
 
 
 def _commands_details(calls: list) -> str:

@@ -218,6 +218,62 @@ def test_php_called_by_its_full_path_is_a_launcher(tmp_path):
         assert "No test command ran." in _verdicts(tmp_path, command), command
 
 
+def test_a_test_in_a_quoted_command_substitution_is_a_test_run(tmp_path):
+    # echo prints what the test printed and sets the exit status itself: the test is seen, its status is not.
+    for command, output, mark in [
+        ('echo "unit: $(python -m pytest -q tests/unit 2>&1 | tail -1)"', "unit: 12 passed in 0.40s", "🟡"),
+        # Quotes of its own inside the `$( … )`, with a bracket inside them.
+        ('echo "== probe: $(vendor/bin/phpunit --colors=never "$DIR/ProbeTest.php" 2>&1 | grep -F \'OK (\')"',
+         "== probe: OK (9 tests, 30 assertions)", "⚠️"),
+        ('echo "== probe: $(vendor/bin/phpunit --colors=never 2>&1 | grep -F "OK (")"',
+         "== probe: OK (9 tests, 30 assertions)", "⚠️"),
+        ('cd app && echo "== probe: $(vendor/bin/phpunit "$DIR/ProbeTest.php" 2>&1 | grep -E \'Tests:\')"',
+         "== probe: Tests: 9, Assertions: 30, Failures: 1.", "⚠️"),
+        # An escaped quote before the `$( … )` does not end the string; one inside it opens no string.
+        ('echo "said \\"go $(vendor/bin/phpunit "$DIR/ProbeTest.php" 2>&1 | tail -1)"',
+         'said "go Tests: 9, Assertions: 30, Failures: 1.', "⚠️"),
+        ('echo "n: $(python -m pytest -q 2>&1 | grep -c \\\'passed)"', "n: 0", "⚠️"),
+        # A bracketed group before the test does not close the `$( … )`.
+        ('echo "r: $(cd app && (composer dump-autoload -q) && vendor/bin/phpunit 2>&1 | tail -1)"',
+         "r: Tests: 9, Assertions: 30, Failures: 1.", "⚠️"),
+    ]:
+        row = _verdicts(tmp_path, command, output).splitlines()[2]
+        assert f"| {mark} " in row and "the command that uses `$(…)`" in row, (command, row)
+
+
+def test_a_test_whose_output_a_command_takes_has_its_status_hidden(tmp_path):
+    # The command that takes the output sets the exit status: exit 0 is echo's, export's or report.sh's.
+    for command in ["echo $(pytest -q)", 'echo "$(pytest -q)"', "export RESULT=$(pytest -q)",
+                    "RESULT=$(pytest -q) ./report.sh"]:
+        row = _verdicts(tmp_path, command).splitlines()[2]
+        assert "🟡 probably passed: the command that uses `$(…)`" in row, (command, row)
+
+
+def test_a_bare_assignment_takes_the_tests_status(tmp_path):
+    for command in ["out=$(pytest -q 2>&1)", 'out="$(pytest -q 2>&1)"', "A=1 out=$(pytest -q 2>&1)"]:
+        assert "❌" in _verdicts(tmp_path, command, "Exit code 1\n1 failed, 4 passed", True), command
+        assert "✅" in _verdicts(tmp_path, command, ""), command
+    # In a loop the assignment is still bare; the `;` after it is what hides the status.
+    row = _verdicts(tmp_path, 'for f in a b; do out=$(pytest -q tests/test_$f.py); echo "$out"; done',
+                    "3 passed\n2 passed").splitlines()[2]
+    assert "🟡 probably passed: `;` after the test" in row
+
+
+def test_an_unclosed_substitution_is_no_assignment():
+    from osop.recorder.receipt import _hidden_status
+    code = 'out=$(pytest -q ""'
+    assert _hidden_status(code, code.index("-q") + 2) == "the command that uses `$(…)`"
+
+
+def test_a_quoted_string_whose_substitution_runs_no_test_stays_a_string(tmp_path):
+    for command in ["echo '$(pytest -q)'", 'echo "$(cat notes.txt) pytest -q"', '# echo "$(pytest -q)"\nls']:
+        assert "No test command ran." in _verdicts(tmp_path, command), command
+    # A commit message written by a heredoc stays one string: its lines are no later commands.
+    git = _section(_receipt(_session(tmp_path, [(
+        "Bash", {"command": "git commit -q -m \"$(cat <<'EOF'\nfix: parser\n\nBody.\nEOF\n)\""}, "", False)])), "Git")
+    assert "| exit 0 |" in git, git
+
+
 def test_env_that_unsets_or_clears_variables_is_a_wrapper(tmp_path):
     for command in ["env -u FORCE_COLOR php artisan test tests/Feature/PdfTest.php",
                     "env -u FORCE_COLOR -u CLICOLOR php vendor/bin/phpunit --no-progress tests/Feature",
