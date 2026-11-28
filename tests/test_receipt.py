@@ -265,6 +265,34 @@ def test_an_unclosed_substitution_is_no_assignment():
     assert _hidden_status(code, code.index("-q") + 2) == "the command that uses `$(…)`"
 
 
+def test_what_a_test_in_a_used_substitution_cannot_show(tmp_path):
+    for command, output, is_error in [
+        # The fallback inside may have printed the pass line.
+        ("echo \"$(pytest -q || printf '5 passed')\"", "5 passed", False),
+        # `|| exit 1` follows `test`, which took the output; it is no fallback of pytest's.
+        ('test "$(pytest -q >/dev/null 2>&1)" = yes || exit 1', "Exit code 1", True),
+        # An escaped bracket does not end the `$( … )`.
+        ("echo \"$(printf '%s' \\); pytest -q >/dev/null 2>&1)\"", ")", False),
+    ]:
+        row = _verdicts(tmp_path, command, output, is_error).splitlines()[2]
+        assert "| ⚠️ unclear" in row, (command, row)
+    # Nor does one open a bracket: the test after the `$( … )` runs on its own.
+    assert "✅ passed" in _verdicts(tmp_path, ": $(printf %s \\(); pytest -q")
+
+
+def test_nested_quoted_substitutions_are_read_once_each(monkeypatch):
+    from osop.recorder import receipt
+    original, calls = receipt._shell_code, []
+
+    def counted(command, scripts=()):
+        calls.append(command)
+        return original(command, scripts)
+
+    monkeypatch.setattr(receipt, "_shell_code", counted)
+    assert "$(pytest -q)" in counted("echo " + '"$(echo ' * 12 + '"$(pytest -q)"' + ')"' * 12)
+    assert len(calls) == 14, len(calls)
+
+
 def test_a_quoted_string_whose_substitution_runs_no_test_stays_a_string(tmp_path):
     for command in ["echo '$(pytest -q)'", 'echo "$(cat notes.txt) pytest -q"', '# echo "$(pytest -q)"\nls']:
         assert "No test command ran." in _verdicts(tmp_path, command), command

@@ -1299,6 +1299,8 @@ def _exit_owned_elsewhere(code: str, match: re.Match, out: str) -> bool:
     the test ran after it, and the test's status replaced that step's. Under pipefail a pipe returns the test's
     failure.
     """
+    if _in_used_substitution(code, match.end()):
+        return True  # `test "$(pytest)" = yes || exit 1`: the status is that of the command that took the output
     rest = re.sub(r"\d?>&\d", "", code[match.end():])
     # `pytest -q || exit 1`: a single fallback ran only because the test failed, so a failure is the test's.
     fallback_only = re.fullmatch(r"[^;\n&|]*\|\|[^;\n&|]*", rest) is not None
@@ -1312,12 +1314,13 @@ def _exit_owned_elsewhere(code: str, match: re.Match, out: str) -> bool:
 
 def _hidden_status(code: str, test_end: int) -> str | None:
     """What follows the test command and can hide its exit status, or None when nothing does."""
-    if _in_used_substitution(code, test_end):
-        return "the command that uses `$(…)`"
     rest = code[test_end:].rstrip()
-    # `|| anything` runs the fallback when the test fails, and its exit status wins.
+    # `|| anything` runs the fallback when the test fails, and its exit status wins. Inside a `$( … )` its output
+    # cannot be told from the test's either (`echo "$(pytest || echo '5 passed')"`).
     if "||" in rest:
         return "`||`"
+    if _in_used_substitution(code, test_end):
+        return "the command that uses `$(…)`"
     if ";" in rest:
         return "`;`"
     if "\n" in rest:
@@ -1342,10 +1345,10 @@ def _in_used_substitution(code: str, test_end: int) -> bool:
     `echo "tests: $(pytest | tail -1)"`, `local out=$(pytest)`. A bare assignment (`out=$(pytest)`, `out="$(pytest)"`
     and nothing after) takes the test's status."""
     opens = []
-    for i, ch in enumerate(code[:test_end]):
-        if ch == "(":
-            opens.append(i)
-        elif ch == ")" and opens:
+    for m in re.finditer(r"\\.|[()]", code[:test_end], re.S):  # `\)` is no bracket: `$(printf \); pytest)`
+        if m.group() == "(":
+            opens.append(m.start())
+        elif m.group() == ")" and opens:
             opens.pop()
     for p in opens:
         if code[p - 1:p] != "$":
@@ -1503,9 +1506,10 @@ def _substitution_end(text: str, i: int) -> int:
     return -1
 
 
-def _quoted_tests(text: str) -> list[tuple[int, int, list[str]]]:
+def _quoted_tests(text: str, scripts: tuple[str, ...]) -> list[tuple[int, int, list[str]]]:
     """(start, end, commands) of each double-quoted string whose `$( … )` runs a test:
-    `echo "tests: $(php artisan test | grep Tests:)"`. The commands are all its `$( … )`."""
+    `echo "tests: $(php artisan test | grep Tests:)"`. The commands are all its `$( … )`, as shell code (each made
+    once: nested strings would otherwise cost twice per level)."""
     found, i = [], 0
     if "$(" not in text:
         return found
@@ -1517,7 +1521,8 @@ def _quoted_tests(text: str) -> list[tuple[int, int, list[str]]]:
         if end < 0:
             i += 1
             continue
-        if any(_TEST_COMMAND.search(_shell_code(c)) for c in commands):
+        commands = [_shell_code(c, scripts) for c in commands]
+        if any(_TEST_COMMAND.search(c) for c in commands):
             found.append((i, end, commands))
         i = end
     return found
@@ -1539,13 +1544,13 @@ def _shell_code(command: str, scripts: tuple[str, ...] = ()) -> str:
         return f"/{runner}" if runner else '""'
 
     code = _HEREDOC.sub(lambda m: "<<heredoc" + m.group(3), command)
-    kept = _quoted_tests(code)
+    kept = _quoted_tests(code, scripts)
     # Such a string is a placeholder while the rest is blanked; one in a comment goes with the comment.
     for n, (start, end, _) in reversed(list(enumerate(kept))):
         code = f"{code[:start]}\x02{n}\x02{code[end:]}"
     code = re.sub(r"(?m)(^|[\s;&|(])#[^\n]*", r"\1", _QUOTED.sub(blank, code))
     for n, (_, _, commands) in enumerate(kept):
-        code = code.replace(f"\x02{n}\x02", '"' + " ".join(f"$({_shell_code(c, scripts)})" for c in commands) + '"')
+        code = code.replace(f"\x02{n}\x02", '"' + " ".join(f"$({c})" for c in commands) + '"')
     return code
 
 
