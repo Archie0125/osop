@@ -465,6 +465,33 @@ def test_the_tests_own_echo_line_is_read_and_no_other(tmp_path):
                            "test rc=01 warning")
 
 
+def test_a_linters_error_count_before_the_test_is_no_test_failure(tmp_path):
+    def row(command, output, is_error=False):
+        return _verdicts(tmp_path, command, output, is_error).splitlines()[2]
+    # ruff failed, so pytest never ran: the status and "Found 2 errors" are ruff's.
+    echo = 'ruff check . && python -m pytest -q > /tmp/p.log 2>&1; echo "pytest exit=$?"'
+    assert "❌" not in row(echo, "E501 line too long\nFound 2 errors.\npytest exit=1")
+    assert "❌" not in row("ruff check . && pytest -q > /tmp/p.log 2>&1", "Exit code 1\nFound 2 errors.", True)
+    tsc_first = "npx tsc --noEmit && npm test > /tmp/t 2>&1"
+    assert "❌" not in row(tsc_first, "Exit code 2\nFound 3 errors in 2 files.", True)
+    assert "❌" not in row("npx eslint . && npm test > /tmp/t 2>&1", "Exit code 1\n✖ 3 problems (3 errors, 0 warnings)",
+                           True)
+    # The test runner's own error counts stay the test's, a linter in the call or not.
+    collection = "!!!!!!!! Interrupted: 2 errors during collection !!!!!!!!"
+    assert "❌" in row("pytest -q --tb=no && ruff check .", f"Exit code 2\n{collection}", True)
+    assert "❌ failed" in row('ruff check . && pytest -q --tb=no; echo "pytest exit=$?"',
+                              f"All checks passed!\n{collection}\npytest exit=2")
+    assert "❌" in row("mvn test && npm run build", "Exit code 1\n[INFO] BUILD FAILURE", True)
+    # A version query is no lint run: the count is read as without a linter.
+    assert "❌" in row("ruff --version && python gen.py && pytest -q", "Exit code 1\nruff 0.8.0\nFound 2 errors.", True)
+    # A linter after a passing test prints its count too.
+    assert "❌" not in row("pytest -q && ruff check .", "Exit code 1\n5 passed in 0.31s\nFound 2 errors.", True)
+    # A test runner's own failure after the linter is still the test's.
+    assert "❌ failed" in row(echo, "All checks passed!\n1 failed, 4 passed\npytest exit=1")
+    # With no linter or build before it, an error count is the test runner's (pytest's collection errors).
+    assert "❌" in row("python gen.py && pytest -q", "Exit code 2\n2 errors in 0.51s", True)
+
+
 def test_an_echoed_status_counts_only_when_the_test_ran(tmp_path):
     # After `a &&`, a non-zero `$?` may be a's: the test never ran. A zero means both ran and passed.
     for is_error, end in ((True, "; false"), (False, "")):
@@ -868,11 +895,12 @@ def test_failure_after_the_test_is_not_blamed_on_the_test(tmp_path):
     row = _verdicts(tmp_path, "pytest -q && ruff check .",
                     "Exit code 1\n5 passed in 0.01s\nF401 unused import", True).splitlines()[2]
     assert "⚠️" in row and "❌" not in row and "later" in row
-    # "Found 1 error." is ruff's, but it reads like a test failure: the chain is ❌, and the blame stays open.
-    for output in ["Exit code 1\n5 passed in 0.01s\nF401 unused import\nFound 1 error.",
-                   "Exit code 1\n1 failed, 4 passed"]:
-        row = _verdicts(tmp_path, "pytest -q && ruff check .", output, True).splitlines()[2]
-        assert "❌" in row and "later" in row, output
+    # "Found 1 error." is ruff's count, not the test runner's: no ❌ for the test that printed "5 passed".
+    row = _verdicts(tmp_path, "pytest -q && ruff check .",
+                    "Exit code 1\n5 passed in 0.01s\nF401 unused import\nFound 1 error.", True).splitlines()[2]
+    assert "⚠️" in row and "❌" not in row and "later" in row
+    row = _verdicts(tmp_path, "pytest -q && ruff check .", "Exit code 1\n1 failed, 4 passed", True).splitlines()[2]
+    assert "❌" in row and "later" in row
 
 
 def test_internal_error_is_not_probably_passed(tmp_path):

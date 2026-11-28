@@ -115,6 +115,10 @@ _DOUBT = re.compile(
     r"|\bpanic\b|\bsegfault\b|Segmentation fault|core dumped|\bfatal:"
     r"|(?i:coverage (?:failure|threshold)|fail-under|not reached)"
 )
+# An error count in the form a linter or type checker prints it: ruff's, tsc's and mypy's "Found 2 errors",
+# eslint's "(2 errors". pytest's "2 errors in 0.51s" and "Interrupted: 2 errors during collection" are the test's.
+_CHECKER_COUNT = re.compile(r"(?i)[1-9]\d*[ \t]+errors?")
+_CHECKER_LEAD = re.compile(r"(?:Found[ \t]+|\()$")
 _PIPEFAIL = re.compile(r"\bset\s+([-+])[a-z]*o\s+pipefail\b")
 _ERREXIT = re.compile(r"\bset\s+(?:-[A-Za-z]*e|-o\s+errexit\b)")
 # Steps that cannot fail without saying so: `set` options, `cd` (which prints `cd:`), and variable assignments
@@ -1026,7 +1030,7 @@ def _test_verdict(tc: ToolCall, code: str, match: re.Match) -> str:
             if script:
                 # No runner's summary tells the script's failure from that step's (`false && ./smoke.sh`).
                 return f"⚠️ unclear: {_exit_text(tc)}: this script or {which} step in the chain failed"
-            if _exit_owned_elsewhere(code, match, out) and not _FAILURE.search(out):
+            if _exit_owned_elsewhere(code, match, out) and not _test_failure_shown(code, match, out):
                 # `python patch.py && pytest`: the patch failed and the test never ran. `pytest > log; tail -3 a b`:
                 # tail failed. Without a test failure in the output, the exit status may be that step's.
                 return (f"⚠️ unclear: {_exit_text(tc)}: this test or {which} step in the chain failed; "
@@ -1108,7 +1112,7 @@ def _echoed_verdict(tc: ToolCall, code: str, match: re.Match, out: str) -> str |
         run, var, line = failed[0]
         # `python patch.py && pytest; echo $?`: a failed patch's status, and the test never ran, unless the output
         # reports a test failure.
-        if _gate(code, run, out) == "&&" and not _FAILURE.search(out):
+        if _gate(code, run, out) == "&&" and not _test_failure_shown(code, run, out):
             return None
         return f"❌ failed: `echo {var}` right after the test printed {line}"
     # `[ -f .skip ] || pytest`: 0 when the test never ran.
@@ -1238,6 +1242,15 @@ def _echoed_status(tc: ToolCall, code: str, match: re.Match, out: str) -> tuple[
     if len(printed) != len(same.findall(raw)) or len(statuses) != 1 or None in statuses:
         return None
     return f"${var}" if var else source, printed[0].group(0).strip(), statuses.pop()
+
+
+def _test_failure_shown(code: str, match: re.Match, out: str) -> bool:
+    """Whether the output reports a failure that is the test runner's. With a linter or a build in the same call,
+    their own summaries ("Found 2 errors", "BUILD FAILURE") are not: `ruff check . && pytest; echo $?` with ruff
+    failing never ran the test, and `pytest && ruff check .` prints ruff's count after a passing test."""
+    checker = any(_checks(code, m) for pattern in (_LINT_COMMAND, _BUILD_COMMAND) for m in pattern.finditer(code))
+    return any(not (checker and _CHECKER_COUNT.fullmatch(f.group(0)) and _CHECKER_LEAD.search(out[:f.start()]))
+               for f in _FAILURE.finditer(out))
 
 
 def _gate(code: str, match: re.Match, out: str) -> str | None:
