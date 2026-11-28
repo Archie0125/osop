@@ -406,11 +406,11 @@ def test_the_tests_own_echo_line_is_read_and_no_other(tmp_path):
     assert "❌ failed" in row(loop, "1 failed, 4 passed\nsim_exit=1")
     assert "✅ passed" in row("(pytest -q > ../t.log 2>&1; echo exit=$? >> ../t.log); tail -2 ../t.log",
                               "5 passed\nexit=0")
-    # Parentheses in a quoted pattern are no group; under pipefail a group's status is the test's failure.
+    # Parentheses in a quoted pattern are no group; a group's status is not the test's, pipefail or not.
     assert "✅ passed" in row('pytest -q 2>&1 | grep -E "(passed|failed)" | head -3; echo "exit=${PIPESTATUS[0]}"',
                               "5 passed\nexit=0")
-    assert "✅ passed" in row('set -o pipefail; (pytest -q 2>&1 | tail -5); echo "exit=${PIPESTATUS[0]}"',
-                              "5 passed\nexit=0")
+    assert "✅" not in row('set -o pipefail; (pytest -q 2>&1 | tail -5); echo "exit=${PIPESTATUS[0]}"',
+                           "5 passed\nexit=0")
     # Same-text echoes whose lines come out in another order than written (a log shown later, `&`, a function):
     # different statuses cannot be told apart.
     for command, output in [
@@ -432,6 +432,16 @@ def test_the_tests_own_echo_line_is_read_and_no_other(tmp_path):
     assert "❌ failed" not in row(grep_after, "Exit code 1", True)
     assert "❌" not in row('php artisan test 2>&1 | tail -3; echo "Tests: ${PIPESTATUS[0]}"',
                            "Tests:    5 passed (12 assertions)\nTests: 0")
+    # Under pipefail a group's status is its last failing stage's: `grep -q` finding nothing, not the test.
+    assert "❌" not in row('set -o pipefail; (pytest -q 2>&1 | grep -q "^FAILED"); echo "test rc=${PIPESTATUS[0]}"',
+                           "test rc=1")
+    # Another log whose name ends like the echo's log; a second echo argument; an echo sent to /dev/null.
+    old = "test rc=1"
+    assert "❌" not in row('pytest -q > /dev/null 2>&1; echo "test rc=$?" >> test.log; tail -n 1 old-test.log', old)
+    assert "❌" not in row('pytest -q > /dev/null 2>&1; echo "test rc=$?" "(pytest)"; tail -n 1 old-test.log',
+                           "test rc=0 (pytest)\ntest rc=1")
+    assert "✅ passed" in row('pytest -q > /dev/null 2>&1; echo "test rc=$?" "(pytest)"', "test rc=0 (pytest)")
+    assert "❌" not in row('pytest -q > /dev/null 2>&1; echo "test rc=$?" 1>/dev/null; tail -n 1 old-test.log', old)
     # An echo inside a group that closes right after it.
     assert "✅ passed" in row('(pytest -q > /tmp/t 2>&1; echo "exit=$?"); tail -1 /tmp/t', "exit=0\n5 passed")
     # A pipe inside a group: the status after it is the group's, which is tail's.

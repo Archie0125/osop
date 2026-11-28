@@ -1125,7 +1125,7 @@ _ECHO_AFTER = re.compile(
     r"(?:(?P<var>\w+)=(?P<src>\$\?|\$\{PIPESTATUS\[0\]\})[ \t]*;[ \t]*)?"
     r"echo[ \t]+(?P<flags>-[neE]+[ \t]+)?(?P<args>[^;&|\n]*)")
 # Where an echo's output goes when it is not the terminal: `>> "$S/test.log"`.
-_INTO_FILE = re.compile(r"""(?<![0-9&])>>?[ \t]*(?P<target>"[^"]*"|'[^']*'|[^\s;&|)]+)""")
+_INTO_FILE = re.compile(r"""(?<![0-9&])[1&]?>>?(?!&)[ \t]*(?P<target>"[^"]*"|'[^']*'|[^\s;&|)]+)""")
 
 
 def _read_later(target: str, later: str) -> bool:
@@ -1134,8 +1134,34 @@ def _read_later(target: str, later: str) -> bool:
     path = target.strip("\"'")
     name = re.split(r"[\\/]", path)[-1]
     stem = name.rsplit(".", 1)[0]
-    return path in later or name in later or (len(stem) >= 4 and re.search(rf"(?<![\w-]){re.escape(stem)}(?![\w-])",
-                                                                          later) is not None)
+    def named(word: str) -> bool:  # a whole word: `test.log` is not in `old-test.log`
+        return re.search(rf"(?<![\w.-]){re.escape(word)}(?![\w.-])", later) is not None
+    return named(path) or named(name) or (len(stem) >= 4 and named(stem))
+
+
+def _echo_words(args: str, start: int = 0) -> str:
+    """What `echo` prints for `args[start:]` as written, up to a redirect or a group's `)`: quotes gone, unquoted
+    spaces between words one space. The quoting in force at `start` is read from what comes before it."""
+    words, word, quote = [], "", ""
+    for i, ch in enumerate(args):
+        if quote:
+            if ch == quote:
+                quote = ""
+            elif i >= start:
+                word += ch
+        elif ch in "\"'":
+            quote = ch
+        elif i < start:
+            continue
+        elif ch in " \t":
+            if word:
+                words.append(word)
+            word = ""
+        elif ch == ")" or re.match(r"[12&]?>", args[i:]):
+            break
+        else:
+            word += ch
+    return " ".join([*words, word] if word else words)
 
 
 def _echoed_status(tc: ToolCall, code: str, match: re.Match, out: str) -> tuple[str, str, int] | None:
@@ -1171,12 +1197,10 @@ def _echoed_status(tc: ToolCall, code: str, match: re.Match, out: str) -> tuple[
     source = echo.group("src") or ("${PIPESTATUS[0]}" if piped else "$?")
     if (source == "$?") == piped or (piped and not opens):
         return None  # `pytest | tail; echo $?` echoes tail's status
-    rest = _mask(raw)[runner.end():runner.end() + echo.end("rest")]
-    pipe = re.search(r"(?<!\|)\|(?!\|)", code[match.end():])
-    switches = [m.group(1) for m in _PIPEFAIL.finditer(code[:match.end()])
-                if pipe and _governs(code, m.start(), match.end() + pipe.start())]
-    if piped and ")" in rest and not (switches and switches[-1] == "-"):
-        return None  # `(pytest | tail) > log; echo ${PIPESTATUS[0]}`: the group's status, tail's without pipefail
+    if piped and ")" in _mask(raw)[runner.end():runner.end() + echo.end("rest")]:
+        # `(pytest | tail) > log; echo ${PIPESTATUS[0]}`: the group's status, which is tail's, or under pipefail
+        # the last failing stage's (`grep -q` finding nothing).
+        return None
     if "n" in (echo.group("flags") or ""):
         return None  # `echo -n`: the next output joins the line
     var = echo.group("var")
@@ -1192,10 +1216,8 @@ def _echoed_status(tc: ToolCall, code: str, match: re.Match, out: str) -> tuple[
         return part.replace('"', "").replace("'", "")
     args = echo.group("args")
     label = re.sub(r"^(?:\\[ntr])+", "", text(args[:ref.start()])).strip()
-    # The text after the status, to the closing quote of a quoted argument, else to a redirect or a group's `)`.
-    quote = args[:1] if args[:1] in "\"'" else ""
-    tail = args[ref.end():].split(quote, 1)[0] if quote else re.split(r"(?<![0-9&])>|\d?>&\d|\)", args[ref.end():])[0]
-    suffix = text(tail).strip()
+    # What the echo prints after the status: the rest of its arguments, to a redirect or a group's `)`.
+    suffix = _echo_words(args, ref.end())
     if not re.search(r"[A-Za-z]", label):
         return None  # a bare number on a line could be anything's
     # Claude Code's own first line ("Exit code 1") is no echo's; a runner's "Tests: 5 passed" is not "Tests: $?".
