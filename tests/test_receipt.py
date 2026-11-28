@@ -348,6 +348,123 @@ def test_the_status_echoed_right_after_the_test_beats_a_later_steps_exit(tmp_pat
     assert "❌ failed" in row and "exit=1" in row
 
 
+def test_the_tests_own_echo_line_is_read_and_no_other(tmp_path):
+    def row(command, output, is_error=False):
+        return _verdicts(tmp_path, command, output, is_error).splitlines()[2]
+    # An earlier step printed an `exit=1` of its own; the test's echo says 0.
+    assert "✅ passed" in row('php gen.php 2>&1 | tail -3; php artisan test; echo "test exit $?"',
+                              "dry run, exit=1 when real\ntest exit 0\nTests: 50 passed")
+    # Labels without the word "exit" on its own, and a status kept in a variable.
+    assert "✅ passed" in row("npm test > /tmp/t.log 2>&1; echo npm_test_exit=$?", "npm_test_exit=0")
+    assert "❌ failed" in row('pytest -q > /tmp/t.log 2>&1; rc=$?; echo "rc=$rc"', "rc=1")
+    assert "✅ passed" in row('pytest -q > /tmp/t.log 2>&1; rc=$?; echo "pytest rc=${rc}"', "pytest rc=0")
+    # An earlier step's echo with another label does not get in the way.
+    assert "✅ passed" in row('npx tsc > /tmp/c 2>&1; echo "tsc exit $?"; npm test > /tmp/t 2>&1; echo "test exit $?"',
+                              "tsc exit 2\ntest exit 0\nℹ pass 5\nℹ fail 0")
+    # Two tests in one call make one row: every test needs its echo, and one failure is enough.
+    command = 'pytest tests/a > /tmp/a 2>&1; echo "a=$?"; pytest tests/b > /tmp/b 2>&1; echo "b=$?"'
+    assert "❌ failed" in row(command, "a=0\nb=1") and "b=1" in row(command, "a=0\nb=1")
+    assert "✅ passed" in row(command, "a=0\nb=0") and "a=0, b=0" in row(command, "a=0\nb=0")
+    assert "✅" not in row('pytest tests/a > /tmp/a 2>&1; echo "a=$?"; pytest tests/b > /tmp/b 2>&1', "a=0")
+    # Text inside a line is not the echo's line; a line the test printed with the same label makes it unreadable.
+    assert "❌ failed" in row('npx mocha; echo "exit=$?"; true', "  ✓ prints exit=0 for --help\n  1 failing\nexit=1")
+    assert "❌ failed" in row('npx mocha; echo "exit=$?"; true', "  ✓ prints exit=0\n  1 failing\nexit=1")
+    # The echo's whole line, text after the status included.
+    assert "✅ passed" in row('pytest -q -s; echo "exit=$? (pytest)"; true',
+                              "exit=1 means a failure\n5 passed\nexit=0 (pytest)")
+    assert "❌" not in row('pytest -q > /dev/null 2>&1; rc=$?; echo -n "test rc=$rc"; echo 1', "test rc=01")
+    assert "✅" not in row('pytest -q -s; echo "exit=$?"; true', "exit=0\n.\nF\n1 failed, 1 passed\nexit=1")
+    assert "❌" not in row('pytest -q -s; echo "exit=$?"; true', "exit=1\n.\n1 passed\nexit=0")
+    # A later step's Traceback does not unsay the test's own 0.
+    assert "✅ passed" in row('pytest -q > /tmp/t 2>&1; echo "exit=$?"; python check.py',
+                              "Exit code 1\nexit=0\nTraceback (most recent call last):\nKeyError: 'x'", True)
+    # Echoes that print another status, a bare number, or into a file.
+    assert "✅" not in row('pytest -q | tail -3; echo "exit=$?"', "3 passed\nexit=0")
+    assert "✅" not in row('pytest -q | tail -3; rc=$?; echo "rc=$rc"', "3 passed\nrc=0")
+    assert "✅" not in row("pytest -q > /tmp/t 2>&1; echo $?; true", "0")
+    # An echo into the log reaches the output when the log is shown; not shown, or shown with an older run's line, no.
+    log = 'pytest -q > /tmp/t.log 2>&1; echo "exit=$?" >> /tmp/t.log; tail -n 2 /tmp/t.log'
+    assert "✅ passed" in row(log, "5 passed in 0.31s\nexit=0")
+    assert "✅" not in row('pytest -q > /tmp/t.log 2>&1; echo "exit=$?" >> /tmp/t.log; ls', "t.log")
+    assert "✅" not in row('pytest -q >> /tmp/t.log 2>&1; echo "exit=$?" >> /tmp/t.log; cat /tmp/t.log',
+                           "1 failed\nexit=1\n5 passed\nexit=0")
+    # Another log shown instead of the one the echo went into.
+    other_log = 'pytest -q > /tmp/run.log 2>&1; rc=$?; echo "exit=$rc" >> /tmp/run.log; tail -n 1 /tmp/old.log'
+    assert "✅" not in row(other_log, "exit=0")
+    # Same-label echoes into logs come out in the order the logs are shown, not the order they ran.
+    both = ('ruff check . > /tmp/l.log 2>&1; echo "exit=$?" >> /tmp/l.log; pytest -q > /tmp/t.log 2>&1; '
+            'echo "exit=$?" >> /tmp/t.log; tail -qn 1 /tmp/t.log /tmp/l.log')
+    for output in ("exit=0\nexit=1", "exit=1\nexit=0"):
+        assert "✅" not in row(both, output) and "❌" not in row(both, output), output
+    # Logs shown in any order, every line showing the same status: that status is each test's.
+    two = ('pytest tests/a > /tmp/a.log 2>&1; echo "exit=$?" >> /tmp/a.log; pytest tests/b > /tmp/b.log 2>&1; '
+           'echo "exit=$?" >> /tmp/b.log; tail -qn 1 /tmp/b.log /tmp/a.log')
+    assert "✅ passed" in row(two, "exit=0\nexit=0")
+    # A log read through a loop variable, and an echo inside a group that closes right after it.
+    loop = ('pytest -q > "$N/final-sim.log" 2>&1; echo "sim_exit=$?" >> "$N/final-sim.log"; '
+            'for f in final-sim; do tail -n 2 "$N/$f.log"; done')
+    assert "❌ failed" in row(loop, "1 failed, 4 passed\nsim_exit=1")
+    assert "✅ passed" in row("(pytest -q > ../t.log 2>&1; echo exit=$? >> ../t.log); tail -2 ../t.log",
+                              "5 passed\nexit=0")
+    # Parentheses in a quoted pattern are no group; a group's status is not the test's, pipefail or not.
+    assert "✅ passed" in row('pytest -q 2>&1 | grep -E "(passed|failed)" | head -3; echo "exit=${PIPESTATUS[0]}"',
+                              "5 passed\nexit=0")
+    assert "✅" not in row('set -o pipefail; (pytest -q 2>&1 | tail -5); echo "exit=${PIPESTATUS[0]}"',
+                           "5 passed\nexit=0")
+    # Same-text echoes whose lines come out in another order than written (a log shown later, `&`, a function):
+    # different statuses cannot be told apart.
+    for command, output in [
+            ('ruff check . > /tmp/r 2>&1; echo "exit=$?" >> /tmp/r; pytest -q > /tmp/p 2>&1; echo "exit=$?"; '
+             'cat /tmp/r', "exit=1\nAll checks passed!\nexit=0"),
+            ('(ruff check .; echo "exit=$?") & (pytest -q; echo "exit=$?") & wait', "exit=0\n3 passed\nexit=1"),
+            ('show() { echo "exit=$?"; }; ruff check .; show; pytest -q > /tmp/t 2>&1; echo "exit=$?"',
+             "exit=1\nexit=0")]:
+        assert "✅" not in row(command, output) and "❌" not in row(command, output), command
+    # Two runs of the test: the last decides a failure; a pass needs both.
+    red_green = ('pytest -q -k new > /tmp/a 2>&1; echo "before fix exit=$?"; git stash pop -q; '
+                 'pytest -q > /tmp/b 2>&1; echo "after fix exit=$?"')
+    assert "❌" not in row(red_green, "before fix exit=1\nafter fix exit=0")
+    assert "❌ failed" in row(red_green, "before fix exit=0\nafter fix exit=1")
+    # `bash -c "…$?"`: the calling shell put its own status in before bash ran.
+    assert "✅" not in row('bash -c "pytest -q > /tmp/l 2>&1; echo test exit $?"', "test exit 0")
+    # Claude Code's own "Exit code 1" line, and a runner's "Tests: 5 passed", are no echo's line.
+    grep_after = 'pytest -q > /tmp/t.log 2>&1; echo "Exit code $?" >> /tmp/t.log; grep -q FAILED /tmp/t.log'
+    assert "❌ failed" not in row(grep_after, "Exit code 1", True)
+    assert "❌" not in row('php artisan test 2>&1 | tail -3; echo "Tests: ${PIPESTATUS[0]}"',
+                           "Tests:    5 passed (12 assertions)\nTests: 0")
+    # Under pipefail a group's status is its last failing stage's: `grep -q` finding nothing, not the test.
+    assert "❌" not in row('set -o pipefail; (pytest -q 2>&1 | grep -q "^FAILED"); echo "test rc=${PIPESTATUS[0]}"',
+                           "test rc=1")
+    # Another log whose name ends like the echo's log; a second echo argument; an echo sent to /dev/null.
+    old = "test rc=1"
+    assert "❌" not in row('pytest -q > /dev/null 2>&1; echo "test rc=$?" >> test.log; tail -n 1 old-test.log', old)
+    assert "❌" not in row('pytest -q > /dev/null 2>&1; echo "test rc=$?" "(pytest)"; tail -n 1 old-test.log',
+                           "test rc=0 (pytest)\ntest rc=1")
+    assert "✅ passed" in row('pytest -q > /dev/null 2>&1; echo "test rc=$?" "(pytest)"', "test rc=0 (pytest)")
+    assert "❌" not in row('pytest -q > /dev/null 2>&1; echo "test rc=$?" 1>/dev/null; tail -n 1 old-test.log', old)
+    # `bash -o pipefail -c "…$?"`: a double-quoted script, whatever options come before `-c`.
+    for shell in ("bash -o pipefail -c", "bash -O extglob -c", "timeout 600 bash -o pipefail -c"):
+        assert "✅" not in row(f'{shell} "pytest -q > /tmp/l 2>&1; echo test exit $?"', "test exit 0"), shell
+    # In a loop the test runs several times; one echo line is one of the runs.
+    loop = 'for f in a b; do\n  pytest -q $f > /tmp/t 2>&1; echo "rc=$?" > /tmp/rc\ndone; tail -1 /tmp/rc'
+    assert "✅" not in row(loop, "rc=0")
+    # A log appended to and not emptied in this call may show an older run's line first.
+    assert "✅" not in row('pytest -q > /tmp/t 2>&1; echo "rc=$?" >> /tmp/runs.log; head -2 /tmp/runs.log',
+                           "earlier\nrc=0")
+    assert "✅ passed" in row('pytest -q > /tmp/t.log 2>&1; echo "rc=$?" >> /tmp/t.log; tail -1 /tmp/t.log', "rc=0")
+    # The same name in another directory is another log.
+    assert "✅" not in row('pytest -q > /tmp/new/t.log 2>&1; echo "rc=$?" >> /tmp/new/t.log; tail -1 /tmp/old/t.log',
+                           "rc=0")
+    # An echo inside a group that closes right after it.
+    assert "✅ passed" in row('(pytest -q > /tmp/t 2>&1; echo "exit=$?"); tail -1 /tmp/t', "exit=0\n5 passed")
+    # A pipe inside a group: the status after it is the group's, which is tail's.
+    assert "✅" not in row('(pytest -q 2>&1 | tail -n 20) > /tmp/t.log; rc=${PIPESTATUS[0]}; echo "test rc=$rc"',
+                           "test rc=0")
+    # `echo -n` leaves the line open for the next output.
+    assert "❌" not in row('pytest -q > /dev/null 2>&1; rc=$?; echo -n "test rc=$rc"; printf "1 warning\\n"',
+                           "test rc=01 warning")
+
+
 def test_an_echoed_status_counts_only_when_the_test_ran(tmp_path):
     # After `a &&`, a non-zero `$?` may be a's: the test never ran. A zero means both ran and passed.
     for is_error, end in ((True, "; false"), (False, "")):

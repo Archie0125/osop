@@ -371,9 +371,17 @@ def _tests_row(tmp_path, command, output):
 
 
 def test_an_earlier_echoed_status_in_the_same_call_is_not_the_tests(tmp_path):
+    # Two echoes print the same text with different statuses: which line is the test's is not read from the order.
     command = 'ruff check .; echo "exit=$?"; python -m pytest -q | tail -3; echo "exit=${PIPESTATUS[0]}"'
     row = _tests_row(tmp_path, command, "E501 line too long\nexit=1\n3 passed\nexit=0")
     assert "⚠️" in row and "❌" not in row
+    # With the same status on every line, that status is the test's.
+    row = _tests_row(tmp_path, command, "All checks passed!\nexit=0\n3 passed\nexit=0")
+    assert "✅ passed" in row
+    # An echo into a file prints no line, so the lines no longer line up with the echoes: cannot tell.
+    command = 'ruff check . > /tmp/l 2>&1; echo "exit=$?" >> /tmp/l; python -m pytest -q; echo "exit=$?"'
+    row = _tests_row(tmp_path, command, "3 passed\nexit=1")
+    assert "❌" not in row
 
 
 def test_an_echo_between_the_test_and_the_status_echo_breaks_the_link(tmp_path):

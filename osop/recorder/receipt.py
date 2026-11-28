@@ -1013,10 +1013,6 @@ def _test_verdict(tc: ToolCall, code: str, match: re.Match) -> str:
         # `pytest > log; echo "exit=$?"; tail -3 a b`: the status echoed right after the test is the test's,
         # whatever a later step returned.
         echoed = None if script else _echoed_verdict(tc, code, match, out)
-        if echoed and echoed.startswith("✅") and _DOUBT.search(out):
-            # The call failed: a test's own output can hold an `exit=0` (a test name, a `--help` check), so a
-            # passing status needs output without failure language.
-            echoed = None
         if echoed:
             exit_text = _exit_text(tc)
             later = f"a later step returned {exit_text}" if exit_text != "failed" else "a later step failed"
@@ -1089,30 +1085,159 @@ def _test_verdict(tc: ToolCall, code: str, match: re.Match) -> str:
 
 
 def _echoed_verdict(tc: ToolCall, code: str, match: re.Match, out: str) -> str | None:
-    """✅ or ❌ from the status echoed right after the test when it is the only test command in the call, else None.
+    """✅ or ❌ from the status the test's own echo printed, else None.
 
-    `pytest; echo exit=$?`: the first `$?` echoed right after the test, with nothing between, is the test's.
-    `pytest | tail; echo exit=${PIPESTATUS[0]}`: so is the first pipeline status, when the test opens the pipeline.
-    (`code` has quoted strings blanked to "", so `echo "exit=$?"` shows as `echo ""`.)
+    The echo right after the test (`pytest; echo "test exit=$?"`) prints its text, then the status, on a line of its
+    own: that line, and no other `exit=` in the output, is read (a test name or an earlier step can print one too).
     """
-    echoed = _ECHOED_EXIT.findall(out)
-    runs = sum(1 for m in _TEST_COMMAND.finditer(code) if _checks(code, m))
-    var = _echoed_status_var(tc, code, match)
-    if not (var and runs == 1 and echoed):
+    # The call's test row stands for every test command in it: each needs its own echo. The last one decides a
+    # failure; a pass needs every one to pass (`pytest -k new; echo "before fix=$?"; git stash pop; pytest; echo
+    # "after fix=$?"` printing 1, then 0, is no pass, and no failure of what the call ended with).
+    runs = [m for m in _TEST_COMMAND.finditer(code) if _checks(code, m)] or [match]
+    echoes = []
+    for run in runs:
+        echoed = _echoed_status(tc, code, run, out)
+        if echoed is None:
+            return None
+        echoes.append((run, *echoed))
+    failed = [(run, var, line) for run, var, line, status in echoes if status]
+    if failed and not echoes[-1][3]:
         return None
-    status = _number(re.search(r"\d+$", echoed[0]).group())
-    if status is None:
-        return None
-    gate = _gate(code, match, out)
-    if status:
+    if failed:
+        failed = [failed[-1]]
+        run, var, line = failed[0]
         # `python patch.py && pytest; echo $?`: a failed patch's status, and the test never ran, unless the output
         # reports a test failure.
-        if gate == "&&" and not _FAILURE.search(out):
+        if _gate(code, run, out) == "&&" and not _FAILURE.search(out):
             return None
-        return f"❌ failed: `echo {var}` right after the test printed {echoed[0]}"
-    if not _FAILURE.search(out) and gate != "||":  # `[ -f .skip ] || pytest`: 0 when the test never ran
-        return f"✅ passed: `echo {var}` right after the test printed {echoed[0]}"
-    return None
+        return f"❌ failed: `echo {var}` right after the test printed {line}"
+    # `[ -f .skip ] || pytest`: 0 when the test never ran.
+    if _FAILURE.search(out) or any(_gate(code, run, out) == "||" for run, *_ in echoes):
+        return None
+    var = echoes[0][1]
+    lines = ", ".join(line for _, _, line, _ in echoes)
+    return f"✅ passed: `echo {var}` right after {'the test' if len(echoes) == 1 else 'each test'} printed {lines}"
+
+
+# `; echo "label$?"`, `; rc=$?; echo "label$rc"`, `| tail; echo "label${PIPESTATUS[0]}"` right after the test.
+_ECHO_AFTER = re.compile(
+    r"(?P<rest>(?:[^;&|\n]|>&|&>|\|(?!\|))*?);[ \t]*"
+    r"(?:(?P<var>\w+)=(?P<src>\$\?|\$\{PIPESTATUS\[0\]\})[ \t]*;[ \t]*)?"
+    r"echo[ \t]+(?P<flags>-[neE]+[ \t]+)?(?P<args>[^;&|\n]*)")
+# Where an echo's output goes when it is not the terminal: `>> "$S/test.log"`.
+_INTO_FILE = re.compile(r"""(?<![0-9&])[1&]?>>?(?!&)[ \t]*(?P<target>"[^"]*"|'[^']*'|[^\s;&|)]+)""")
+
+
+def _read_later(target: str, later: str) -> bool:
+    """Whether the commands after an echo into `target` show that file: its path, its name, or its name without the
+    extension (`for f in sim own; do sed … "$N/$f.log"`) appears in them."""
+    path = target.strip("\"'")
+    name = re.split(r"[\\/]", path)[-1]
+    stem = name.rsplit(".", 1)[0]
+    def named(word: str, own_dir: bool = False) -> bool:
+        # A whole word: `test.log` is not in `old-test.log`; a bare name is not in `/tmp/old/test.log`.
+        before = r"[\w./-]" if own_dir else r"[\w.-]"
+        return re.search(rf"(?<!{before}){re.escape(word)}(?![\w.-])", later) is not None
+    return named(path) or named(name, True) or (len(stem) >= 4 and named(stem, True))
+
+
+def _echo_words(args: str, start: int = 0) -> str:
+    """What `echo` prints for `args[start:]` as written, up to a redirect or a group's `)`: quotes gone, unquoted
+    spaces between words one space. The quoting in force at `start` is read from what comes before it."""
+    words, word, quote = [], "", ""
+    for i, ch in enumerate(args):
+        if quote:
+            if ch == quote:
+                quote = ""
+            elif i >= start:
+                word += ch
+        elif ch in "\"'":
+            quote = ch
+        elif i < start:
+            continue
+        elif ch in " \t":
+            if word:
+                words.append(word)
+            word = ""
+        elif ch == ")" or re.match(r"[12&]?>", args[i:]):
+            break
+        else:
+            word += ch
+    return " ".join([*words, word] if word else words)
+
+
+def _echoed_status(tc: ToolCall, code: str, match: re.Match, out: str) -> tuple[str, str, int] | None:
+    """(how the status was echoed, the line the echo printed, the status) when the echo right after the test prints
+    the test's own exit status and its line is found in the output, else None.
+
+    `pytest; echo exit=$?` with nothing between: `$?` is the test's; so is `rc=$?; echo $rc`. After a pipe only
+    `${PIPESTATUS[0]}` is, when the test opens the pipeline. The echo's text around the status is its pattern: the
+    line that is exactly that text with a number is the echo's. Other echoes with the same text print lines no order
+    can tell apart (logs shown later, `&`, functions, scripts): then every such line must show the same status.
+    """
+    command = _command(tc)
+    if any(command[m.end():m.end() + 1] == '"' for m in _SHELL_C.finditer(command)):
+        return None  # `bash -o pipefail -c "pytest; echo $?"`: the calling shell expands `$?` before bash runs
+    # Read the command as written: `echo "exit=$?"` and `echo "done"` are both `echo ""` once blanked.
+    raw = _unwrap_shell_c(_command(tc), blank=False)
+    # The same occurrence of the runner as the match, found in a mask of the raw command where quoted
+    # strings are spaces (`echo "Running pytest…"` holds no runner) and positions are those of `raw`:
+    # `pytest --version; echo $?; pytest tests/; echo $?` echoes the version query's status first.
+    runners = re.compile(rf"(?:{_TEST_RUNNER})\b")
+    nth = len(runners.findall(code[:match.end()]))
+    # The words `code` has (`node --require "./setup.js" tests/a.js` keeps its script), at the places of `raw`.
+    found = [r for r, _ in zip(runners.finditer(_mask(raw)), range(nth), strict=False)]
+    if not found or len(found) < nth:
+        return None
+    runner = found[-1]
+    before, after = raw[:runner.start()], raw[runner.end():]
+    masked_before = _mask(raw)[:runner.start()]
+    if len(re.findall(r"(?<![\w-])do(?![\w-])", masked_before)) > len(re.findall(r"(?<![\w-])done(?![\w-])",
+                                                                                   masked_before)):
+        return None  # in a loop the test runs several times, and one echo line is one of them
+    echo = _ECHO_AFTER.match(after)
+    if not echo:
+        return None
+    piped = "|" in echo.group("rest")
+    opens = "|" not in re.split(r"[;&\n]|&&|\|\|", before)[-1]
+    source = echo.group("src") or ("${PIPESTATUS[0]}" if piped else "$?")
+    if (source == "$?") == piped or (piped and not opens):
+        return None  # `pytest | tail; echo $?` echoes tail's status
+    if piped and ")" in _mask(raw)[runner.end():runner.end() + echo.end("rest")]:
+        # `(pytest | tail) > log; echo ${PIPESTATUS[0]}`: the group's status, which is tail's, or under pipefail
+        # the last failing stage's (`grep -q` finding nothing).
+        return None
+    if "n" in (echo.group("flags") or ""):
+        return None  # `echo -n`: the next output joins the line
+    var = echo.group("var")
+    ref = re.search(rf"\$(?:\{{{var}\}}|{var}\b)" if var else re.escape(source), echo.group("args"))
+    if not ref:
+        return None  # the echo prints something else
+    # An echo into a log (`echo "exit=$?" >> log; tail -3 log`) reaches the output only when that log is read
+    # later in the call.
+    into = _INTO_FILE.search(echo.group("args")[ref.end():])
+    if into and not _read_later(into.group("target"), after[echo.end():]):
+        return None
+    emptied = rf"(?<![>0-9&])[1&]?>(?!>)[ \t]*{re.escape(into.group('target'))}" if into else ""
+    if into and ">>" in into.group(0) and not re.search(emptied, raw[:runner.end() + echo.start("args")]):
+        return None  # `echo "rc=$?" >> log` into a log not emptied in this call: an older run's line may be shown
+    def text(part: str) -> str:
+        return part.replace('"', "").replace("'", "")
+    args = echo.group("args")
+    label = re.sub(r"^(?:\\[ntr])+", "", text(args[:ref.start()])).strip()
+    # What the echo prints after the status: the rest of its arguments, to a redirect or a group's `)`.
+    suffix = _echo_words(args, ref.end())
+    if not re.search(r"[A-Za-z]", label):
+        return None  # a bare number on a line could be anything's
+    # Claude Code's own first line ("Exit code 1") is no echo's; a runner's "Tests: 5 passed" is not "Tests: $?".
+    shown = _EXIT_CODE.sub("", out, count=1)
+    printed = list(re.finditer(rf"(?m)^[ \t]*{re.escape(label)}[ \t]*(\d+)[ \t]*{re.escape(suffix)}[ \t]*$", shown))
+    # Echoes with the same text anywhere in the call, a heredoc's body (a script run later) included.
+    same = re.compile(rf"""\becho[ \t]+(?:-[neE]+[ \t]+)?["']?(?:\\[ntr])*{re.escape(label)}[ \t]*\$""")
+    statuses = {_number(p.group(1)) for p in printed}
+    if len(printed) != len(same.findall(raw)) or len(statuses) != 1 or None in statuses:
+        return None
+    return f"${var}" if var else source, printed[0].group(0).strip(), statuses.pop()
 
 
 def _gate(code: str, match: re.Match, out: str) -> str | None:
@@ -1160,36 +1285,6 @@ def _exit_owned_elsewhere(code: str, match: re.Match, out: str) -> bool:
         _, steps = _steps_before(code, match, every=True)
         return "cd:" in out or not all(_QUIET_STEP.fullmatch(step) for step in steps if step)
     return _gate(code, match, out) == "&&"
-
-
-def _echoed_status_var(tc: ToolCall, code: str, match: re.Match) -> str | None:
-    """'$?' or '${PIPESTATUS[0]}' when an echo of it right after the test reports the test's own status.
-
-    `pytest; echo exit=$?` with nothing between: `$?` is the test's. `pytest | tail; echo ${PIPESTATUS[0]}`
-    with the test opening the pipeline: the first pipeline status is the test's. (`code` has quoted strings
-    blanked to "", so `echo "exit=$?"` shows as `echo ""`; the raw command tells the two apart.)
-    """
-    # Read the command as written: `echo "exit=$?"` and `echo "done"` are both `echo ""` once blanked.
-    raw = _unwrap_shell_c(_command(tc), blank=False)
-    # The same occurrence of the runner as the match, found in a mask of the raw command where quoted
-    # strings are spaces (`echo "Running pytest…"` holds no runner) and positions are those of `raw`:
-    # `pytest --version; echo $?; pytest tests/; echo $?` echoes the version query's status first.
-    runners = re.compile(rf"(?:{_TEST_RUNNER})\b")
-    nth = len(runners.findall(code[:match.end()]))
-    # The words `code` has (`node --require "./setup.js" tests/a.js` keeps its script), at the places of `raw`.
-    found = [r for r, _ in zip(runners.finditer(_mask(raw)), range(nth), strict=False)]
-    if len(found) < nth:
-        return None
-    runner = found[-1]
-    before, after = raw[:runner.start()], raw[runner.end():]
-    if "$?" in before or "PIPESTATUS" in before:
-        return None  # an earlier status was echoed too, and the first `exit=` in the output is that one
-    if re.match(r"(?:[^;|&\n]|>&)*;\s*echo\b[^;&|\n]*\$\?", after):
-        return "$?"
-    opens = "|" not in re.split(r"[;&\n]|&&|\|\|", before)[-1]
-    if opens and re.match(r"(?:[^;&\n]|>&)*\|(?:[^;&\n]|>&)*;\s*echo\b[^;&|\n]*\$\{PIPESTATUS\[0\]\}", after):
-        return "${PIPESTATUS[0]}"
-    return None
 
 
 def _hidden_status(code: str, test_end: int) -> str | None:
