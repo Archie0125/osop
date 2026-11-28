@@ -910,6 +910,17 @@ def test_a_push_error_in_the_same_call_is_not_the_commits_failure(tmp_path):
     assert "❌ contradicted" in claims.split("| committed:")[1].split("\n")[0]
 
 
+def test_a_git_command_a_hook_blocked_never_ran(tmp_path):
+    claims = _claims(_session(tmp_path, [
+        ("Bash", {"command": "git commit -q -m x --no-verify && git push"},
+         "PreToolUse:Bash hook error: [python guard.py]: blocked: --no-verify is not allowed", True)], "Committed."))
+    assert "❓ no evidence" in claims and "no `git commit` command ran" in claims
+    path = _session(tmp_path, [
+        ("Bash", {"command": "git commit -q -m x --no-verify"},
+         "PreToolUse:Bash hook error: [python guard.py]: blocked: --no-verify is not allowed", True)], None)
+    assert "## Git" not in render_receipt(parse_transcript(path), source=path)
+
+
 @pytest.mark.parametrize("text", [
     "Special characters now pass through unescaped.",
     "The community plugin passes the token to the API.",

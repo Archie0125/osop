@@ -4,6 +4,7 @@ import json
 import re
 from pathlib import Path
 
+import pytest
 from click.testing import CliRunner
 
 from osop.cli.main import cli
@@ -290,9 +291,164 @@ def test_runner_failure_markers_beat_exit_zero(tmp_path):
 
 
 def test_failed_chain_before_the_test_is_not_blamed_on_the_test(tmp_path):
+    # The step before `&&` failed, so the test never ran: nothing in the output says it failed.
     row = _verdicts(tmp_path, "mklink /J vendor ../vendor && php artisan test", "Exit code 1\nAccess denied",
                     True).splitlines()[2]
+    assert "⚠️ unclear" in row and "earlier" in row and "no test failure" in row
+    row = _verdicts(tmp_path, "python patch.py && pytest -q", "Exit code 1\nAssertionError: old text not found",
+                    True).splitlines()[2]
+    assert "⚠️ unclear" in row and "❌" not in row
+    # The output reports a test failure: that is the test's.
+    row = _verdicts(tmp_path, "python patch.py && pytest -q", "Exit code 1\n1 failed, 4 passed", True).splitlines()[2]
     assert "❌" in row and "earlier" in row
+
+
+def test_a_later_step_that_owns_the_exit_status_does_not_fail_the_test(tmp_path):
+    # Output sent to a file, then a later step failed: the exit status is that step's.
+    for command, output in [
+            ('(pytest -q > "$S/test.log" 2>&1; echo "TEST_EXIT=$?" >> "$S/test.log"); tail -3 "$S/test.log" "$S/b.log"',
+             "Exit code 1\ntail: option used in invalid context -- 3"),
+            ("pytest -q > /tmp/t.log 2>&1; cut -c1-80 /tmp/missing.log",
+             "Exit code 1\ncut: /tmp/missing.log: No such file"),
+            ("npm test > /tmp/t.log 2>&1 && git status --short | grep -q .", "Exit code 1")]:
+        row = _verdicts(tmp_path, command, output, True).splitlines()[2]
+        assert "⚠️ unclear" in row and "❌" not in row and "no test failure" in row, command
+    # Claude Code's "Exit code 1" and a step's "Error:" on the next line are no "1 error" summary.
+    for output in ("Exit code 1\nError: missing configuration", "Exit code 1\npatch failed:\n2 hunks rejected"):
+        row = _verdicts(tmp_path, "./scripts/bootstrap.sh && pytest -q", output, True).splitlines()[2]
+        assert "⚠️ unclear" in row, output
+    # A single fallback after `||` ran only because the test failed.
+    for command, output in [("pytest -q > /tmp/t.log 2>&1 || cat /tmp/missing.log",
+                              "Exit code 1\ncat: /tmp/missing.log: No such file or directory"),
+                             ("pytest -q || exit 1", "Exit code 1")]:
+        assert "❌" in _verdicts(tmp_path, command, output, True).splitlines()[2], command
+    # mocha's summary, on a line of its own, is a test failure; the same words inside other text are not.
+    row = _verdicts(tmp_path, "npx mocha && npm run lint",
+                    "Exit code 1\n  3 passing (5ms)\n  1 failing\n\n  1) smoke\n     AssertionError: 41 !== 42",
+                    True).splitlines()[2]
+    assert "❌" in row
+    row = _verdicts(tmp_path, 'pytest -q -s; echo "exit=$?"', "assert report == '1 failing'\n.\n5 passed\nexit=0"
+                    ).splitlines()[2]
+    assert "✅" in row
+    # PHPUnit's error summary is a test failure.
+    row = _verdicts(tmp_path, "php vendor/bin/phpunit tests/Feature 2>&1; git status --short",
+                    "Exit code 1\nERRORS!\nTests: 7, Assertions: 31, Errors: 1.", True).splitlines()[2]
+    assert "❌" in row
+    # With a test failure in the output, it is still the test's.
+    row = _verdicts(tmp_path, "pytest -q 2>&1 | tail -3; cut -c1-80 /tmp/missing.log",
+                    "Exit code 1\n2 failed, 3 passed\ncut: /tmp/missing.log: No such file", True).splitlines()[2]
+    assert "❌" in row
+
+
+def test_the_status_echoed_right_after_the_test_beats_a_later_steps_exit(tmp_path):
+    command = 'pytest -q > /tmp/t.log 2>&1; echo "test exit=$?"; grep -E "passed|failed" /tmp/t.log; grep -q TODO a.py'
+    row = _verdicts(tmp_path, command, "Exit code 1\ntest exit=0\n5 passed", True).splitlines()[2]
+    assert "✅ passed" in row and "exit=0" in row and "a later step returned exit 1" in row
+    row = _verdicts(tmp_path, command, "Exit code 1\ntest exit=1\n1 failed, 4 passed", True).splitlines()[2]
+    assert "❌ failed" in row and "exit=1" in row
+
+
+def test_an_echoed_status_counts_only_when_the_test_ran(tmp_path):
+    # After `a &&`, a non-zero `$?` may be a's: the test never ran. A zero means both ran and passed.
+    for is_error, end in ((True, "; false"), (False, "")):
+        command = f'python patch.py && pytest -q > /tmp/t.log 2>&1; echo "exit=$?"{end}'
+        output = ("Exit code 1\n" if is_error else "") + "AssertionError: old text not found\nexit=1"
+        row = _verdicts(tmp_path, command, output, is_error).splitlines()[2]
+        assert "⚠️ unclear" in row and "❌" not in row, command
+    row = _verdicts(tmp_path, 'python gen.py && pytest -q > /tmp/t.log 2>&1; echo "exit=$?"; false',
+                    "Exit code 1\nexit=0", True).splitlines()[2]
+    assert "✅ passed" in row
+    # A test failure in the output: the gate passed and the test ran.
+    for is_error, end in ((True, "; false"), (False, "")):
+        command = f'git worktree add -q ../wt main && cd ../wt && pytest -q > /tmp/t.log 2>&1; echo "exit=$?"{end}'
+        output = ("Exit code 1\n" if is_error else "") + "exit=1\nFAILED tests/test_a.py::test_x\n1 failed, 4 passed"
+        assert "❌ failed" in _verdicts(tmp_path, command, output, is_error).splitlines()[2], command
+    # After `a ||`, a zero `$?` may be a's: the test ran only if a failed.
+    row = _verdicts(tmp_path, '[ -f .skip ] || pytest -q > /tmp/t.log 2>&1; echo "exit=$?"; false',
+                    "Exit code 1\nexit=0", True).splitlines()[2]
+    assert "✅" not in row
+    # The call failed and the output has failure language: an `exit=0` in it may be the test's own text.
+    for output in ("Exit code 1\n  ✓ prints exit=0 for --help\n  1 failing\n  AssertionError: expected 2\nexit=1",
+                   "Exit code 1\n  ✓ prints exit=0 for --help\n  TypeError: run is not a function\nexit=1"):
+        row = _verdicts(tmp_path, 'npx mocha; echo "exit=$?"; false', output, True).splitlines()[2]
+        assert "✅" not in row, output
+    # A gate continued on the next line is still a gate.
+    row = _verdicts(tmp_path, "python patch.py && \\\n  pytest -q > /tmp/t.log 2>&1",
+                    "Exit code 1\nAssertionError: old text not found", True).splitlines()[2]
+    assert "⚠️ unclear" in row
+
+
+def test_a_step_that_cannot_own_the_exit_status_leaves_the_test_failed(tmp_path):
+    # A step before the test joined by `;` ran first: the test's status replaced its own.
+    row = _verdicts(tmp_path, "cd app; php artisan test", "Exit code 255\nPHP Fatal error:  Cannot redeclare f()",
+                    True).splitlines()[2]
+    assert "❌" in row
+    # Under pipefail the pipe returns the test's failure, even with no summary printed.
+    fatal = "Exit code 255\nPHP Fatal error:  Cannot redeclare f()"
+    for command in ("set -o pipefail; php artisan test 2>&1 | tail -5",
+                    "set -o pipefail; cd app && php artisan test 2>&1 | tail -5"):
+        assert "❌" in _verdicts(tmp_path, command, fatal, True).splitlines()[2], command
+    row = _verdicts(tmp_path, "set -o pipefail; python gen.py && php artisan test 2>&1 | tail -5",
+                    "Exit code 255\nPHP Fatal error:  Cannot redeclare f()", True).splitlines()[2]
+    assert "⚠️ unclear" in row  # gen.py may have failed, and a PHP fatal is no test summary
+    # A failed `cd` prints its error: without one, the test after `cd … &&` ran and the status is its own.
+    row = _verdicts(tmp_path, "cd app && pytest -q > /tmp/t.log 2>&1", "Exit code 1", True).splitlines()[2]
+    assert "❌" in row
+    row = _verdicts(tmp_path, "cd app && pytest -q > /tmp/t.log 2>&1",
+                    "Exit code 1\nbash: cd: app: No such file or directory", True).splitlines()[2]
+    assert "⚠️ unclear" in row
+    row = _verdicts(tmp_path, "cd app && make gen && pytest -q > /tmp/t.log 2>&1", "Exit code 1", True).splitlines()[2]
+    assert "⚠️ unclear" in row
+    # node --test's own summary is a test failure, whatever ran after it.
+    row = _verdicts(tmp_path, "node --test test/ > /tmp/t.log 2>&1; grep -E 'ℹ (pass|fail)' /tmp/t.log; grep -q x a.js",
+                    "Exit code 1\nℹ pass 34\nℹ fail 1", True).splitlines()[2]
+    assert "❌" in row
+    # Under `set -e` any step before can end the call with its own status; `set` and `cd` themselves do not.
+    row = _verdicts(tmp_path, "set -euo pipefail; python gen.py; pytest -q", "Exit code 1\nKeyError: 'x'",
+                    True).splitlines()[2]
+    assert "⚠️ unclear" in row
+    row = _verdicts(tmp_path, "set -euo pipefail; cd app; php artisan test 2>&1 | tail -5", fatal, True).splitlines()[2]
+    assert "❌" in row
+
+
+def test_a_command_the_shell_could_not_parse_is_no_failed_test(tmp_path):
+    for command, output in [
+            ("python - <<'EOF'\nprint('x)\nEOF\npytest -q 2>&1 | tail -3",
+             "Exit code 2\n/usr/bin/bash: -c: line 9: unexpected EOF while looking for matching `''"),
+            ("pytest -q 2>&1 | tail -3", "Exit code 2\nbash: line 1: syntax error near unexpected token `)'")]:
+        row = _verdicts(tmp_path, command, output, True).splitlines()[2]
+        assert "⚠️ unclear" in row and "could not parse" in row, command
+    # A script the test runs printed it, after the test started: the exit status is the test's.
+    row = _verdicts(tmp_path, "npm test", "Exit code 2\n\n> app@1.0.0 test\n> bash -c 'echo )'\n\n"
+                    "bash: -c: line 1: syntax error near unexpected token `)'", True).splitlines()[2]
+    assert "❌" in row and "could not parse" not in row
+
+
+def test_an_assignment_from_a_command_can_fail_before_the_test(tmp_path):
+    for command in ("TEST_ROOT=$(mktemp) && pytest -q", "TEST_ROOT=`mktemp` && pytest -q"):
+        row = _verdicts(tmp_path, command, "Exit code 1\nmktemp: failed to create file: No space left on device",
+                        True).splitlines()[2]
+        assert "⚠️ unclear" in row, command
+    row = _verdicts(tmp_path, "TEST_ROOT=/tmp/t && pytest -q > /tmp/t.log 2>&1", "Exit code 1", True).splitlines()[2]
+    assert "❌" in row
+
+
+def test_a_tap_line_a_test_prints_is_no_runner_summary(tmp_path):
+    row = _verdicts(tmp_path, "pytest -q -s tests/test_tap.py", "TAP version 13\n# fail 1\n.\n1 passed in 0.01s"
+                    ).splitlines()[2]
+    assert "✅" in row
+
+
+@pytest.mark.parametrize("output", [
+    "PreToolUse:Bash hook error: [python guard.py]: blocked: recursive delete outside the scratchpad",
+    "The server-side auto mode classifier gave no verdict for Bash: a hook changed this call's input.",
+    "This agent is isolated in the worktree /w/wt-1, but this command names git in a form too complex to verify "
+    "that it stays inside the worktree. Refusing to run it.",
+    "ENAMETOOLONG: name too long, uv_spawn",
+    "The user doesn't want to take this action right now. STOP what you are doing.",
+])
+def test_a_call_that_never_ran_is_no_test_run(tmp_path, output):
+    assert "No test command ran." in _verdicts(tmp_path, "pytest -q && rm -rf build", output, True)
 
 
 def test_nose_and_prove_are_detected(tmp_path):
