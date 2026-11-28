@@ -207,8 +207,10 @@ _GIT_VERB = (
 # `timeout 900 git push`, `GIT_EDITOR=true git cherry-pick`, `env X=1 git push`: wrappers seen in real sessions.
 _GIT_START = _COMMAND_START + rf"(?:(?:timeout(?:\s+-\S+)*\s+\S+|nohup|{_ENV})\s+)*(?:[A-Za-z_]\w*=\S*\s+)*"
 _GIT_STATE = re.compile(_GIT_START + _GIT_VERB)
-# A variable that holds a git invocation: `G="git -c safe.directory=* -c user.name=x"`, `G=git`.
-_GIT_VAR = re.compile(r"""(?:^|(?<=[;&|(\s]))([A-Za-z_]\w*)=(["']?)(git(?:[ \t][^"'\n;&|]*)?)\2(?=[\s;&|)]|$)""")
+# An assignment, as a statement of its own, of git with global options only: `G="git -c safe.directory=* -C /r"`.
+_GIT_WORD = r"""[^\s"';&|()#]+"""
+_GIT_GLOBAL = rf"(?:[ \t]+(?:-[cC][ \t]+{_GIT_WORD}|--(?:git-dir|work-tree|namespace)={_GIT_WORD}|--no-pager))*"
+_GIT_VAR = re.compile(rf"""[ \t]*([A-Za-z_]\w*)=(["']?)(git{_GIT_GLOBAL})\2[ \t]*(?=;|&&|\n|$)""")
 _GIT_SEGMENT = re.compile(_GIT_START + "(" + _GIT_VERB + r"[^;&|\n)]*)")
 _FILE_TOOLS = ("Edit", "MultiEdit", "Write", "NotebookEdit")
 _MAIN = "main"
@@ -1407,11 +1409,27 @@ def _mask(command: str) -> str:
 
 
 def _expand_git_vars(command: str) -> str:
-    """`$G commit` with `G="git -c …"` set in the call, written out as `git -c … commit`."""
-    for m in _GIT_VAR.finditer(command):
-        name, value = m.group(1), m.group(3).strip()
-        command = re.sub(rf"\$(?:\{{{name}\}}|{name}\b)", lambda _, v=value: v, command)
-    return command
+    """`$G commit` after `G="git -c …"`, written out as `git -c … commit`.
+
+    Only a use at the start of a command is written out, with the value of the last assignment to that variable
+    before it, an assignment that is a statement of its own (`G=git` then `;`, `&&` or a new line: not
+    `G=git cmd`, not inside `( … )`), whose value is git with global options only. Quotes, heredoc bodies and
+    comments are skipped, and each use is written out once: a value is never read again.
+    """
+    if "=" not in command or "$" not in command:
+        return command
+    masked = _mask(command)
+    assigned = [(m.start(1), m.group(1), _GIT_VAR.match(command, m.start()))
+                for m in re.finditer(r"(?:^|(?<=[;&\n]))[ \t]*([A-Za-z_]\w*)=", masked)]
+    parts, end = [], 0
+    for use in re.finditer(r"(?:^|(?<=[;&|(\n]))[ \t]*\$(?:\{(\w+)\}|(\w+))(?=[ \t])", masked):
+        name = use.group(1) or use.group(2)
+        last = [found for pos, n, found in assigned if n == name and pos < use.start()]
+        if last and last[-1] and last[-1].group(1) == name:
+            start = use.start() + len(use.group(0)) - len(use.group(0).lstrip(" \t"))
+            parts += [command[end:start], last[-1].group(3)]
+            end = use.end()
+    return "".join(parts) + command[end:]
 
 
 def _shell_code(command: str, scripts: tuple[str, ...] = ()) -> str:

@@ -909,10 +909,27 @@ def test_git_run_through_a_variable_is_a_git_command(tmp_path):
              "Committed.", "❌ contradicted")]:
         claims = _claims(_session(tmp_path, [("Bash", {"command": command}, out, err)], claim))
         assert verdict in claims and "no `git" not in claims, command
-    # A variable that holds something else is not git.
-    claims = _claims(_session(tmp_path, [("Bash", {"command": 'G="echo git"; $G commit -m x'}, "git commit -m x",
-                                          False)], "Committed."))
-    assert "❓ no evidence" in claims
+    # Only the last assignment before the use, as a statement of its own, of git with global options, counts.
+    for command, out in [('G="echo git"; $G commit -m x', "git commit -m x"),
+                         ("G=git; G=echo; $G commit -m x", "commit -m x"),
+                         ("G=echo; (G=git); $G commit -m x", "commit -m x"),
+                         ("G=echo; (G=git; true); $G commit -m x", "commit -m x"),
+                         ("G=echo; G='git -c user.name=x' :; $G commit -m x", "commit -m x"),
+                         ("G=echo; $G commit -m x; G=git", "commit -m x"),
+                         ("G=echo; # G=git\n$G commit -m x", "commit -m x"),
+                         ("G=echo; cat <<'EOF'\nG=git\nEOF\n$G commit -m x", "G=git\ncommit -m x"),
+                         ("G='git --version'; $G commit", "git version 2.39.1"),
+                         ("commit() { :; }; G=echo; G=git commit -m x; $G", "\n")]:
+        claims = _claims(_session(tmp_path, [("Bash", {"command": command}, out, False)], "Committed."))
+        assert "❓ no evidence" in claims, command
+    # Values are written out once: a value that names other variables is not read again.
+    names = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    chain = "".join(f"{a}='git ${b} ${b}'; " for a, b in zip(names[:-1], names[1:], strict=True))
+    _claims(_session(tmp_path, [("Bash", {"command": chain + "Z=git; : $A"}, "", False)], "Tests pass."))
+    # Text a value holds is not read as shell syntax.
+    for command in ("G='git (pytest'; printf '%s\\n' $G", "G='git #'; python -m pytest $G --version"):
+        claims = _claims(_session(tmp_path, [("Bash", {"command": command}, "pytest 9.0.2", False)], "5 tests pass."))
+        assert "✅" not in claims, command
 
 
 def test_a_failing_last_run_with_no_count_does_not_contradict_a_count_an_earlier_run_printed(tmp_path):
